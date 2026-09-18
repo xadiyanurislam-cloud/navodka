@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+build/build/
+build/dist/
+dist/
+*.spec.bak
+.venv/
+venv/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

@@ -1,0 +1,493 @@
+/* ─────────────────────────────────────────────────────────
+   Оформление.
+
+   Программа открыта часами, и смотрят в неё не ради неё самой, а ради
+   таблицы. Поэтому здесь нет ни теней, ни градиентов, ни цветных
+   заливок: цвет расходуется только там, где он несёт смысл — балл лида
+   и статус проверки адреса. Всё остальное держится на тонких линиях,
+   воздухе и типографике.
+
+   Тема следует за системной: на рабочей машине это обычно светлая, на
+   домашней вечером — тёмная, и переключатель здесь был бы лишней
+   кнопкой, которую нажимают один раз.
+   ───────────────────────────────────────────────────────── */
+:root{
+  --bg:#f7f7f8;
+  --surface:#ffffff;
+  --rail:#101114;
+  --rail-text:#8b8d96;
+  --rail-active:#ffffff;
+  --ink:#16171a;
+  --ink-2:#6a6d76;
+  --ink-3:#9a9da6;
+  --line:#e6e7ea;
+  --line-2:#f0f1f3;
+  --accent:#2f4bff;
+  --ok:#0f7a52;
+  --ok-bg:#eaf6f0;
+  --warn:#8a5a00;
+  --warn-bg:#fdf3e2;
+  --err:#a3261f;
+  --hover:#fafafb;
+  --r:10px;
+  --shadow:0 1px 2px rgba(16,17,20,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d0e11; --surface:#15171b; --rail:#0a0b0d; --rail-text:#7c7f88;
+    --ink:#e9eaee; --ink-2:#989ba4; --ink-3:#6d707a;
+    --line:#24262c; --line-2:#1c1e23; --accent:#7b8cff;
+    --ok:#4ec08d; --ok-bg:rgba(78,192,141,.12);
+    --warn:#dca24a; --warn-bg:rgba(220,162,74,.12);
+    --err:#e0736a; --hover:#191b20; --shadow:none;
+  }
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;display:flex;background:var(--bg);color:var(--ink);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.011em}
+p{margin:0}
+button,input,select,textarea{font:inherit;color:inherit}
+
+/* ── Боковая колонка ────────────────────────────────── */
+.rail{
+  width:78px;flex:0 0 78px;background:var(--rail);color:var(--rail-text);
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding:16px 0 14px;
+}
+.mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
+      background:rgba(255,255,255,.07);color:#fff;margin-bottom:14px}
+.rail nav{display:flex;flex-direction:column;gap:2px;width:100%;align-items:center}
+.rail-btn{
+  width:62px;padding:9px 0 7px;border:0;background:none;color:inherit;
+  border-radius:9px;cursor:pointer;display:flex;flex-direction:column;
+  align-items:center;gap:5px;font-size:10.5px;letter-spacing:.01em;
+  transition:background .15s,color .15s;
+}
+.rail-btn svg{width:19px;height:19px}
+.rail-btn:hover{background:rgba(255,255,255,.06);color:#c9cbd2}
+.rail-btn.is-active{background:rgba(255,255,255,.1);color:var(--rail-active)}
+.rail-btn.bottom{margin-top:auto}
+
+/* ── Каркас ─────────────────────────────────────────── */
+.shell{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.bar{
+  display:flex;align-items:center;gap:22px;padding:17px 26px 15px;
+  border-bottom:1px solid var(--line);background:var(--surface);
+}
+.bar-title h1{font-size:17px}
+.bar-title p{font-size:12.5px;color:var(--ink-3);margin-top:1px}
+.bar-stats{display:flex;gap:24px;margin-left:auto}
+.stat{text-align:right}
+.stat b{display:block;font-size:16px;font-variant-numeric:tabular-nums;font-weight:600}
+.stat span{font-size:11px;color:var(--ink-3);letter-spacing:.01em}
+.bar-actions{display:flex;gap:7px}
+
+/* ── Кнопки и поля ──────────────────────────────────── */
+.btn{
+  border:1px solid var(--line);background:var(--surface);color:var(--ink);
+  border-radius:8px;padding:7px 14px;cursor:pointer;text-decoration:none;
+  display:inline-block;font-size:13px;transition:border-color .15s,background .15s;
+  white-space:nowrap;
+}
+.btn:hover{border-color:var(--ink-3)}
+.btn.primary{background:var(--ink);border-color:var(--ink);color:var(--surface)}
+.btn.primary:hover{opacity:.88}
+.btn.quiet{background:none;border-color:transparent;color:var(--ink-2)}
+.btn.quiet:hover{background:var(--hover);color:var(--ink)}
+.btn.sm{padding:5px 10px;font-size:12px}
+.btn.danger{color:var(--err)}
+.btn[disabled]{opacity:.45;cursor:default}
+
+label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--ink-2);
+      letter-spacing:.012em}
+input[type=text],input[type=number],input[type=search],select,textarea{
+  background:var(--surface);border:1px solid var(--line);border-radius:8px;
+  padding:8px 10px;font-size:13px;transition:border-color .15s;width:100%;
+}
+textarea{resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+input::placeholder,textarea::placeholder{color:var(--ink-3)}
+
+/* ── Ход работы ─────────────────────────────────────── */
+.run{background:var(--surface);border-bottom:1px solid var(--line);padding:11px 26px 0}
+.run[hidden]{display:none}
+.run-line{display:flex;align-items:center;gap:10px;padding-bottom:9px}
+.run-status{font-size:12.5px;color:var(--ink-2);flex:1;min-width:0;
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:0 0 6px}
+.run.is-live .dot{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.track{height:2px;background:var(--line-2);overflow:hidden}
+.fill{height:100%;width:0;background:var(--accent);transition:width .4s ease}
+.log{margin:0;padding:12px 0 14px;max-height:190px;overflow:auto;
+     font:12px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;
+     color:var(--ink-2);white-space:pre-wrap}
+.log .warn{color:var(--warn)}
+.log .error{color:var(--err)}
+
+/* ── Экраны ─────────────────────────────────────────── */
+.view{flex:1;overflow:auto;padding:24px 26px 34px}
+.view[hidden]{display:none}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
+       gap:16px;max-width:1180px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+      padding:20px;display:flex;flex-direction:column;box-shadow:var(--shadow)}
+.card.span{grid-column:1/-1}
+.card header{display:flex;align-items:center;gap:10px;margin-bottom:7px}
+.card h2{font-size:14.5px}
+.card > p{font-size:12.5px;color:var(--ink-2);line-height:1.6;margin-bottom:16px}
+.tag{margin-left:auto;font-size:10.5px;letter-spacing:.02em;color:var(--ink-3);
+     border:1px solid var(--line);border-radius:20px;padding:2px 9px;white-space:nowrap}
+.tag.free{color:var(--ok);border-color:var(--ok-bg);background:var(--ok-bg)}
+.tag.key{color:var(--warn);border-color:var(--warn-bg);background:var(--warn-bg)}
+.tag.key.ready{color:var(--ok);border-color:var(--ok-bg);background:var(--ok-bg)}
+
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.fields .wide{grid-column:1/-1}
+label.opt{flex-direction:row;align-items:flex-start;gap:9px;font-size:13px;color:var(--ink)}
+label.opt input{margin-top:3px;flex:0 0 auto;width:auto;accent-color:var(--ink)}
+label.opt em{display:block;font-style:normal;font-size:11.5px;color:var(--ink-3);margin-top:1px}
+/* Кнопка прижата к низу: карточки в ряду разной высоты, и без этого
+   действия оказываются на разных уровнях — ряд читается как сломанный. */
+.card footer{margin-top:auto;padding-top:18px;border-top:1px solid var(--line-2)}
+
+/* ── Панель фильтров ────────────────────────────────── */
+/* Панель в одну строку. Переносить её нельзя: при семи фильтрах кнопка
+   «Очистить» съезжала вниз и оказывалась под поиском, где читалась как
+   «очистить поиск». Вместо переноса чипы прокручиваются. */
+.toolbar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:nowrap}
+.search{max-width:280px;flex:0 0 auto}
+.chips{display:flex;gap:5px;flex-wrap:nowrap;overflow-x:auto;
+       flex:1 1 auto;min-width:0;padding-bottom:2px;scrollbar-width:thin}
+.chips::-webkit-scrollbar{height:4px}
+.chips::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:20px;
+      padding:5px 13px;font-size:12px;color:var(--ink-2);cursor:pointer;
+      transition:all .15s;white-space:nowrap}
+.chip:hover{border-color:var(--ink-3)}
+.chip.is-active{background:var(--ink);border-color:var(--ink);color:var(--surface)}
+
+/* ── Таблица ────────────────────────────────────────── */
+.table-wrap{background:var(--surface);border:1px solid var(--line);
+            border-radius:14px;overflow:auto;box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{position:sticky;top:0;z-index:1;background:var(--surface);text-align:left;
+   padding:12px 14px;border-bottom:1px solid var(--line);font-weight:500;
+   font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3)}
+td{padding:13px 14px;border-bottom:1px solid var(--line-2);vertical-align:top}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--hover)}
+.c-score{width:64px} .c-stage{width:132px}
+/* Ширины заданы явно: у адреса вида a.mikhaylov@dentalpro.ru нет места
+   для переноса, и без этого он рвался посреди домена.
+   Отсчёт с третьей колонки: первая — флажок, вторая — балл. Когда флажок
+   добавили, номера сместились, и ширина компании досталась баллу —
+   таблица разъехалась на весь экран. */
+td:nth-child(3),th:nth-child(3){width:23%}
+td:nth-child(4),th:nth-child(4){width:17%}
+td:nth-child(5),th:nth-child(5){min-width:270px}
+td:nth-child(6),th:nth-child(6){width:20%}
+
+.score{display:flex;flex-direction:column;gap:5px;width:40px}
+.score b{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;
+         letter-spacing:-.02em}
+.score i{display:block;height:2px;background:var(--line);border-radius:2px;overflow:hidden}
+.score i s{display:block;height:100%;background:var(--ink-3);text-decoration:none}
+.score.hi b{color:var(--ok)} .score.hi i s{background:var(--ok)}
+.score.mid b{color:var(--warn)} .score.mid i s{background:var(--warn)}
+
+.co{font-weight:550;letter-spacing:-.006em}
+.co-meta{font-size:11.5px;color:var(--ink-3);margin-top:2px;
+         display:flex;gap:9px;flex-wrap:wrap}
+.co-meta span{white-space:nowrap}
+.co-meta a{color:var(--accent);text-decoration:none}
+.co-meta a:hover{text-decoration:underline}
+.nobody{color:var(--ink-3)}
+
+.ct{display:flex;align-items:baseline;gap:6px;font-size:12.5px;
+    padding:1px 0;line-height:1.45}
+.ct .who{font-size:10px;letter-spacing:.05em;text-transform:uppercase;
+         color:var(--ink-3);flex:0 0 auto}
+.ct .val{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;
+         overflow-wrap:break-word;min-width:0}
+.ct.lpr .val{color:var(--ink);font-weight:550}
+/* Догадка не должна выглядеть как факт: приглушаем её, чтобы взгляд
+   цеплялся за строку с настоящим найденным контактом. */
+.ct.is-guess .val{font-weight:400;color:var(--ink-2)}
+.mk{font-size:10px;padding:1px 6px;border-radius:5px;flex:0 0 auto;
+    letter-spacing:.01em;white-space:nowrap}
+.mk.ok{background:var(--ok-bg);color:var(--ok)}
+.mk.ca{background:var(--warn-bg);color:var(--warn)}
+.mk.guess{background:var(--line-2);color:var(--ink-3)}
+
+.sig{display:inline-block;font-size:11px;color:var(--ink-2);border:1px solid var(--line);
+     border-radius:6px;padding:1px 7px;margin:0 3px 3px 0;white-space:nowrap}
+.sig.hot{border-color:var(--ok-bg);background:var(--ok-bg);color:var(--ok)}
+select.stage{width:auto;min-width:104px;padding:5px 8px;font-size:12px;
+             border-color:var(--line-2)}
+.empty{padding:56px 20px;text-align:center;color:var(--ink-3);font-size:13px}
+.empty b{display:block;color:var(--ink-2);font-weight:550;margin-bottom:4px;font-size:14px}
+
+/* ── Настройки ──────────────────────────────────────── */
+.sheet{position:fixed;inset:0;background:rgba(16,17,20,.42);display:flex;
+       align-items:center;justify-content:center;z-index:60;padding:20px;
+       backdrop-filter:blur(2px)}
+.sheet[hidden]{display:none}
+.sheet-box{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+           padding:26px;width:min(480px,100%);display:flex;flex-direction:column;gap:20px}
+.sheet-box h3{font-size:15px}
+.sheet-box label em{font-style:normal;font-size:11.5px;color:var(--ink-3);line-height:1.5}
+.sheet-foot{display:flex;justify-content:flex-end;gap:8px}
+
+@media (max-width:900px){
+  .rail{width:60px;flex-basis:60px}
+  .rail-btn span{display:none}
+  .bar-stats{display:none}
+  .view{padding:18px 16px 26px}
+  .bar{padding:14px 16px}
+  .run{padding:10px 16px 0}
+}
+
+/* ── Карточка компании ──────────────────────────────────
+   Раскрывается под строкой по клику. Отдельным окном было бы хуже:
+   при обзвоне список листают сверху вниз, и каждый модал — это лишнее
+   закрытие и потеря места, на котором остановились. */
+tbody tr.row{cursor:pointer}
+tbody tr.row.is-open{background:var(--hover)}
+tbody tr.row.is-open td{border-bottom-color:transparent}
+td.card-cell{padding:0 14px 20px;background:var(--hover)}
+.cc{display:flex;flex-direction:column;gap:6px;font-size:12px}
+.cc-label{font-weight:600;font-size:13px}
+.cc-label.yes{color:var(--ok)} .cc-label.maybe{color:var(--warn)}
+.cc-label.no{color:var(--ink-3);font-weight:400}
+.cc-why{color:var(--ink-3);font-size:11.5px;line-height:1.45}
+
+.detail{display:grid;grid-template-columns:1.4fr 1fr;gap:26px;padding:6px 2px 0}
+.detail h4{margin:0 0 9px;font-size:11px;letter-spacing:.04em;
+           text-transform:uppercase;color:var(--ink-3);font-weight:500}
+.detail p{font-size:13px;line-height:1.6;color:var(--ink-2);margin:0 0 16px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));
+       gap:12px 18px;margin-bottom:16px}
+.fact b{display:block;font-size:13.5px;font-weight:600;
+        font-variant-numeric:tabular-nums}
+.fact span{font-size:11px;color:var(--ink-3)}
+.why-list{list-style:none;margin:0;padding:0;font-size:12.5px;color:var(--ink-2)}
+.why-list li{padding:3px 0 3px 16px;position:relative}
+.why-list li::before{content:"";position:absolute;left:3px;top:11px;width:4px;
+                     height:4px;border-radius:50%;background:var(--ok)}
+.detail .ct{margin-bottom:2px}
+.detail-links{display:flex;gap:12px;flex-wrap:wrap;font-size:12.5px;margin-top:6px}
+.detail-links a{color:var(--accent);text-decoration:none}
+.detail-links a:hover{text-decoration:underline}
+@media (max-width:1100px){.detail{grid-template-columns:1fr;gap:14px}}
+
+.hint-sm{font-size:11.5px;color:var(--ink-3);line-height:1.5;margin:0 0 8px}
+.ct a.val{color:var(--accent);text-decoration:none}
+.ct a.val:hover{text-decoration:underline}
+
+/* ── Доработка интерфейса ───────────────────────────────── */
+
+/* Сводка кликабельна: цифра «контакт ГД найден» — это и есть фильтр,
+   и заставлять искать одноимённый чип внизу страницы незачем. */
+.stat{background:none;border:0;padding:4px 2px;text-align:right;
+      font:inherit;color:inherit;border-radius:8px}
+.stat.is-link{cursor:pointer}
+.stat.is-link:hover{background:var(--line-2)}
+.stat.is-link:hover b{color:var(--accent)}
+
+/* Сортировка по клику на заголовок. Стрелка появляется только у активной
+   колонки: три серых треугольника в шапке — шум. */
+th[data-sort]{cursor:pointer;user-select:none;white-space:nowrap}
+th[data-sort]:hover{color:var(--ink-2)}
+th.is-sorted{color:var(--ink)}
+th.is-sorted::after{content:"↓";margin-left:5px;font-size:10px;opacity:.7}
+th.is-sorted[data-dir="up"]::after{content:"↑"}
+.shown{font-size:12px;color:var(--ink-3);white-space:nowrap;
+       font-variant-numeric:tabular-nums;flex:0 0 auto}
+.toolbar .btn.danger{flex:0 0 auto;margin-left:0}
+
+/* Контакт копируется кликом. При обзвоне это самое частое действие, и
+   выделять мышью адрес из таблицы — лишние три секунды на каждом. */
+.val.copyable{background:none;border:0;padding:0;text-align:left;cursor:pointer;
+              font:inherit;color:inherit;border-bottom:1px dashed transparent}
+.val.copyable:hover{border-bottom-color:var(--ink-3)}
+.val.copyable:active{opacity:.6}
+
+.ct a.val.net{display:inline-flex;align-items:center;gap:5px}
+.ni{width:13px;height:13px;flex:0 0 13px;opacity:.85}
+
+/* Сообщение о действии. Без него копирование и запуск задачи выглядят
+   как «ничего не произошло», и человек жмёт второй раз. */
+.toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,14px);
+       background:var(--ink);color:var(--surface);padding:9px 16px;
+       border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;
+       transition:opacity .18s,transform .18s;z-index:80;max-width:70vw;
+       overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toast.is-on{opacity:1;transform:translate(-50%,0)}
+
+.run.is-bad .dot{background:var(--err)}
+.run.is-bad .fill{background:var(--err)}
+
+/* Карточка в три колонки: контакты, профиль, справка. В двух левая
+   половина пустовала, а справка жалась в столбик. */
+.detail{grid-template-columns:1fr 1.15fr .9fr}
+.detail section{min-width:0}
+.detail h4.mt{margin-top:18px}
+.detail p.small{font-size:11.5px;color:var(--ink-3);line-height:1.5;margin:0 0 6px}
+.detail-links.mt{margin-top:12px}
+@media (max-width:1240px){.detail{grid-template-columns:1fr 1fr}}
+@media (max-width:860px){.detail{grid-template-columns:1fr}}
+
+/* Пока карточка грузится — полоса вместо прыжка высоты. */
+.skeleton{height:96px;border-radius:8px;
+          background:linear-gradient(90deg,var(--line-2),var(--line),var(--line-2));
+          background-size:200% 100%;animation:sk 1.1s linear infinite}
+@keyframes sk{to{background-position:-200% 0}}
+
+/* Фокус виден при работе с клавиатуры, но не мешает мыши. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+
+/* ── Финансы и риски в карточке ─────────────────────────── */
+/* Класс намеренно не .bar: так уже называется верхняя панель, и общее
+   имя переводило её в колонку — шапка разъезжалась на всю высоту. */
+.rbars{display:flex;align-items:flex-end;gap:10px;margin:6px 0 2px}
+.rbar{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;
+      gap:5px}
+.rbar em{font-style:normal;font-size:11px;color:var(--ink-2);
+         font-variant-numeric:tabular-nums;white-space:nowrap;order:1}
+.rbar .col{width:100%;height:64px;display:flex;align-items:flex-end;order:2}
+.rbar i{display:block;width:100%;background:var(--line);
+        border-radius:3px 3px 0 0;min-height:3px}
+.rbar:last-child i{background:var(--ink-3)}
+.rbars.is-up .rbar:last-child i{background:var(--ok)}
+.rbars.is-down .rbar:last-child i{background:var(--err)}
+.rbars.is-down .rbar:last-child em{color:var(--err)}
+.rbar u{text-decoration:none;font-size:11px;color:var(--ink-3);order:3;
+        font-variant-numeric:tabular-nums}
+
+.facts.mt{margin-top:10px}
+.fact b.good{color:var(--ok)} .fact b.bad{color:var(--err)}
+.detail h4 .good{color:var(--ok);font-weight:600}
+.detail h4 .bad{color:var(--err);font-weight:600}
+.detail p.small b{color:var(--ink-2);font-weight:600}
+
+.risk-list{list-style:none;margin:0;padding:0;font-size:12.5px}
+.risk-list li{padding:3px 0 3px 16px;position:relative;color:var(--ink-2)}
+.risk-list li::before{content:"";position:absolute;left:3px;top:10px;width:5px;
+                      height:5px;border-radius:1px;background:var(--warn)}
+.risk-list li.bad{color:var(--err)}
+.risk-list li.bad::before{background:var(--err)}
+
+/* ── ИИ ─────────────────────────────────────────────────── */
+.ai-card{border-color:var(--line)}
+.ai-foot{display:flex;gap:8px;flex-wrap:wrap}
+.ai-tips{margin-top:16px;padding-top:16px;border-top:1px solid var(--line-2);
+         font-size:12.5px;color:var(--ink-2);line-height:1.6}
+.ai-tips[hidden]{display:none}
+.ai-tips h5{margin:0 0 6px;font-size:11px;letter-spacing:.04em;
+            text-transform:uppercase;color:var(--ink-3);font-weight:500}
+.ai-tips .pick{display:inline-block;margin:0 5px 5px 0;padding:4px 10px;
+               border:1px solid var(--line);border-radius:7px;cursor:pointer;
+               background:var(--surface);font-size:12px;color:var(--ink)}
+.ai-tips .pick:hover{border-color:var(--accent);color:var(--accent)}
+.ai-tips .note{margin-top:8px;color:var(--ink-3);font-size:11.5px}
+.row2{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}
+
+/* Всё, что сочинила модель, помечено. Смешать разобранное с
+   сгенерированным — значит потерять возможность отличить одно от другого. */
+.ai-block{margin-top:18px;padding:12px 14px;border:1px solid var(--line);
+          border-radius:10px;background:var(--line-2)}
+.ai-block h4{margin:0 0 8px;display:flex;align-items:center;gap:7px}
+.ai-mark{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;
+         padding:1px 6px;border-radius:4px;background:var(--ink);
+         color:var(--surface);font-weight:600}
+.ai-fit{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.ai-fit b{font-size:20px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.ai-fit.hi b{color:var(--ok)} .ai-fit.mid b{color:var(--warn)}
+.ai-fit span{font-size:12px;color:var(--ink-2)}
+.ai-block p{font-size:12.5px;line-height:1.6;color:var(--ink-2);margin:0 0 8px}
+.ai-opener{background:var(--surface);border:1px solid var(--line);
+           border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.6;
+           color:var(--ink);white-space:pre-wrap;cursor:pointer}
+.ai-opener:hover{border-color:var(--accent)}
+
+/* ── Проверка источников ────────────────────────────────── */
+.diag-bar{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.diag-hint{font-size:12px;color:var(--ink-3)}
+.diag{background:var(--surface);border:1px solid var(--line);border-radius:12px;
+      padding:6px 4px;margin-bottom:16px;max-width:1180px}
+.diag[hidden]{display:none}
+.diag-row{display:grid;grid-template-columns:22px 170px 1fr;gap:4px 8px;
+          padding:8px 12px;font-size:12.5px;align-items:baseline}
+.diag-row + .diag-row{border-top:1px solid var(--line-2)}
+.diag-mark{font-weight:700;text-align:center}
+.diag-row.ok .diag-mark{color:var(--ok)}
+.diag-row.bad .diag-mark{color:var(--err)}
+.diag-row.skip .diag-mark{color:var(--ink-3)}
+.diag-name{font-weight:550}
+.diag-note{color:var(--ink-2);overflow-wrap:anywhere}
+.diag-tip{grid-column:3;color:var(--ink-3);font-size:11.5px;line-height:1.5}
+
+/* Номер версии внизу боковой колонки. Мелко, но всегда на виду: после
+   обновления это первое, на что надо смотреть. */
+.rail-ver{margin-top:auto;margin-bottom:6px;font-size:10px;color:var(--rail-text);
+          opacity:.65;letter-spacing:.02em;font-variant-numeric:tabular-nums}
+.rail-btn.bottom{margin-top:0}
+
+.rail-upd{margin-top:auto;width:62px;padding:9px 0 7px;border:0;cursor:pointer;
+          background:rgba(76,141,255,.16);color:#9db8ff;border-radius:9px;
+          display:flex;flex-direction:column;align-items:center;gap:5px;
+          font-size:10.5px}
+.rail-upd[hidden]{display:none}
+.rail-upd svg{width:19px;height:19px}
+.rail-upd:hover{background:rgba(76,141,255,.26);color:#fff}
+.rail-upd + .rail-ver{margin-top:8px}
+
+.sheet-sep{font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+           color:var(--ink-3);border-top:1px solid var(--line-2);padding-top:16px}
+.upd-line{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.upd-state{font-size:12.5px;color:var(--ink-2);display:flex;align-items:center;gap:10px}
+.upd-state .good{color:var(--ok)} .upd-state .bad{color:var(--err)}
+
+/* ── Несколько запросов и массовые действия ─────────────── */
+.lbl{display:block;font-size:11.5px;color:var(--ink-2);margin-bottom:5px;
+     letter-spacing:.012em}
+.picks{display:flex;gap:5px;flex-wrap:wrap}
+.pick{border:1px solid var(--line);background:var(--surface);border-radius:7px;
+      padding:5px 11px;font-size:12px;color:var(--ink-2);cursor:pointer;
+      transition:all .15s}
+.pick:hover{border-color:var(--ink-3);color:var(--ink)}
+.pick.is-on{background:var(--ink);border-color:var(--ink);color:var(--surface)}
+select[multiple]{padding:6px;min-height:104px}
+.fld-hint{font-style:normal;font-size:11px;color:var(--ink-3);margin-top:3px}
+
+.bulk{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;
+      padding:9px 14px;background:var(--surface);border:1px solid var(--line);
+      border-radius:10px}
+.bulk[hidden]{display:none}
+.bulk-count{font-size:12.5px;font-weight:550;margin-right:4px}
+/* width:auto обязателен: поля по умолчанию тянутся на всю ширину, и в
+   строке действий список «Сменить стадию» занимал её целиком, выталкивая
+   кнопки на вторую строку. */
+.bulk select{width:auto;min-width:170px;padding:5px 9px;font-size:12.5px}
+
+.c-pick{width:34px;text-align:center}
+.c-pick input{accent-color:var(--accent);cursor:pointer;width:14px;height:14px}
+/* Флажок по верху строки, а не по центру: строки разной высоты, и
+   посередине он болтается на разных уровнях. */
+tbody tr.row td.c-pick{vertical-align:top;padding-top:15px}
+.danger-link{color:var(--err)!important}
+
+/* Состояние обновления. «.closing» гасит интерфейс на те секунды, что
+   остались до выхода: живые на вид кнопки, которые уже не отвечают, —
+   худшее, что можно показать человеку. */
+.hint{font-size:11.5px;color:var(--ink-3)}
+.muted{color:var(--ink-3)}
+body.closing{pointer-events:none;opacity:.55;transition:opacity .4s ease}

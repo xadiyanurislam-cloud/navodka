@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ app_name }}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<aside class="rail">
+  <div class="mark" title="{{ app_name }}">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="11" cy="11" r="6.4" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M15.8 15.8 L20 20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="11" cy="11" r="1.7" fill="currentColor"/>
+    </svg>
+  </div>
+  <nav>
+    <button class="rail-btn is-active" data-view="sources" title="Источники">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span>Источники</span>
+    </button>
+    <button class="rail-btn" data-view="base" title="База">
+      <svg viewBox="0 0 24 24" fill="none"><ellipse cx="12" cy="6.5" rx="7" ry="2.8" stroke="currentColor" stroke-width="1.6"/><path d="M5 6.5v11c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-11" stroke="currentColor" stroke-width="1.6"/><path d="M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8" stroke="currentColor" stroke-width="1.6"/></svg>
+      <span>База</span>
+    </button>
+  </nav>
+  <button class="rail-upd" id="rail-upd" hidden title="Доступно обновление">
+    <svg viewBox="0 0 24 24" fill="none"><path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 18v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <span>Обновить</span>
+  </button>
+  <span class="rail-ver" title="Версия программы">{{ version }}</span>
+  <button class="rail-btn bottom" id="btn-settings" title="Настройки">
+    <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3.1" stroke="currentColor" stroke-width="1.6"/><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    <span>Настройки</span>
+  </button>
+</aside>
+
+<div class="shell">
+  <header class="bar">
+    <div class="bar-title">
+      <h1 id="view-title">Источники</h1>
+      <p id="view-sub">Откуда брать компании</p>
+    </div>
+    <div class="bar-stats" id="stats"></div>
+    <div class="bar-actions">
+      <a class="btn" href="/api/export.xlsx">Excel</a>
+      <a class="btn quiet" href="/api/export.csv">CSV</a>
+    </div>
+  </header>
+
+  <div class="run" id="run" hidden>
+    <div class="run-line">
+      <span class="dot"></span>
+      <span class="run-status" id="run-status"></span>
+      <button class="btn quiet sm" id="btn-stop" hidden>Остановить</button>
+      <button class="btn quiet sm" id="btn-log">Журнал</button>
+    </div>
+    <div class="track"><div class="fill" id="fill"></div></div>
+    <pre class="log" id="log" hidden></pre>
+  </div>
+
+  <!-- ── Источники ─────────────────────────────────── -->
+  <main class="view" id="view-sources">
+    <div class="diag-bar">
+      <button class="btn quiet sm" id="btn-diag">Проверить источники</button>
+      <span class="diag-hint">Если поиск ничего не находит — начните отсюда</span>
+    </div>
+    <div class="diag" id="diag" hidden></div>
+    <div class="cards">
+
+      <article class="card">
+        <header>
+          <h2>Вакансии hh.ru</h2>
+          <span class="tag free">без ключа</span>
+        </header>
+        <p>Компании, которые прямо сейчас нанимают в продажи. Признак живёт
+           неделю, пока висит вакансия, — его не купить ни в одной базе.</p>
+        <div class="fields">
+          <label class="wide">Запросы — по одному на строку
+            <textarea id="f-text" rows="3">менеджер по продажам</textarea>
+          </label>
+          <div class="wide">
+            <span class="lbl">Добавить готовый</span>
+            <div class="picks" id="f-presets">
+              {% for name, query in presets.items() %}
+              <button class="pick" data-q="{{ query }}">{{ name }}</button>
+              {% endfor %}
+            </div>
+          </div>
+          <label class="wide">Регионы
+            <select id="f-area" multiple size="5">
+              {% for code, name in areas %}<option value="{{ code }}"{% if code == '113' %} selected{% endif %}>{{ name }}</option>{% endfor %}
+            </select>
+            <em class="fld-hint">Несколько — с зажатым Ctrl</em>
+          </label>
+          <label>Период
+            <select id="f-period">
+              <option value="3">3 дня</option>
+              <option value="7">7 дней</option>
+              <option value="14">14 дней</option>
+              <option value="30" selected>30 дней</option>
+            </select>
+          </label>
+          <label>Глубина
+            <input id="f-pages" type="number" min="1" max="20" value="5">
+          </label>
+          <label class="opt wide"><input id="f-then" type="checkbox" checked>
+            <span>Сразу обогатить найденное<em>иначе в карточке будет одно название</em></span></label>
+        </div>
+        <footer><button class="btn primary" id="btn-search">Найти компании</button></footer>
+      </article>
+
+      <article class="card">
+        <header>
+          <h2>Справочник 2ГИС</h2>
+          <span class="tag key" id="tag-gis">нужен ключ</span>
+        </header>
+        <p>Клиники, автосервисы, агентства. Вакансий они часто не публикуют,
+           а звонков у них больше, чем у иной софтверной компании.</p>
+        <div class="fields">
+          <label class="wide">Рубрика
+            <select id="g-query">{% for r in rubrics %}<option>{{ r }}</option>{% endfor %}</select>
+          </label>
+          <label>Город
+            <select id="g-region">{% for name, rid in cities %}<option value="{{ rid }}">{{ name }}</option>{% endfor %}</select>
+          </label>
+          <label>Глубина
+            <input id="g-pages" type="number" min="1" max="10" value="2">
+          </label>
+        </div>
+        <footer><button class="btn primary" id="btn-gis">Найти организации</button></footer>
+      </article>
+
+      <article class="card">
+        <header>
+          <h2>Свой список</h2>
+          <span class="tag free">офлайн</span>
+        </header>
+        <p>ИНН, домены или названия — построчно. Смешанный список и строки
+           вида «ИНН; Название; сайт» разбираются целиком.</p>
+        <div class="fields">
+          <label class="wide">Вставьте список
+            <textarea id="i-text" rows="5" placeholder="7701234567;ООО Ромашка;romashka.ru&#10;vasilek.ru&#10;ООО Тюльпан"></textarea>
+          </label>
+        </div>
+        <footer><button class="btn primary" id="btn-import">Импортировать</button></footer>
+      </article>
+
+      <article class="card span ai-card">
+        <header>
+          <h2>ИИ-анализ</h2>
+          <span class="tag key" id="tag-ai">нужен ключ</span>
+        </header>
+        <p>Работает по уже собранным фактам, а не вместо них: оценивает,
+           насколько компания похожа на вашего клиента, и подсказывает, с
+           чего начать разговор. Ничего не добывает и не придумывает —
+           объясняет то, что уже лежит в карточке.</p>
+        <div class="fields">
+          <label class="wide">Кого ищем
+            <textarea id="a-icp" rows="3" placeholder="Частные стоматологии и медцентры в Москве, отдел продаж от 3 человек, запись по телефону">{{ ai_icp }}</textarea>
+          </label>
+          <label class="wide">Что продаём
+            <textarea id="a-offer" rows="2" placeholder="Система контроля качества звонков на ИИ: разбирает записи, показывает, где сливают сделки">{{ ai_offer }}</textarea>
+          </label>
+          <label>Сколько компаний
+            <input id="a-limit" type="number" min="1" max="300" value="30">
+          </label>
+          <label class="opt"><input id="a-redo" type="checkbox">
+            <span>Пересчитать уже разобранные<em>иначе берутся только новые</em></span></label>
+        </div>
+        <footer class="ai-foot">
+          <button class="btn primary" id="btn-ai">Разобрать</button>
+          <button class="btn" id="btn-ai-q">Подсказать, чем искать</button>
+          <button class="btn quiet" id="btn-ai-check">Проверить связь</button>
+        </footer>
+        <div class="ai-tips" id="ai-tips" hidden></div>
+      </article>
+
+      <article class="card span">
+        <header>
+          <h2>Обогащение</h2>
+          <span class="tag">ЕГРЮЛ · сайт · ФНС · закупки</span>
+        </header>
+        <p>Достаёт ФИО руководителя из ЕГРЮЛ, обходит сайт за почтами,
+           телефонами и технографикой, берёт выручку из ФНС и выводит адрес
+           руководителя по схеме почтового домена компании. Отдельно ищет его
+           контакт по-настоящему: по фамилии в адресе, по соседству с ФИО на
+           странице «Руководство» и по карточке заказчика в закупках.</p>
+        <div class="fields">
+          <label>Сколько компаний
+            <input id="e-limit" type="number" min="1" max="500" value="50">
+          </label>
+          <label class="opt"><input id="e-only-lpr" type="checkbox" checked>
+            <span>Сначала те, у кого известен ГД<em>без ФИО из ЕГРЮЛ его контакт искать нечем</em></span></label>
+          <label class="opt"><input id="e-fns" type="checkbox" checked>
+            <span>Выручка из ФНС<em>отсекает микробизнес и корпорации</em></span></label>
+          <label class="opt"><input id="e-zakupki" type="checkbox">
+            <span>Контакты из госзакупок<em>прямой телефон ответственного, но медленно</em></span></label>
+          <label class="opt"><input id="e-verify" type="checkbox">
+            <span>Проверять почту по SMTP<em>дольше, зато видно, какие адреса живые</em></span></label>
+        </div>
+        <footer><button class="btn primary" id="btn-enrich">Обогатить</button></footer>
+      </article>
+
+    </div>
+  </main>
+
+  <!-- ── База ──────────────────────────────────────── -->
+  <main class="view" id="view-base" hidden>
+    <div class="toolbar">
+      <input id="q" class="search" type="search" placeholder="Компания, ФИО, ИНН или сайт">
+      <div class="chips" id="chips">
+        <button class="chip is-active" data-only="">Все</button>
+        <button class="chip" data-only="lpr_found">Контакт ГД найден</button>
+        <button class="chip" data-only="director">Есть адрес ГД</button>
+        <button class="chip" data-only="ai_fit">ИИ: подходят</button>
+        <button class="chip" data-only="callcenter">Продают по телефону</button>
+        <button class="chip" data-only="calltracking">С коллтрекингом</button>
+        <button class="chip" data-only="fit">Подходящий размер</button>
+        <button class="chip" data-only="zakupki">Есть в закупках</button>
+      </div>
+      <span class="shown" id="shown"></span>
+      <button class="btn quiet sm danger" id="btn-clear">Очистить</button>
+    </div>
+
+    <div class="bulk" id="bulk" hidden>
+      <span class="bulk-count" id="bulk-count"></span>
+      <select id="bulk-stage">
+        <option value="">Сменить стадию…</option>
+        <option>new</option><option>в работе</option><option>написали</option>
+        <option>созвон</option><option>отказ</option>
+      </select>
+      <button class="btn sm" id="bulk-black">В чёрный список</button>
+      <button class="btn sm danger" id="bulk-del">Удалить</button>
+      <button class="btn quiet sm" id="bulk-none">Снять выделение</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th class="c-pick"><input type="checkbox" id="pick-all" title="Выделить все"></th>
+          <th class="c-score is-sorted" data-sort="score">Балл</th>
+          <th data-sort="name">Компания</th>
+          <th data-sort="director">Руководитель</th>
+          <th>Контакты</th>
+          <th data-sort="callcenter">Телефонные продажи</th>
+          <th class="c-stage">Стадия</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<div class="sheet" id="modal" hidden>
+  <div class="sheet-box">
+    <h3>Ключи доступа</h3>
+    <label>DaData
+      <input id="s-dadata" type="text" value="{{ dadata_token }}" placeholder="токен">
+      <em>Без него ФИО руководителей взять неоткуда. Бесплатного тарифа
+          хватает на тысячи запросов в сутки.</em>
+    </label>
+    <label>2ГИС Places API
+      <input id="s-gis" type="text" value="{{ gis_key }}" placeholder="ключ">
+      <em>Нужен только для поиска по справочнику. Остальные источники
+          работают без ключей.</em>
+    </label>
+    <label>Токен hh.ru
+      <input id="s-hh-token" type="password" value="{{ hh_token }}"
+             placeholder="нужен, только если hh отвечает 403">
+      <em>Обычно не требуется: программа сама подбирает способ связи. Если
+          hh отклонил все — зарегистрируйте приложение на dev.hh.ru и
+          вставьте сюда его токен. Это официальный путь, и он надёжнее
+          любого подбора.</em>
+    </label>
+    <label>Ключ ИИ
+      <input id="s-ai-key" type="password" value="{{ ai_key }}" placeholder="sk-…">
+      <em>Подойдёт любой сервис, совместимый с OpenAI. Ключ хранится
+          только на этом компьютере и никуда не отправляется, кроме
+          адреса ниже.</em>
+    </label>
+    <div class="row2">
+      <label>Адрес API
+        <input id="s-ai-url" type="text" value="{{ ai_url }}">
+      </label>
+      <label>Модель
+        <input id="s-ai-model" type="text" value="{{ ai_model }}">
+      </label>
+    </div>
+    <div class="sheet-sep">Обновления</div>
+    <div class="row2">
+      <label>Репозиторий
+        <input id="s-upd-repo" type="text" value="{{ update_repo }}"
+               placeholder="владелец/название">
+      </label>
+      <label>Токен GitHub
+        <input id="s-upd-token" type="password" value="{{ update_token }}"
+               placeholder="если репозиторий закрытый">
+      </label>
+    </div>
+    <div class="upd-line">
+      <button class="btn" id="s-upd-check">Проверить обновления</button>
+      <span class="upd-state" id="upd-state">версия {{ version }}</span>
+    </div>
+
+    <div class="sheet-foot">
+      <button class="btn quiet" id="s-cancel">Отмена</button>
+      <button class="btn primary" id="s-save">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

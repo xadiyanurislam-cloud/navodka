@@ -1,0 +1,109 @@
+# Сборка установщика под Windows.
+#
+# Собирать exe из-под Linux нельзя — PyInstaller упаковывает интерпретатор
+# той системы, где работает. Поэтому сборка идёт на windows-раннере, а на
+# выходе кладётся готовый Setup в артефакты и в релиз.
+name: build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# Без этого GITHUB_TOKEN получает доступ только на чтение, и последний
+# шаг падает на создании релиза после двадцати минут сборки.
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Проверки
+        run: python -m unittest discover -s tests -v
+
+      - name: Номер версии
+        # Источник правды один — app/settings.py. Когда версия дублируется
+        # в installer.iss руками, она рано или поздно расходится, и тогда
+        # свежая сборка считает себя старой и предлагает обновиться на
+        # саму себя.
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path app\settings.py -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $v) { throw "не нашёл VERSION в app/settings.py" }
+          $tag = "${{ github.ref_name }}" -replace '^v',''
+          if ($tag -and $tag -ne $v) {
+            throw "тег $tag и VERSION $v не совпадают — поправьте app/settings.py"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "версия: $v"
+
+      - name: Сборка exe
+        working-directory: build
+        run: pyinstaller --noconfirm --clean navodka.spec
+
+      - name: Сборка установщика
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            # На раннере Inno Setup есть не всегда; ставим его сами, иначе
+            # сборка падает на последнем шаге после двадцати минут работы.
+            choco install innosetup --no-progress -y
+          }
+          & $iscc /DAppVersion=${{ steps.ver.outputs.version }} build\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC вернул $LASTEXITCODE" }
+
+      - name: Архив с исходниками
+        # Второй способ обновления: запуск из папки с исходниками через
+        # launcher.py. Автоматический zipball GitHub для этого тоже годится,
+        # но у приватного репозитория он требует токен, а приложенный к
+        # релизу файл — нет. Кладём только исходники: рядом уже лежит
+        # собранный dist на сотню мегабайт, и ему в архиве делать нечего.
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $stage = "stage\navodka-$v"
+          New-Item -ItemType Directory -Force -Path "$stage\build" | Out-Null
+          Copy-Item -Recurse -Force app, tests -Destination $stage
+          Copy-Item -Force main.py, launcher.py, Navodka.bat, navodka.sh, `
+            requirements.txt, README.md, .gitignore -Destination $stage
+          Copy-Item -Force build\installer.iss, build\navodka.spec, `
+            build\icon.ico, build\icon.png -Destination "$stage\build"
+          Get-ChildItem -Recurse -Force -Directory $stage -Filter __pycache__ |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "$stage\*" -DestinationPath "dist\navodka-$v.zip" -Force
+          Get-Item "dist\navodka-$v.zip" | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Navodka-Setup
+          path: |
+            dist/Navodka-Setup-*.exe
+            dist/navodka-*.zip
+          if-no-files-found: error
+
+      - name: Релиз
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Наводка ${{ steps.ver.outputs.version }}
+          files: |
+            dist/Navodka-Setup-*.exe
+            dist/navodka-*.zip
