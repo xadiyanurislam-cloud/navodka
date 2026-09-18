@@ -46,9 +46,11 @@ jobs:
         run: |
           $v = (Select-String -Path app\settings.py -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
           if (-not $v) { throw "не нашёл VERSION в app/settings.py" }
-          $tag = "${{ github.ref_name }}" -replace '^v',''
-          if ($tag -and $tag -ne $v) {
-            throw "тег $tag и VERSION $v не совпадают — поправьте app/settings.py"
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}" -replace '^v',''
+            if ($tag -ne $v) {
+              throw "тег $tag и VERSION $v не совпадают — поправьте app/settings.py"
+            }
           }
           "version=$v" >> $env:GITHUB_OUTPUT
           Write-Host "версия: $v"
@@ -100,10 +102,18 @@ jobs:
           if-no-files-found: error
 
       - name: Релиз
-        if: startsWith(github.ref, 'refs/tags/')
+        # Тег можно и не ставить руками: сборку запускают кнопкой, а тег
+        # создаётся здесь из номера версии. Это нужно ещё и потому, что
+        # обновление изнутри смотрит именно в релизы, а не в ветку.
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
           name: Наводка ${{ steps.ver.outputs.version }}
+          body: |
+            Установщик: `Navodka-Setup-${{ steps.ver.outputs.version }}.exe` —
+            ставится без прав администратора, Python внутри.
+
+            Архив с исходниками — для запуска через `Navodka.bat`.
           files: |
             dist/Navodka-Setup-*.exe
             dist/navodka-*.zip
