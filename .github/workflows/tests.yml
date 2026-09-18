@@ -1,0 +1,34 @@
+# Проверки на каждый пуш.
+#
+# Отдельно от сборки установщика: та идёт на windows-раннере и занимает
+# двадцать минут, а узнать, что код сломан, хочется за минуту.
+name: tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Зависимости
+        # Без сети тесты и так обходятся, но импорты должны разрешаться.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Проверки
+        run: python -m unittest discover -s tests -v
+      - name: Версии не разошлись
+        run: |
+          v=$(grep -oP '^VERSION\s*=\s*"\K[^"]+' app/settings.py)
+          i=$(grep -oP '#define\s+AppVersion\s+"\K[^"]+' build/installer.iss)
+          echo "settings.py: $v, installer.iss: $i"
+          test "$v" = "$i"
