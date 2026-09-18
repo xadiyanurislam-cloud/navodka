@@ -40,6 +40,13 @@ async function copy(text) {
   toast("Скопировано: " + text);
 }
 
+// Стадия работы с компанией. В базе хранится значение, на экране — слово
+// по-русски: «new» в таблице среди русских строк читается как сбой, а
+// переименовать значение нельзя — оно уже лежит в чужих базах.
+const STAGES = [["new", "новая"], ["в работе", "в работе"],
+                ["написали", "написали"], ["созвон", "созвон"],
+                ["отказ", "отказ"]];
+
 // ── Экраны ───────────────────────────────────────────────
 const VIEWS = {
   sources: ["Источники", "Откуда брать компании"],
@@ -89,15 +96,87 @@ async function run(url, body, what) {
   poll();
 }
 
+// Условия поиска собираются в одном месте — их и запускают, и сохраняют,
+// и восстанавливают при следующем открытии программы.
+function searchForm() {
+  return {
+    queries: $("f-text").value.split("\n").map((x) => x.trim()).filter(Boolean),
+    areas: [...$("f-area").selectedOptions].map((o) => o.value),
+    period: $("f-period").value,
+    pages: $("f-pages").value,
+    in_title: $("f-title").checked,
+    skip_agencies: $("f-noagency").checked,
+    max_open: $("f-maxopen").value,
+    then_enrich: $("f-then").checked,
+    then_zakupki: $("f-then-zak").checked,
+    then_ai: $("f-then-ai").checked,
+  };
+}
+
+function fillSearchForm(p) {
+  if (!p || !p.queries) return;
+  $("f-text").value = (p.queries || []).join("\n");
+  const areas = (p.areas || []).map(String);
+  [...$("f-area").options].forEach((o) => { o.selected = areas.includes(o.value); });
+  if (p.period) $("f-period").value = String(p.period);
+  if (p.pages) $("f-pages").value = String(p.pages);
+  $("f-title").checked = p.in_title !== false;
+  $("f-noagency").checked = p.skip_agencies !== false;
+  $("f-maxopen").value = String(p.max_open || 0);
+  $("f-then").checked = !!p.then_enrich;
+  $("f-then-zak").checked = !!p.then_zakupki;
+  $("f-then-ai").checked = !!p.then_ai;
+  markPresets();
+}
+
 $("btn-search").onclick = () => {
-  const queries = $("f-text").value.split("\n").map((x) => x.trim()).filter(Boolean);
-  const areas = [...$("f-area").selectedOptions].map((o) => o.value);
-  if (!queries.length) { toast("Впишите хотя бы один запрос"); return; }
-  run("/api/search", {
-    queries, areas, period: $("f-period").value, pages: $("f-pages").value,
-    then_enrich: $("f-then").checked},
-    `Поиск: ${queries.length} запрос(ов) × ${areas.length || 1} регион(ов)`);
+  const f = searchForm();
+  if (!f.queries.length) { toast("Впишите хотя бы один запрос"); return; }
+  const chain = [f.then_enrich && "обогащение", f.then_ai && "ИИ"].filter(Boolean);
+  run("/api/search", f,
+    `Поиск: ${f.queries.length} запрос(ов) × ${f.areas.length || 1} регион(ов)` +
+    (chain.length ? ` → ${chain.join(" → ")}` : ""));
 };
+
+// ── Сохранённые наборы ───────────────────────────────────
+// Один и тот же набор условий повторяется еженедельно: вакансии новые,
+// компании новые, условия те же. Набирать их заново — это ещё и разные
+// условия от прогона к прогону, из-за которых непонятно, что изменилось.
+async function loadSearches(rows) {
+  const box = $("saved-list");
+  const d = rows ? {rows} : await get("/api/searches");
+  const list = (d && d.rows) || [];
+  if (!list.length) { box.innerHTML = ""; return; }
+  box.innerHTML = list.map((r) => `<span class="saved-item" data-id="${r.id}">
+      <button class="saved-go" title="Повторить этот набор">${esc(r.name)}</button>
+      <button class="saved-x" title="Удалить набор">×</button>
+    </span>`).join("");
+  box.querySelectorAll(".saved-item").forEach((el) => {
+    const row = list.find((r) => String(r.id) === el.dataset.id);
+    el.querySelector(".saved-go").onclick = () => {
+      fillSearchForm(row.params);
+      toast(`Набор «${row.name}» подставлен — проверьте и запускайте`);
+    };
+    el.querySelector(".saved-x").onclick = async () => {
+      const d2 = await post(`/api/searches/${row.id}/delete`, {});
+      loadSearches(d2.rows);
+    };
+  });
+}
+
+$("btn-save-search").onclick = async () => {
+  const f = searchForm();
+  if (!f.queries.length) { toast("Сначала впишите запросы"); return; }
+  const name = prompt("Название набора", f.queries[0].slice(0, 40));
+  if (!name) return;
+  const d = await post("/api/searches", Object.assign({name}, f));
+  if (!d.ok) { toast(d.error || "не сохранилось"); return; }
+  loadSearches(d.rows);
+  toast(`Набор «${name}» сохранён`);
+};
+
+fillSearchForm(window.LAST_SEARCH);
+loadSearches();
 
 $("btn-gis").onclick = () => run("/api/gis", {
   query: $("g-query").value, region: $("g-region").value,
@@ -283,6 +362,25 @@ const KINDS = {hh_search: "Поиск по вакансиям", gis_search: "П�
                import: "Импорт списка", enrich: "Обогащение", ai: "ИИ-анализ"};
 let lastTask = null;
 
+// Сколько ещё ждать.
+//
+// Обход пятисот компаний идёт полчаса, и всё это время «120 из 500» не
+// отвечает на единственный вопрос: уходить пить чай или досмотреть до
+// конца. Считаем по скорости самого прогона, а не по средней от балды:
+// источники отвечают по-разному, и одна и та же задача идёт то пять
+// минут, то сорок.
+const rate = {id: null, t0: 0, done0: 0};
+function eta(t) {
+  const now = Date.now();
+  if (rate.id !== t.id) { rate.id = t.id; rate.t0 = now; rate.done0 = t.done; return ""; }
+  const passed = (now - rate.t0) / 1000, made = t.done - rate.done0;
+  if (!t.total || made < 3 || passed < 8) return "";
+  const left = Math.round((t.total - t.done) * passed / made);
+  if (left < 45) return " · осталось меньше минуты";
+  if (left < 3600) return ` · осталось ~${Math.round(left / 60)} мин`;
+  return ` · осталось ~${(left / 3600).toFixed(1)} ч`;
+}
+
 async function poll() {
   const d = await get("/api/task");
   if (!d) return;
@@ -300,6 +398,7 @@ async function poll() {
   $("run-status").textContent =
     `${KINDS[t.kind] || t.kind} — ${STATUS[t.status] || t.status}` +
     (t.total ? ` · ${t.done} из ${t.total}` : "") +
+    (live ? eta(t) : "") +
     (d.queued > 1 ? ` · в очереди ещё ${d.queued - 1}` : "") +
     (t.message ? ` · ${t.message}` : "");
   $("btn-stop").hidden = !live;
@@ -431,6 +530,13 @@ function callCell(r) {
 function signalChips(sig) {
   const out = [];
   if (sig.hh_vacancies) out.push([`вакансий ${esc(sig.hh_vacancies)}`, true]);
+  // Свежесть вакансии — срок годности повода для звонка. «Вчера искали
+  // третьего продавца» работает, «месяц назад» — уже нет.
+  if (sig.hh_fresh_days !== undefined && sig.hh_fresh_days !== "") {
+    const d = Number(sig.hh_fresh_days);
+    if (!isNaN(d)) out.push([d <= 1 ? "вакансия сегодня" :
+      d <= 7 ? `вакансия ${d} дн. назад` : `вакансии ${d} дн.`, d <= 7]);
+  }
   if (sig.tech_calltracking) out.push([esc(sig.tech_calltracking), true]);
   for (const k of ["tech_crm", "tech_telephony", "gis_rubric"])
     if (sig[k]) out.push([esc(sig[k]), false]);
@@ -648,6 +754,7 @@ function syncBulk() {
     ? `выбрано ${picked.size}` : "";
   document.querySelectorAll("tbody .pick-one").forEach(
     (el) => { el.checked = picked.has(el.dataset.id); });
+  fixExport();
 }
 
 async function bulk(body, note) {
@@ -662,8 +769,9 @@ $("bulk-none").onclick = () => { picked.clear(); syncBulk(); loadCompanies(); };
 $("bulk-stage").onchange = (e) => {
   if (!e.target.value) return;
   const stage = e.target.value;
+  const label = (STAGES.find(([v]) => v === stage) || [stage, stage])[1];
   e.target.value = "";
-  bulk({action: "stage", stage}, `Стадия «${stage}»`);
+  bulk({action: "stage", stage}, `Стадия «${label}»`);
 };
 $("bulk-black").onclick = () => {
   if (!confirm(`Больше не показывать эти компании (${picked.size})? ` +
@@ -709,9 +817,24 @@ function sortRows(rows) {
   });
 }
 
+// Выгрузка отдаёт то же, что на экране. Иначе человек отбирает двадцать
+// подходящих компаний, жмёт «Excel» и получает всю базу — и фильтрует
+// второй раз, уже в Excel.
+function fixExport() {
+  const sel = picked.size ? {ids: [...picked].join(",")} : {q: $("q").value, only};
+  const qs = new URLSearchParams(sel).toString();
+  $("exp-xlsx").href = "/api/export.xlsx?" + qs;
+  $("exp-csv").href = "/api/export.csv?" + qs;
+  const n = picked.size;
+  $("exp-xlsx").textContent = n ? `Excel (${n})` : "Excel";
+  $("exp-xlsx").title = n ? `Выгрузить ${n} отмеченных`
+    : (($("q").value || only) ? "Выгрузить то, что сейчас в списке" : "Выгрузить всю базу");
+}
+
 async function loadCompanies() {
   const d = await get("/api/companies?" + new URLSearchParams({q: $("q").value, only}));
   if (!d) return;
+  fixExport();
   document.querySelectorAll("th[data-sort]").forEach((th) => {
     th.classList.toggle("is-sorted", th.dataset.sort === sortBy);
     th.dataset.dir = sortDir > 0 ? "up" : "down";
@@ -755,8 +878,8 @@ async function loadCompanies() {
       <td>${cts || `<span class="nobody">—</span>`}</td>
       <td>${callCell(r)}${signalChips(r.signals || {})}</td>
       <td><select class="stage" data-id="${r.id}">
-        ${["new", "в работе", "написали", "созвон", "отказ"].map(
-          (s) => `<option ${r.stage === s ? "selected" : ""}>${s}</option>`).join("")}
+        ${STAGES.map(([v, t]) =>
+          `<option value="${v}" ${r.stage === v ? "selected" : ""}>${t}</option>`).join("")}
       </select></td>
     </tr>`;
   }).join("");
@@ -791,6 +914,24 @@ async function loadCompanies() {
 
 let timer;
 $("q").oninput = () => { clearTimeout(timer); timer = setTimeout(loadCompanies, 280); };
+
+
+
+// Esc закрывает то, что открыто поверх: сначала настройки, потом
+// карточку. Мышью до крестика тянуться каждый раз — лишнее движение.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("modal").hidden) { $("modal").hidden = true; return; }
+  if (openId) {
+    const tr = document.querySelector(`tr.row[data-id="${openId}"]`);
+    if (tr) toggleCard(tr, openId);
+  }
+});
+
+// Ctrl+Enter из поля запросов запускает поиск: руки уже на клавиатуре.
+$("f-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("btn-search").click();
+});
 
 loadStats();
 poll();

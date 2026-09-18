@@ -118,6 +118,21 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Сохранённые поиски. Набор «запросы + регионы + период + глубина»
+-- складывается один раз и потом повторяется еженедельно: вакансии
+-- обновляются, компании появляются новые, а условия те же. Набирать их
+-- заново каждый раз — это и потеря времени, и разные условия от прогона
+-- к прогону, из-за которых непонятно, что изменилось.
+CREATE TABLE IF NOT EXISTS searches (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    kind        TEXT DEFAULT 'hh_search',
+    params      TEXT,
+    runs        INTEGER DEFAULT 0,
+    last_run    INTEGER,
+    created_at  INTEGER
+);
 """
 
 
@@ -311,6 +326,66 @@ def set_score(company_id, score):
 
 
 # ── Задачи ───────────────────────────────────────────────
+# ── Сохранённые поиски ───────────────────────────────────
+def save_search(name, params, kind="hh_search"):
+    """Сохранить набор условий под именем. Повторное имя — перезапись."""
+    name = (name or "").strip()[:80]
+    if not name:
+        return 0
+    c = conn()
+    blob = json.dumps(params or {}, ensure_ascii=False)
+    row = c.execute("SELECT id FROM searches WHERE name=? AND kind=?",
+                    (name, kind)).fetchone()
+    if row:
+        c.execute("UPDATE searches SET params=? WHERE id=?", (blob, row["id"]))
+        c.commit()
+        return row["id"]
+    cur = c.execute("""INSERT INTO searches (name, kind, params, created_at)
+                       VALUES (?,?,?,?)""", (name, kind, blob, now()))
+    c.commit()
+    return cur.lastrowid
+
+
+def list_searches():
+    rows = conn().execute(
+        # COALESCE, а не NULLS LAST: последнее появилось в SQLite 3.30,
+        # и на чужой машине с более старой библиотекой запрос упал бы.
+        "SELECT * FROM searches ORDER BY COALESCE(last_run,0) DESC, id DESC"
+    ).fetchall()
+    out = []
+    for r in rows:
+        try:
+            params = json.loads(r["params"] or "{}")
+        except Exception:
+            params = {}
+        out.append(dict(r, params=params))
+    return out
+
+
+def get_search(search_id):
+    row = conn().execute("SELECT * FROM searches WHERE id=?", (search_id,)).fetchone()
+    if row is None:
+        return None
+    try:
+        params = json.loads(row["params"] or "{}")
+    except Exception:
+        params = {}
+    return dict(row, params=params)
+
+
+def mark_search_run(search_id):
+    c = conn()
+    c.execute("UPDATE searches SET runs=runs+1, last_run=? WHERE id=?",
+              (now(), search_id))
+    c.commit()
+
+
+def delete_search(search_id):
+    c = conn()
+    c.execute("DELETE FROM searches WHERE id=?", (search_id,))
+    c.commit()
+
+
 def create_task(kind, params=None, total=0):
     c = conn()
     cur = c.execute("""INSERT INTO tasks (kind, params, status, total, created_at, updated_at)

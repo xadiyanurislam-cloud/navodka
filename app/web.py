@@ -52,26 +52,67 @@ def create_app():
             update_token=db.get_setting("update_token", ""),
             ai_icp=db.get_setting("ai_icp", ""),
             ai_offer=db.get_setting("ai_offer", ""),
+            # В скрипт страницы это попадает как есть, поэтому «<»
+            # экранируем: запрос человек пишет сам, и «</script>» в нём
+            # сломал бы страницу целиком.
+            last_search=(db.get_setting("last_search", "") or "{}").replace("<", "\\u003c"),
         )
 
     # ── Задачи ───────────────────────────────────────────
-    @app.post("/api/search")
-    def api_search():
-        d = request.get_json(silent=True) or {}
-        # Запросы приходят списком: в поле их можно написать по одному на
-        # строку, а пресеты добавляются галочками.
+    def _search_params(d):
+        """Условия поиска из формы — в том виде, в каком их берёт задача.
+
+        Вынесено отдельно, потому что те же условия и запускаются, и
+        сохраняются под именем, и повторяются позже. Три места, считающие
+        их каждое по-своему, разъезжаются на первой же правке.
+        """
         queries = [q.strip() for q in (d.get("queries") or []) if q.strip()]
         if not queries:
             queries = [(d.get("text") or "").strip() or hh.PRESETS["Отдел продаж"]]
         areas = [str(a) for a in (d.get("areas") or []) if str(a).strip()]
-        task_id = db.create_task("hh_search", {
+        return {
             "queries": queries[:12],
-            "areas": areas[:8] or [d.get("area") or "113"],
-            "period": int(d.get("period") or 30),
+            "areas": areas[:8] or [str(d.get("area") or "113")],
+            "period": max(1, min(30, int(d.get("period") or 30))),
             "pages": max(1, min(20, int(d.get("pages") or 5))),
+            "in_title": bool(d.get("in_title", True)),
+            "skip_agencies": bool(d.get("skip_agencies", True)),
+            "max_open": max(0, min(5000, int(d.get("max_open") or 0))),
             "then_enrich": bool(d.get("then_enrich")),
-        })
-        return jsonify(ok=True, task_id=task_id, queries=len(queries))
+            "then_zakupki": bool(d.get("then_zakupki")),
+            "then_ai": bool(d.get("then_ai")),
+        }
+
+    @app.post("/api/search")
+    def api_search():
+        d = request.get_json(silent=True) or {}
+        params = _search_params(d)
+        task_id = db.create_task("hh_search", params)
+        # Последние условия запоминаются всегда: программу закрыли,
+        # открыли — и форма та же, что вчера, а не пустая.
+        db.set_setting("last_search", json.dumps(params, ensure_ascii=False))
+        if d.get("search_id"):
+            db.mark_search_run(int(d["search_id"]))
+        return jsonify(ok=True, task_id=task_id, queries=len(params["queries"]))
+
+    # ── Сохранённые поиски ───────────────────────────────
+    @app.get("/api/searches")
+    def api_searches():
+        return jsonify(ok=True, rows=db.list_searches())
+
+    @app.post("/api/searches")
+    def api_searches_save():
+        d = request.get_json(silent=True) or {}
+        name = (d.get("name") or "").strip()
+        if not name:
+            return jsonify(ok=False, error="без названия набор не найти потом")
+        sid = db.save_search(name, _search_params(d))
+        return jsonify(ok=True, id=sid, rows=db.list_searches())
+
+    @app.post("/api/searches/<int:sid>/delete")
+    def api_searches_delete(sid):
+        db.delete_search(sid)
+        return jsonify(ok=True, rows=db.list_searches())
 
     @app.post("/api/gis")
     def api_gis():
@@ -190,15 +231,21 @@ def create_app():
                        logs=[dict(x) for x in reversed(logs)])
 
     # ── Данные ───────────────────────────────────────────
-    @app.get("/api/companies")
-    def api_companies():
-        c = db.conn()
-        q = (request.args.get("q") or "").strip()
-        only = request.args.get("only") or ""
+    def _company_where(q="", only="", ids=""):
+        """Условие выборки по тому, что человек видит на экране.
+
+        Тот же фильтр нужен выгрузке: отдавать в Excel всю базу, когда на
+        экране отобраны двадцать подходящих компаний, — значит заставить
+        человека фильтровать второй раз, уже в Excel.
+        """
         where, args = [], []
         if q:
             where.append("(name LIKE ? OR director LIKE ? OR inn LIKE ? OR site LIKE ?)")
             args += ["%%%s%%" % q] * 4
+        picked = [int(x) for x in str(ids or "").split(",") if x.strip().isdigit()]
+        if picked:
+            where.append("id IN (%s)" % ",".join("?" * len(picked)))
+            args += picked
         if only == "director":
             where.append("id IN (SELECT company_id FROM contacts "
                          "WHERE kind='email' AND owner='director')")
@@ -216,9 +263,22 @@ def create_app():
             where.append("ai_fit >= 60")
         elif only == "zakupki":
             where.append("id IN (SELECT company_id FROM signals WHERE key='zakupki_person')")
+        elif only == "fresh":
+            # Вакансия, вывешенная на этой неделе: повод для звонка ещё
+            # горячий, и о нём можно говорить в настоящем времени.
+            where.append("id IN (SELECT company_id FROM signals "
+                         "WHERE key='hh_fresh_days' AND CAST(value AS INTEGER) <= 7)")
+        return " AND ".join(where), args
+
+    @app.get("/api/companies")
+    def api_companies():
+        c = db.conn()
+        q = (request.args.get("q") or "").strip()
+        only = request.args.get("only") or ""
+        cond, args = _company_where(q, only, request.args.get("ids") or "")
         sql = "SELECT * FROM companies"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
+        if cond:
+            sql += " WHERE " + cond
         sql += " ORDER BY score DESC, id LIMIT 500"
 
         out = []
@@ -356,7 +416,10 @@ def create_app():
     # ── Выгрузка ─────────────────────────────────────────
     @app.get("/api/export.<fmt>")
     def api_export(fmt):
-        rows = export.rows_for_export(db.conn())
+        cond, args = _company_where(request.args.get("q") or "",
+                                    request.args.get("only") or "",
+                                    request.args.get("ids") or "")
+        rows = export.rows_for_export(db.conn(), cond, tuple(args))
         if fmt == "xlsx":
             blob = export.to_xlsx(rows)
             if blob is not None:

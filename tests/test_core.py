@@ -7,6 +7,7 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -394,6 +395,74 @@ class HHSearch(unittest.TestCase):
         block = _re.search(r'id="f-period".*?</select>', html, _re.S).group(0)
         for value in _re.findall(r'value="(\d+)"', block):
             self.assertLessEqual(int(value), 30)
+
+
+class SearchPrecision(unittest.TestCase):
+    """Точность выдачи. Каждая лишняя компания в списке — это звонок,
+    который продавец сделает зря."""
+
+    def _fake(self, items, capture):
+        class FakeResp:
+            status_code = 200
+            def json(self):
+                return {"items": items, "pages": 1, "found": len(items)}
+
+        class FakeSession:
+            headers = {}
+            def get(self, url, params=None, timeout=None):
+                capture.update(params or {})
+                return FakeResp()
+        return lambda: FakeSession()
+
+    def test_phrase_is_searched_in_vacancy_title(self):
+        """По всему тексту «менеджер по продажам» встречается почти везде:
+        «подчиняется менеджеру по продажам» — это вакансия курьера."""
+        seen = {}
+        hh.search_employers("менеджер по продажам", session_factory=self._fake([], seen))
+        self.assertEqual(seen.get("search_field"), "name")
+
+    def test_wide_search_still_possible(self):
+        seen = {}
+        hh.search_employers("тест", in_title=False, session_factory=self._fake([], seen))
+        self.assertNotIn("search_field", seen)
+
+    def test_staffing_agencies_are_dropped(self):
+        self.assertTrue(hh.looks_like_agency("Кадровое агентство «Успех»"))
+        self.assertTrue(hh.looks_like_agency("ООО Рекрутинг Плюс"))
+        self.assertTrue(hh.looks_like_agency("Аутстаффинг-Сервис"))
+        self.assertFalse(hh.looks_like_agency("ООО Ромашка"))
+        self.assertFalse(hh.looks_like_agency("Стоматология Улыбка"))
+
+    def test_agency_vacancies_do_not_reach_the_list(self):
+        items = [
+            {"employer": {"id": "1", "name": "Кадровое агентство Успех"},
+             "name": "Менеджер по продажам", "published_at": "2026-09-17T10:00:00+0300"},
+            {"employer": {"id": "2", "name": "ООО Ромашка"},
+             "name": "Менеджер по продажам", "published_at": "2026-09-17T10:00:00+0300"},
+        ]
+        rows = hh.search_employers("тест", session_factory=self._fake(items, {}), pause=0)
+        self.assertEqual([r["name"] for r in rows], ["ООО Ромашка"])
+
+    def test_freshness_is_kept(self):
+        """Свежесть вакансии — срок годности повода для звонка."""
+        self.assertIsNone(hh.days_since(""))
+        self.assertIsNone(hh.days_since("вчера"))
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self.assertEqual(hh.days_since(now), 0)
+
+
+class SavedSearches(unittest.TestCase):
+    def test_same_name_overwrites_instead_of_doubling(self):
+        db.init()
+        first = db.save_search("Еженедельный", {"queries": ["а"]})
+        again = db.save_search("Еженедельный", {"queries": ["б"]})
+        self.assertEqual(first, again)
+        self.assertEqual(db.get_search(first)["params"]["queries"], ["б"])
+        db.delete_search(first)
+
+    def test_nameless_set_is_refused(self):
+        """Набор без названия потом не найти — сохранять его незачем."""
+        self.assertEqual(db.save_search("   ", {"queries": ["а"]}), 0)
 
 
 class Sources(unittest.TestCase):

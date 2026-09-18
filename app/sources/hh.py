@@ -43,6 +43,41 @@ PRESETS = {
 }
 
 
+# Кадровые агентства и аутстафферы.
+#
+# Формально это компании с вакансиями в продажах, и в выдачу они попадают
+# первыми: вакансий у них сотни. Толку от них ноль — продавать им нечего,
+# а до руководителя не дойти, там своя воронка. Отсекаем по названию: это
+# грубо, зато не требует лишнего запроса на каждую компанию.
+AGENCY_WORDS = (
+    "кадров", "рекрут", "recruit", "hr-", "hr ", "аутстаф", "аутсорс",
+    "персонал", "подбор персонала", "стафф", "staff", "hh.ru", "работа.ру",
+    "агентство занятости", "трудовые ресурсы", "консалтинг персонала",
+)
+
+
+def looks_like_agency(name):
+    """Похоже ли название на кадровое агентство."""
+    low = " " + (name or "").lower().replace("«", " ").replace("»", " ") + " "
+    return any(w in low for w in AGENCY_WORDS)
+
+
+def days_since(stamp):
+    """Сколько дней назад опубликована вакансия.
+
+    Свежесть — это и есть ценность признака. Вакансия, вывешенная вчера,
+    означает, что решение о найме приняли на этой неделе; та же вакансия
+    месячной давности означает, что её, скорее всего, уже закрыли.
+    """
+    if not stamp:
+        return None
+    try:
+        t = time.strptime((stamp or "")[:19], "%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return None
+    return max(0, int((time.time() - time.mktime(t)) / 86400))
+
+
 # Как программа ходит в hh.
 #
 # Раньше здесь перебирались варианты User-Agent, и это не помогло: 403
@@ -63,6 +98,14 @@ def _session(ua=None):
         return t.session
     from .. import net
     return net.hh_transports()[0].session
+
+
+# Параметры, без которых поиск всё равно работает.
+#
+# hh отвечает 400 на любой незнакомый ему параметр целиком, а не молча его
+# игнорирует. Список нужен, чтобы после такого отказа повторить запрос без
+# необязательного — и отдать человеку пусть менее точную, но выдачу.
+OPTIONAL_PARAMS = ("search_field", "label", "order_by")
 
 
 def _request(s, url, params, on_log, session_factory=None):
@@ -108,16 +151,23 @@ def _request(s, url, params, on_log, session_factory=None):
 
 def search_employers(text, area="113", period=30, pages=5, per_page=100,
                      pause=0.4, on_log=None, should_stop=None,
-                     session_factory=None, errors=None):
+                     session_factory=None, errors=None,
+                     in_title=True, skip_agencies=True):
     """Ищет вакансии и сворачивает их до работодателей.
 
     Возвращает список словарей: id, name, vacancies (сколько открытых
     вакансий по этому запросу), area, первая найденная вакансия.
+
+    in_title — искать фразу в названии вакансии, а не по всему тексту.
+    Разница огромная: «менеджер по продажам» встречается в описании почти
+    любой вакансии («подчиняется менеджеру по продажам», «взаимодействие с
+    отделом продаж»), и поиск по всему тексту приносит бухгалтеров и
+    курьеров вперемешку с теми, кто действительно нужен.
     """
     # session_factory нужен тестам: проверять ограничения API, ходя в сеть,
     # значит получить красный прогон в первый же день без интернета.
     s = (session_factory or _session)()   # при переборе не используется
-    found = {}
+    found, agencies = {}, set()
     # Ограничения API, за которые нельзя выходить: период больше 30 дней
     # и выдача глубже двух тысяч позиций — это 400, а не пустой ответ.
     period = max(1, min(30, int(period or 30)))
@@ -129,6 +179,8 @@ def search_employers(text, area="113", period=30, pages=5, per_page=100,
         params = {"text": text, "area": area, "period": period,
                   "per_page": per_page, "page": page,
                   "order_by": "publication_time"}
+        if in_title:
+            params["search_field"] = "name"
         r, err = _request(s, BASE + "/vacancies", params, on_log, session_factory)
         if err:
             if on_log:
@@ -136,6 +188,17 @@ def search_employers(text, area="113", period=30, pages=5, per_page=100,
             if errors is not None:
                 errors.append(err)
             break
+        if r.status_code == 400 and any(k in params for k in OPTIONAL_PARAMS):
+            # Прежде чем сдаваться, пробуем то же самое без украшений.
+            # Пустая выдача из-за параметра, без которого можно обойтись, —
+            # это наша ошибка, а не отсутствие компаний.
+            simple = {k: v for k, v in params.items() if k not in OPTIONAL_PARAMS}
+            if on_log:
+                on_log("hh не принял уточнение запроса — повторяю проще, "
+                       "выдача будет шире", "warn")
+            r2, err2 = _request(s, BASE + "/vacancies", simple, on_log, session_factory)
+            if not err2 and r2 is not None and r2.status_code == 200:
+                r, in_title = r2, False
         if r.status_code != 200:
             # Тело ответа hh объясняет отказ куда точнее кода: там прямо
             # написано, какой параметр он не принял.
@@ -166,13 +229,21 @@ def search_employers(text, area="113", period=30, pages=5, per_page=100,
             # агентств. Компании за ними не видно, и лид из них не сделать.
             if not eid or not emp.get("name"):
                 continue
+            if skip_agencies and looks_like_agency(emp.get("name")):
+                agencies.add(emp.get("name"))
+                continue
             row = found.setdefault(eid, {
                 "id": eid, "name": emp.get("name"), "vacancies": 0,
                 "area": (v.get("area") or {}).get("name", ""),
                 "vacancy_url": v.get("alternate_url", ""),
                 "vacancy_name": v.get("name", ""),
-                "titles": [], "salaries": [],
+                "titles": [], "salaries": [], "fresh": None,
             })
+            # Самая свежая вакансия компании: по ней видно, насколько
+            # горячий признак.
+            d = days_since(v.get("published_at") or v.get("created_at"))
+            if d is not None and (row["fresh"] is None or d < row["fresh"]):
+                row["fresh"] = d
             row["vacancies"] += 1
             # Названия вакансий — это описание отдела своими словами.
             # «Оператор колл-центра» говорит о телефонных продажах прямее
@@ -196,6 +267,9 @@ def search_employers(text, area="113", period=30, pages=5, per_page=100,
             break
         time.sleep(pause)
 
+    if agencies and on_log:
+        on_log("Пропущено кадровых агентств: %d (%s)"
+               % (len(agencies), ", ".join(sorted(agencies)[:3])))
     return sorted(found.values(), key=lambda x: -x["vacancies"])
 
 

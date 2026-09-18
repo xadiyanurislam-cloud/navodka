@@ -86,6 +86,13 @@ def task_hh_search(task_id, params):
         areas = [str(params.get("area") or "113")]
     period = int(params.get("period") or 30)
     pages = int(params.get("pages") or 5)
+    in_title = params.get("in_title", True)
+    skip_agencies = params.get("skip_agencies", True)
+    # Компании с сотней открытых вакансий — это сети, ритейл и заводы. Они
+    # находятся первыми по любому запросу, занимают всю выдачу, а толку от
+    # них меньше всего: до генерального там не дойти, закупки идут через
+    # тендер. Ноль — порога нет.
+    max_open = int(params.get("max_open") or 0)
 
     def log(msg, level="info"):
         db.log(task_id, msg, level)
@@ -100,7 +107,8 @@ def task_hh_search(task_id, params):
                 % (qi, len(queries) * len(areas), text, area, period))
             part = hh.search_employers(text, area=area, period=period, pages=pages,
                                        on_log=log, should_stop=_should_stop,
-                                       errors=errors)
+                                       errors=errors, in_title=in_title,
+                                       skip_agencies=skip_agencies)
             for emp in part:
                 # Одна компания находится по нескольким запросам сразу —
                 # это норма. Складываем вакансии, а не заводим дубль.
@@ -111,6 +119,9 @@ def task_hh_search(task_id, params):
                         if t not in old["titles"]:
                             old["titles"].append(t)
                     old["salaries"] = (old.get("salaries") or []) + (emp.get("salaries") or [])
+                    if emp.get("fresh") is not None and \
+                       (old.get("fresh") is None or emp["fresh"] < old["fresh"]):
+                        old["fresh"] = emp["fresh"]
                     continue
                 seen.add(emp["id"])
                 employers.append(emp)
@@ -145,6 +156,12 @@ def task_hh_search(task_id, params):
             db.update_task(task_id, done=i)
             continue
         detail = hh.employer_details(emp["id"], session=s)
+        if max_open and (detail.get("open_vacancies") or 0) > max_open:
+            log("   пропускаю %s: открытых вакансий %d — это сеть или завод"
+                % (emp["name"], detail["open_vacancies"]))
+            skipped += 1
+            db.update_task(task_id, done=i)
+            continue
         cid, is_new = db.upsert_company({
             "name": detail.get("name") or emp["name"],
             "hh_id": emp["id"],
@@ -166,6 +183,9 @@ def task_hh_search(task_id, params):
             db.add_signal(cid, "hh_about", detail["about"])
         if detail.get("open_vacancies"):
             db.add_signal(cid, "hh_open_all", detail["open_vacancies"])
+        if emp.get("fresh") is not None:
+            # Свежесть вакансии — это срок годности повода для звонка.
+            db.add_signal(cid, "hh_fresh_days", emp["fresh"])
         sal = [x for x in (emp.get("salaries") or []) if 15000 < x < 1000000]
         if sal:
             db.add_signal(cid, "hh_salary", "%d–%d ₽" % (min(sal), max(sal)))
@@ -183,9 +203,17 @@ def task_hh_search(task_id, params):
     if params.get("then_enrich") and added:
         # Поиск без обогащения — половина дела: в карточке одно название.
         # Ставим вторую задачу в очередь, чтобы не ждать у экрана.
-        db.create_task("enrich", {"limit": min(500, added), "fns": True,
-                                  "only_lpr": True})
+        db.create_task("enrich", {
+            "limit": min(500, added), "fns": True, "only_lpr": True,
+            "zakupki": bool(params.get("then_zakupki")),
+            # Цепочка идёт дальше сама: человек нажал одну кнопку и ушёл,
+            # возвращаться к экрану ради второго и третьего нажатия он не
+            # должен.
+            "then_ai": bool(params.get("then_ai")),
+        })
         log("Обогащение поставлено в очередь.")
+    elif params.get("then_enrich") and not added:
+        log("Новых компаний нет — обогащать нечего.", "warn")
 
 
 # ── Задача: обогащение ───────────────────────────────────
@@ -431,6 +459,17 @@ def task_enrich(task_id, params):
         "SELECT COUNT(*) n FROM signals WHERE key='lpr_contact' AND value='найден'"
     ).fetchone()["n"]
     log("Обогащение завершено. Компаний с найденным контактом ГД: %d" % got)
+
+    if params.get("then_ai"):
+        if not db.get_setting("ai_key", ""):
+            log("Ключ ИИ не задан — разбор пропущен.", "warn")
+        else:
+            db.create_task("ai", {
+                "limit": min(300, len(rows)),
+                "icp": db.get_setting("ai_icp", ""),
+                "offer": db.get_setting("ai_offer", ""),
+            })
+            log("Разбор ИИ поставлен в очередь.")
 
 
 # ── Задача: справочник 2ГИС ──────────────────────────────
