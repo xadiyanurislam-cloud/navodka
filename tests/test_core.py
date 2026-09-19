@@ -2989,8 +2989,9 @@ class ParallelAI(unittest.TestCase):
         app.post("/api/ai", json={"threads": 0})
         self.assertEqual(db.get_setting("ai_threads", ""), "4")
 
-    def test_failure_of_one_does_not_stop_the_rest(self):
-        """Лимит провайдера на одной компании — не повод бросать обход."""
+    def test_limit_is_retried_not_dropped(self):
+        """Лимит провайдера — это «подожди», а не «не выйдет». Раньше
+        компания на нём терялась насовсем."""
         calls = {"n": 0}
 
         def flaky(brief, icp="", offer="", cfg=None, session=None):
@@ -3009,7 +3010,62 @@ class ParallelAI(unittest.TestCase):
         n = db.conn().execute(
             "SELECT COUNT(*) n FROM companies WHERE ai_summary='разобрано'"
         ).fetchone()["n"]
-        self.assertEqual(n, 5)
+        self.assertEqual(n, 6, "компания потерялась на временном отказе")
+        self.assertEqual(calls["n"], 7, "повтора не было")
+
+    def test_refusal_on_the_merits_is_not_retried(self):
+        """«Неизвестная модель» повторять незачем: ответ будет тот же, а
+        ждать придётся втрое."""
+        calls = {"n": 0}
+
+        def refuse(brief, icp="", offer="", cfg=None, session=None):
+            calls["n"] += 1
+            return {}, "HTTP 404: модель недоступна"
+
+        real_an, real_check = ai.analyze, ai.check
+        ai.analyze = refuse
+        ai.check = lambda cfg=None: (True, "ок")
+        try:
+            worker.task_ai(db.create_task("ai", {}), {"limit": 6, "threads": 3})
+        finally:
+            ai.analyze, ai.check = real_an, real_check
+        self.assertEqual(calls["n"], 6, "отказ повторялся впустую")
+
+    def test_three_resets_switch_to_one_at_a_time(self):
+        """Четыре соединения держит не всякий посредник, и «связь
+        разорвана» на каждой компании — это не работа, а холостой ход."""
+        import threading as th
+        live = {"now": 0, "peak_after": 0, "n": 0}
+        lock = th.Lock()
+
+        def resetting(brief, icp="", offer="", cfg=None, session=None):
+            with lock:
+                live["n"] += 1
+                n = live["n"]
+                live["now"] += 1
+                if n > 6:
+                    live["peak_after"] = max(live["peak_after"], live["now"])
+            time.sleep(0.05)
+            with lock:
+                live["now"] -= 1
+            if n <= 6:
+                return {}, "связь разорвана по дороге"
+            return {"summary": "разобрано"}, ""
+
+        real_an, real_check = ai.analyze, ai.check
+        ai.analyze = resetting
+        ai.check = lambda cfg=None: (True, "ок")
+        tid = db.create_task("ai", {})
+        try:
+            worker.task_ai(tid, {"limit": 6, "threads": 4})
+        finally:
+            ai.analyze, ai.check = real_an, real_check
+        self.assertEqual(live["peak_after"], 1,
+                         "после обрывов запросы всё ещё идут парами")
+        said = [r["text"] for r in db.conn().execute(
+            "SELECT text FROM logs WHERE task_id=?", (tid,))]
+        self.assertTrue(any("один запрос за раз" in t for t in said),
+                        "о переходе не сказали")
 
 
 class LighterList(unittest.TestCase):
