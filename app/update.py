@@ -97,7 +97,7 @@ def check():
     # Какой из них нужен — зависит от того, как программа запущена, и
     # решается это ниже, в run(). Здесь просто находим оба.
     zip_url = d.get("zipball_url") or ""
-    setup_url = ""
+    setup_url = setup_api = zip_api = ""
     for a in (d.get("assets") or []):
         name = (a.get("name") or "").lower()
         link = a.get("browser_download_url") or ""
@@ -105,8 +105,14 @@ def check():
             continue
         if name.endswith(".exe") and "setup" in name:
             setup_url = link
+            # Тот же файл, но по адресу API. Хост другой, и это не
+            # мелочь: у провайдера, который не пускает на github.com,
+            # api.github.com при этом работает — иначе мы бы и о новой
+            # версии не узнали.
+            setup_api = a.get("url") or ""
         elif name.endswith(".zip") and "setup" not in name:
             zip_url = link
+            zip_api = a.get("url") or ""
 
     return {
         "current": settings.VERSION,
@@ -114,7 +120,9 @@ def check():
         "newer": _vtuple(latest) > _vtuple(settings.VERSION),
         "notes": (d.get("body") or "").strip()[:1500],
         "zip": zip_url,
+        "zip_api": zip_api,
         "setup": setup_url,
+        "setup_api": setup_api,
         "kind": kind(),
         "published": (d.get("published_at") or "")[:10],
     }, ""
@@ -142,7 +150,7 @@ def _find_root(path):
     return ""
 
 
-def apply(zip_url, on_log=None):
+def apply(zip_url, on_log=None, zip_api=""):
     """Скачать и разложить. Возвращает (получилось, сообщение)."""
     log = on_log or (lambda *a, **k: None)
     if not zip_url:
@@ -151,16 +159,11 @@ def apply(zip_url, on_log=None):
     tmp = tempfile.mkdtemp(prefix="navodka-upd-")
     try:
         log("Скачиваю...")
-        s = _session()
-        try:
-            r = s.get(zip_url, timeout=180)
-        except Exception as e:
-            return False, "не скачалось: %s" % str(e)[:160]
-        if getattr(r, "status_code", 0) != 200:
-            return False, "архив не отдался: %s" % r.status_code
-        blob = r.content
-        if len(blob) < 10000:
-            return False, "архив подозрительно мал (%d байт)" % len(blob)
+        blob, _, fails = _download([zip_api, zip_url], on_log=log, min_size=10000)
+        if blob is None:
+            return False, ("не удалось скачать ни одним способом (%s). "
+                           "Скачайте архив вручную: %s"
+                           % ("; ".join(fails[:4]), zip_url))
 
         arc = os.path.join(tmp, "new.zip")
         with open(arc, "wb") as f:
@@ -246,7 +249,75 @@ SETUP_FLAGS = ["/SILENT", "/SUPPRESSMSGBOXES", "/NOCANCEL", "/NORESTART",
                "/RESTARTAPPLICATIONS", "/CLOSEAPPLICATIONS", "/RELAUNCH=1"]
 
 
-def apply_installer(setup_url, on_log=None):
+def _download(urls, on_log=None, min_size=1):
+    """Скачать по первому адресу, который отзовётся.
+
+    Маршрут до файла и маршрут до сведений о нём — разные. Проверка
+    обновлений ходит на api.github.com, а ссылка на файл ведёт на
+    github.com, и у российских провайдеров бывает, что первый работает, а
+    второй нет. Поэтому адресов несколько, и способов связи тоже: у
+    curl_cffi другой стек TLS, и там, где обрывается requests, он иногда
+    проходит.
+
+    Возвращает (содержимое, чем скачано, список неудач).
+    """
+    log = on_log or (lambda *a, **k: None)
+    fails = []
+    for url in [u for u in urls if u]:
+        api = "api.github.com" in url
+        for name, getter in _routes(api):
+            try:
+                r = getter(url)
+            except Exception as e:
+                fails.append("%s · %s — %s" % (_host(url), name, str(e)[:90]))
+                continue
+            code = getattr(r, "status_code", 0)
+            if code != 200:
+                fails.append("%s · %s — ответ %s" % (_host(url), name, code))
+                continue
+            blob = r.content
+            if len(blob) < min_size:
+                fails.append("%s · %s — файл подозрительно мал (%d байт)"
+                             % (_host(url), name, len(blob)))
+                continue
+            log("Скачано через %s (%s), %.1f МБ"
+                % (_host(url), name, len(blob) / 1048576.0))
+            return blob, name, fails
+    return None, "", fails
+
+
+def _host(url):
+    try:
+        return url.split("//", 1)[1].split("/", 1)[0]
+    except Exception:
+        return url[:40]
+
+
+def _routes(api=False):
+    """Способы скачать: обычный и с браузерным отпечатком."""
+    from . import net
+    cfg = source()
+    head = {"Accept": "application/octet-stream"} if api else {}
+    if cfg["token"]:
+        head["Authorization"] = "Bearer " + cfg["token"]
+
+    out = []
+    s = net.plain()
+    s.headers.update(head)
+    out.append(("обычный", lambda u: s.get(u, timeout=600, allow_redirects=True)))
+    if net.HAVE_CURL:
+        try:
+            from curl_cffi import requests as curl_requests
+            c = curl_requests.Session(impersonate=net.IMPERSONATE)
+            c.headers.update(dict(net.BROWSER_HEADERS, **head))
+            out.append(("отпечаток Chrome",
+                        lambda u: c.get(u, timeout=600, allow_redirects=True)))
+        except Exception:
+            pass
+    return out
+
+
+def apply_installer(setup_url, on_log=None, setup_api=""):
     """Скачать установщик и запустить его поверх текущей установки.
 
     Установщик не может переписать exe, пока тот работает, поэтому он
@@ -262,16 +333,14 @@ def apply_installer(setup_url, on_log=None):
         return False, "установщик бывает только под Windows", False
 
     log("Скачиваю установщик...")
-    s = _session()
-    try:
-        r = s.get(setup_url, timeout=600)
-    except Exception as e:
-        return False, "не скачалось: %s" % str(e)[:160], False
-    if getattr(r, "status_code", 0) != 200:
-        return False, "установщик не отдался: %s" % r.status_code, False
-    blob = r.content
-    if len(blob) < 200000:
-        return False, "установщик подозрительно мал (%d байт)" % len(blob), False
+    blob, _, fails = _download([setup_api, setup_url], on_log=log,
+                               min_size=200000)
+    if blob is None:
+        # Отдаём ссылку: браузер ходит своим маршрутом и часто
+        # справляется там, где программа не смогла.
+        return False, ("не удалось скачать ни одним способом (%s). "
+                       "Скачайте установщик вручную: %s"
+                       % ("; ".join(fails[:4]), setup_url)), False
 
     # Кладём в отдельную папку, а не в tempfile.mkdtemp с удалением:
     # файл нужен уже после того, как этот процесс закончится.
@@ -315,6 +384,8 @@ def run(info, on_log=None):
     """
     info = info or {}
     if kind() == "installer":
-        return apply_installer(info.get("setup") or "", on_log)
-    ok, msg = apply(info.get("zip") or "", on_log)
+        return apply_installer(info.get("setup") or "", on_log,
+                               setup_api=info.get("setup_api") or "")
+    ok, msg = apply(info.get("zip") or "", on_log,
+                    zip_api=info.get("zip_api") or "")
     return ok, msg, False

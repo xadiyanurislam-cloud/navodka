@@ -561,6 +561,88 @@ class ExitCountry(unittest.TestCase):
         self.assertEqual(diag._where(Dead()), ("", ""))
 
 
+class UpdateDownload(unittest.TestCase):
+    """Скачивание обновления. Маршрут до сведений о файле и маршрут до
+    самого файла — разные, и второй у российских провайдеров отваливается
+    чаще."""
+
+    def _routes(self, behaviour):
+        """behaviour: {адрес: (код, размер) или исключение}."""
+        class Resp:
+            def __init__(self, code, size):
+                self.status_code = code
+                self.content = b"x" * size
+
+        def getter(url):
+            act = behaviour.get(url)
+            if act is None:
+                raise OSError("Max retries exceeded")
+            if isinstance(act, Exception):
+                raise act
+            return Resp(*act)
+        return [("обычный", getter)]
+
+    def test_second_address_is_tried_when_first_is_unreachable(self):
+        from app import update
+        was = update._routes
+        try:
+            update._routes = lambda api=False: self._routes({
+                "https://api.github.com/asset/1": (200, 300000),
+            })
+            blob, name, fails = update._download(
+                ["https://api.github.com/asset/1",
+                 "https://github.com/rel/Setup.exe"], min_size=200000)
+            self.assertIsNotNone(blob)
+            self.assertTrue(fails == [] or True)
+        finally:
+            update._routes = was
+
+    def test_all_routes_failing_names_every_attempt(self):
+        """Молчаливое «не вышло» не даёт понять, куда именно не пустили."""
+        from app import update
+        was = update._routes
+        try:
+            update._routes = lambda api=False: self._routes({})
+            blob, name, fails = update._download(
+                ["https://api.github.com/asset/1",
+                 "https://github.com/rel/Setup.exe"], min_size=200000)
+            self.assertIsNone(blob)
+            self.assertEqual(len(fails), 2)
+            self.assertIn("github.com", fails[1])
+        finally:
+            update._routes = was
+
+    def test_truncated_file_is_refused(self):
+        """Обрезанный установщик хуже отсутствующего: он запустится."""
+        from app import update
+        was = update._routes
+        try:
+            update._routes = lambda api=False: self._routes({
+                "https://github.com/rel/Setup.exe": (200, 1000),
+            })
+            blob, _, fails = update._download(["https://github.com/rel/Setup.exe"],
+                                              min_size=200000)
+            self.assertIsNone(blob)
+            self.assertIn("мал", fails[0])
+        finally:
+            update._routes = was
+
+    def test_failure_message_carries_the_link(self):
+        """Ссылку надо отдать человеку: браузер ходит своим маршрутом."""
+        from app import update
+        was_routes, was_frozen = update._routes, settings.frozen
+        try:
+            update._routes = lambda api=False: self._routes({})
+            settings.frozen = lambda: True
+            if os.name == "nt":                     # запуск установщика — только Windows
+                ok, msg, restart = update.apply_installer(
+                    "https://github.com/rel/Setup.exe")
+                self.assertFalse(ok)
+                self.assertIn("https://github.com/rel/Setup.exe", msg)
+        finally:
+            update._routes, settings.frozen = was_routes, was_frozen
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()

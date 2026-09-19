@@ -376,9 +376,14 @@ async function updCheck(quiet) {
     const how = d.kind === "installer"
       ? "программа закроется и обновится сама"
       : "файлы обновятся на месте";
+    // Ссылка на файл — рядом, а не только в тексте ошибки. Маршрут
+    // браузера до github.com отличается от нашего, и там, где программа
+    // не прошла, он часто скачивает без вопросов.
+    const direct = d.kind === "installer" ? (d.setup || "") : (d.zip || "");
     state.innerHTML = `Доступна <b>${esc(d.latest)}</b> — у вас ${esc(d.current)}
       <button class="btn primary sm" id="s-upd-go">Обновить</button>
-      <span class="hint">${esc(how)}</span>`;
+      <span class="hint">${esc(how)}</span>` +
+      (direct ? ` <a class="hint" href="${esc(direct)}" target="_blank">скачать вручную</a>` : "");
     $("s-upd-go").onclick = updApply;
   } else if (!quiet) {
     state.textContent = `установлена последняя версия (${d.current})`;
@@ -403,7 +408,11 @@ async function updApply() {
     }
   } else {
     if (btn) { btn.disabled = false; btn.textContent = "Обновить"; }
-    state.innerHTML = `<span class="bad">${esc((d && (d.error || d.message)) || "не вышло")}</span>`;
+    const text = (d && (d.error || d.message)) || "не вышло";
+    // В сообщении об отказе есть адрес файла. Заставлять выделять его
+    // мышью из красного текста — издевательство: делаем ссылкой.
+    state.innerHTML = `<span class="bad">${esc(text).replace(
+      /(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>')}</span>`;
   }
 }
 
