@@ -6,6 +6,7 @@
 """
 import json
 import os
+import re
 import threading
 import time
 
@@ -385,6 +386,11 @@ def create_app():
         elif only == "empty":
             where.append("(site = '' AND id NOT IN (SELECT company_id FROM "
                          "contacts WHERE kind IN ('phone','email','social')))")
+        elif only == "today":
+            # Просроченное — тоже на сегодня: вчерашний звонок, который
+            # не сделали, не становится менее нужным.
+            where.append("next_date <> '' AND next_date IS NOT NULL "
+                         "AND next_date <= date('now','localtime')")
         elif only == "social":
             where.append("id IN (SELECT company_id FROM contacts WHERE kind='social')")
         elif only == "fresh":
@@ -458,8 +464,15 @@ def create_app():
         # ним не ходит. Автоматически собранная база личных страниц — это
         # профилирование частного лица, а по имени ещё и ненадёжно.
         from . import social
-        return jsonify(ok=True, company=dict(row),
-                       contacts=[dict(x) for x in cts], signals=sig,
+        from .sources import site as site_src
+        out = []
+        for x in cts:
+            x = dict(x)
+            if x["kind"] == "phone":
+                x["note"] = site_src.phone_kind(x["value"])
+            out.append(x)
+        return jsonify(ok=True, company=dict(row), contacts=out, signals=sig,
+                       notes=db.notes(cid),
                        search=[{"title": t, "url": u} for t, u in
                                social.search_links(row["director"], row["name"])])
 
@@ -488,7 +501,14 @@ def create_app():
     @app.post("/api/company/<int:cid>")
     def api_company_update(cid):
         d = request.get_json(silent=True) or {}
-        patch = {k: d[k] for k in ("stage", "note") if k in d}
+        patch = {k: d[k] for k in ("stage", "note", "next_step", "next_date")
+                 if k in d}
+        # Дата приходит из поля ввода в виде ГГГГ-ММ-ДД; всё остальное —
+        # не дата, и в базу ему попадать незачем: по этому полю идёт
+        # отбор «на сегодня».
+        if "next_date" in patch:
+            val = (patch["next_date"] or "").strip()
+            patch["next_date"] = val if re.match(r"^\d{4}-\d{2}-\d{2}$", val) else ""
         if patch:
             db.update_company_fields(cid, patch)
         return jsonify(ok=True)
@@ -503,6 +523,45 @@ def create_app():
             if key in d:
                 db.set_setting(key, (d[key] or "").strip())
         return jsonify(ok=True)
+
+    @app.post("/api/company/<int:cid>/letter")
+    def api_company_letter(cid):
+        """Первое письмо этой компании — по уже собранным фактам."""
+        c = db.conn()
+        row = c.execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
+        if row is None:
+            return jsonify(ok=False, error="компания не найдена")
+        if not db.get_setting("ai_key", ""):
+            return jsonify(ok=False, error="не задан ключ ИИ — «Настройки» → «Ключ ИИ»")
+        sig = {r["key"]: r["value"] for r in
+               c.execute("SELECT key, value FROM signals WHERE company_id=?", (cid,))}
+        cts = [dict(x) for x in c.execute(
+            "SELECT kind, value, owner, confidence, verified, source "
+            "FROM contacts WHERE company_id=? ORDER BY confidence DESC", (cid,))]
+        letter, err = ai.letter(dict(row), sig, cts,
+                                offer=db.get_setting("ai_offer", ""),
+                                icp=db.get_setting("ai_icp", ""))
+        if err:
+            return jsonify(ok=False, error=err)
+        # Кому писать: найденный адрес руководителя лучше общего ящика.
+        to = ""
+        for x in cts:
+            if x["kind"] == "email" and x["owner"] == "director":
+                to = x["value"]
+                break
+        if not to:
+            to = next((x["value"] for x in cts if x["kind"] == "email"), "")
+        return jsonify(ok=True, to=to, **letter)
+
+    @app.post("/api/company/<int:cid>/note")
+    def api_company_note(cid):
+        d = request.get_json(silent=True) or {}
+        if d.get("delete"):
+            db.delete_note(int(d["delete"]))
+        else:
+            if not db.add_note(cid, d.get("text") or ""):
+                return jsonify(ok=False, error="пустая заметка")
+        return jsonify(ok=True, notes=db.notes(cid))
 
     @app.post("/api/company/<int:cid>/delete")
     def api_company_delete(cid):
@@ -548,6 +607,23 @@ def create_app():
             "ORDER BY created_at DESC LIMIT 500").fetchall()
         total = db.conn().execute("SELECT COUNT(*) n FROM blacklist").fetchone()["n"]
         return jsonify(ok=True, rows=[dict(r) for r in rows], total=total)
+
+    @app.post("/api/dedupe")
+    def api_dedupe():
+        """Найти и склеить дубли по всей базе.
+
+        Внутри одного прогона записи сводятся сразу, между прогонами —
+        нет: сегодня компания пришла из карты без ИНН, завтра из ЕГРЮЛ с
+        ИНН, и это две строки.
+        """
+        pairs = db.find_duplicates()
+        if (request.get_json(silent=True) or {}).get("dry"):
+            return jsonify(ok=True, found=len(pairs))
+        done = 0
+        for keep, drop in pairs:
+            if db.merge_companies(keep, drop):
+                done += 1
+        return jsonify(ok=True, merged=done)
 
     @app.post("/api/blacklist/clear")
     def api_blacklist_clear():

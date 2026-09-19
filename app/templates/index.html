@@ -335,6 +335,7 @@
       <input id="q" class="search" type="search" placeholder="Компания, ФИО, ИНН или сайт">
       <div class="chips" id="chips">
         <button class="chip is-active" data-only="">Все</button>
+        <button class="chip" data-only="today">На сегодня</button>
         <button class="chip" data-only="contactable">Есть чем связаться</button>
         <button class="chip" data-only="social">Есть соцсети</button>
         <button class="chip" data-only="lpr_found">Контакт ГД найден</button>
@@ -348,6 +349,7 @@
         <button class="chip" data-only="empty">Пустые</button>
       </div>
       <span class="shown" id="shown"></span>
+      <button class="btn quiet sm" id="btn-dedupe" title="Найти и склеить дубли">Дубли</button>
       <button class="btn quiet sm danger" id="btn-clear">Очистить</button>
     </div>
 

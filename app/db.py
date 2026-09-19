@@ -119,6 +119,30 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 );
 
+-- Когда какой сайт обходили в последний раз.
+--
+-- Второй прогон по той же нише иначе заново стучится в те же сотни
+-- сайтов: полчаса ожидания ради данных, которые уже лежат в базе.
+CREATE TABLE IF NOT EXISTS site_visits (
+    host        TEXT PRIMARY KEY,
+    visited_at  INTEGER,
+    pages       INTEGER,
+    ok          INTEGER
+);
+
+-- Заметки по компании: что сказали, о чём договорились.
+--
+-- Отдельной таблицей, а не полем: разговоров бывает несколько, и
+-- затирать предыдущий следующим — значит терять ровно то, ради чего
+-- заметка и пишется.
+CREATE TABLE IF NOT EXISTS notes (
+    id          INTEGER PRIMARY KEY,
+    company_id  INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    created_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_notes_company ON notes(company_id, id DESC);
+
 -- Сохранённые поиски. Набор «запросы + регионы + период + глубина»
 -- складывается один раз и потом повторяется еженедельно: вакансии
 -- обновляются, компании появляются новые, а условия те же. Набирать их
@@ -164,6 +188,10 @@ _LATER = {
     # потерять возможность отличить одно от другого.
     "ai_summary": "TEXT", "ai_segment": "TEXT", "ai_fit": "INTEGER",
     "ai_why": "TEXT", "ai_hook": "TEXT", "ai_opener": "TEXT",
+    # Что делаем с компанией дальше и когда. Без этих двух полей список
+    # через неделю превращается в кашу: стадия говорит, где компания, но
+    # не говорит, чья сейчас очередь ходить.
+    "next_step": "TEXT", "next_date": "TEXT",
 }
 
 
@@ -326,6 +354,59 @@ def set_score(company_id, score):
 
 
 # ── Задачи ───────────────────────────────────────────────
+# ── Память об обойдённых сайтах ──────────────────────────
+def host_of(url):
+    return (url or "").split("//")[-1].split("/")[0].replace("www.", "").lower()
+
+
+def visited_recently(url, days=7):
+    """Обходили ли этот сайт недавно и успешно."""
+    host = host_of(url)
+    if not host:
+        return False
+    row = conn().execute("SELECT visited_at, ok FROM site_visits WHERE host=?",
+                         (host,)).fetchone()
+    if row is None or not row["ok"]:
+        return False
+    return (now() - (row["visited_at"] or 0)) < days * 86400
+
+
+def mark_visited(url, pages=0, ok=True):
+    host = host_of(url)
+    if not host:
+        return
+    c = conn()
+    c.execute("INSERT INTO site_visits (host, visited_at, pages, ok) "
+              "VALUES (?,?,?,?) ON CONFLICT(host) DO UPDATE SET "
+              "visited_at=excluded.visited_at, pages=excluded.pages, ok=excluded.ok",
+              (host, now(), int(pages or 0), 1 if ok else 0))
+    c.commit()
+
+
+# ── Заметки ──────────────────────────────────────────────
+def add_note(company_id, text):
+    text = (text or "").strip()[:2000]
+    if not text:
+        return 0
+    c = conn()
+    cur = c.execute("INSERT INTO notes (company_id, text, created_at) "
+                    "VALUES (?,?,?)", (company_id, text, now()))
+    c.commit()
+    return cur.lastrowid
+
+
+def notes(company_id, limit=20):
+    return [dict(r) for r in conn().execute(
+        "SELECT * FROM notes WHERE company_id=? ORDER BY id DESC LIMIT ?",
+        (company_id, limit))]
+
+
+def delete_note(note_id):
+    c = conn()
+    c.execute("DELETE FROM notes WHERE id=?", (note_id,))
+    c.commit()
+
+
 # ── Сохранённые поиски ───────────────────────────────────
 def save_search(name, params, kind="hh_search"):
     """Сохранить набор условий под именем. Повторное имя — перезапись."""
@@ -386,6 +467,76 @@ def delete_search(search_id):
     c.commit()
 
 
+# ── Склейка дублей ───────────────────────────────────────
+def merge_companies(keep_id, drop_id):
+    """Перенести всё с одной компании на другую и удалить вторую."""
+    if keep_id == drop_id:
+        return False
+    c = conn()
+    keep = c.execute("SELECT * FROM companies WHERE id=?", (keep_id,)).fetchone()
+    drop = c.execute("SELECT * FROM companies WHERE id=?", (drop_id,)).fetchone()
+    if keep is None or drop is None:
+        return False
+    # Пустые поля уцелевшей заполняем из удаляемой: у одной записи есть
+    # ИНН, у другой сайт — вместе они и составляют компанию.
+    patch = {}
+    for field in ("inn", "ogrn", "site", "director", "director_post",
+                  "address", "region", "okved", "okved_name", "activity",
+                  "employees", "founded", "status", "hh_id"):
+        if field in keep.keys() and not (keep[field] or "") and (drop[field] or ""):
+            patch[field] = drop[field]
+    for table in ("contacts", "signals", "notes"):
+        try:
+            c.execute("UPDATE OR IGNORE %s SET company_id=? WHERE company_id=?"
+                      % table, (keep_id, drop_id))
+            c.execute("DELETE FROM %s WHERE company_id=?" % table, (drop_id,))
+        except Exception:
+            pass
+    # Удаляем раньше, чем переносим поля: ИНН и hh_id уникальны в
+    # пределах таблицы, и пока вторая запись жива, тот же ИНН на первую
+    # не встанет.
+    c.execute("DELETE FROM companies WHERE id=?", (drop_id,))
+    if patch:
+        sets = ", ".join("%s=?" % k for k in patch)
+        c.execute("UPDATE companies SET %s WHERE id=?" % sets,
+                  tuple(patch.values()) + (keep_id,))
+    c.commit()
+    return True
+
+
+def find_duplicates():
+    """Пары компаний, которые похожи на одну и ту же.
+
+    Сравниваем по ИНН, по домену сайта и по названию без формы
+    собственности. Внутри одного прогона такие записи склеиваются сразу,
+    а между прогонами — нет: сегодня компания пришла из карты без ИНН,
+    завтра из ЕГРЮЛ с ИНН, и это две строки.
+    """
+    import re as _re
+    rows = conn().execute(
+        "SELECT id, name, inn, site, score FROM companies ORDER BY id").fetchall()
+    seen, pairs = {}, []
+    for r in rows:
+        keys = []
+        if (r["inn"] or "").strip():
+            keys.append("инн:" + r["inn"].strip())
+        host = host_of(r["site"])
+        if host:
+            keys.append("сайт:" + host)
+        name = _re.sub(r"[^\w\s-]", " ", (r["name"] or ""), flags=_re.U)
+        name = _re.sub(
+            r"^\s*(ООО|ОАО|ЗАО|ПАО|АО|ИП|НКО|АНО|НАО)\s+", "", name, flags=_re.I)
+        name = _re.sub(r"\s+", " ", name).strip().lower()
+        if len(name) >= 4:
+            keys.append("имя:" + name)
+        hit = next((seen[k] for k in keys if k in seen), None)
+        if hit is not None and hit != r["id"]:
+            pairs.append((hit, r["id"]))
+        for k in keys:
+            seen.setdefault(k, hit if hit is not None else r["id"])
+    return pairs
+
+
 def create_task(kind, params=None, total=0):
     c = conn()
     cur = c.execute("""INSERT INTO tasks (kind, params, status, total, created_at, updated_at)
@@ -435,7 +586,8 @@ def update_company_fields(company_id, patch):
                         "employees", "founded", "status", "capital",
                         "branches", "founders_count", "founders",
                         "okveds_extra", "growth", "ai_summary", "ai_segment",
-                        "ai_fit", "ai_why", "ai_hook", "ai_opener")}
+                        "ai_fit", "ai_why", "ai_hook", "ai_opener",
+                        "next_step", "next_date")}
     if not allowed:
         return
     allowed["updated_at"] = now()

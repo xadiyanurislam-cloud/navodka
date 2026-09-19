@@ -1161,6 +1161,80 @@ class RunLimit(unittest.TestCase):
             osm.search = was
 
 
+class JunkPhones(unittest.TestCase):
+    """Заглушки из вёрстки. Продавец тратит на каждую по звонку и
+    начинает не верить всему списку."""
+
+    def test_layout_placeholders_are_dropped(self):
+        from app.sources import site
+        for junk in ("+71010000000", "+79999999999", "+70281027703",
+                     "+7 800 000-00-00", "+71234567890"):
+            self.assertEqual(site._clean_phone(junk), "",
+                             "не отсеян: %s" % junk)
+
+    def test_real_numbers_survive(self):
+        from app.sources import site
+        self.assertEqual(site._clean_phone("+7 495 955-50-43"), "+74959555043")
+        self.assertEqual(site._clean_phone("8 (812) 123-45-67"), "+78121234567")
+        self.assertEqual(site._clean_phone("+7 902 221-65-58"), "+79022216558")
+        self.assertEqual(site._clean_phone("8 800 555-35-36"), "+78005553536")
+
+    def test_kind_tells_a_mobile_from_a_reception(self):
+        """Мобильный — это чей-то личный аппарат, и отвечает на него
+        человек, а не приёмная."""
+        from app.sources import site
+        self.assertEqual(site.phone_kind("+79022216558"), "мобильный")
+        self.assertEqual(site.phone_kind("+74959555043"), "городской")
+        self.assertEqual(site.phone_kind("+78005553536"), "бесплатный")
+
+
+class WorkWithList(unittest.TestCase):
+    def test_notes_do_not_overwrite_each_other(self):
+        """Разговоров бывает несколько, и затирать предыдущий следующим —
+        значит терять ровно то, ради чего заметка пишется."""
+        db.init()
+        cid, _ = db.upsert_company({"name": "Заметки-тест", "source": "тест"})
+        db.add_note(cid, "первый звонок")
+        db.add_note(cid, "второй звонок")
+        texts = [n["text"] for n in db.notes(cid)]
+        self.assertEqual(texts, ["второй звонок", "первый звонок"])
+        db.add_note(cid, "   ")
+        self.assertEqual(len(db.notes(cid)), 2, "пустая заметка сохранилась")
+
+    def test_merge_keeps_everything_from_both(self):
+        """У одной записи есть ИНН, у другой сайт — вместе они и
+        составляют компанию."""
+        db.init()
+        a, _ = db.upsert_company({"name": "Слияние А", "site": "https://merge-a.ru",
+                                  "source": "карта"})
+        db.add_contact(a, "phone", "+74951112233", "general", 85, "unchecked", "карта")
+        b, _ = db.upsert_company({"name": "ООО «Слияние А»", "inn": "9999999999",
+                                  "director": "Иванов Иван", "source": "ЕГРЮЛ"})
+        db.add_note(b, "договорились о письме")
+        self.assertTrue(db.merge_companies(a, b))
+        row = db.conn().execute("SELECT * FROM companies WHERE id=?", (a,)).fetchone()
+        self.assertEqual(row["inn"], "9999999999")
+        self.assertEqual(row["director"], "Иванов Иван")
+        self.assertEqual(row["site"], "https://merge-a.ru")
+        self.assertEqual([n["text"] for n in db.notes(a)], ["договорились о письме"])
+        gone = db.conn().execute("SELECT * FROM companies WHERE id=?", (b,)).fetchone()
+        self.assertIsNone(gone)
+
+    def test_visited_site_is_not_crawled_again(self):
+        db.init()
+        self.assertFalse(db.visited_recently("https://fresh-site.ru"))
+        db.mark_visited("https://fresh-site.ru/contacts", pages=4)
+        self.assertTrue(db.visited_recently("http://www.fresh-site.ru"))
+        self.assertFalse(db.visited_recently("https://other-site.ru"))
+
+    def test_failed_crawl_is_not_remembered_as_done(self):
+        """Сайт, который не открылся, надо попробовать снова, а не
+        считать обойдённым."""
+        db.init()
+        db.mark_visited("https://dead-site.ru", pages=0, ok=False)
+        self.assertFalse(db.visited_recently("https://dead-site.ru"))
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()

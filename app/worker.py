@@ -296,6 +296,8 @@ def task_enrich(task_id, params):
         emails_found, res = [], {}
         if (row["site"] or "").strip():
             res = crawls.take(cid, row["site"])
+            if res.get("skipped"):
+                log("   сайт обходили на днях — беру, что уже есть в базе")
             if res.get("error"):
                 log("   сайт не открылся: %s" % res["error"], "warn")
             for addr in res["emails"]:
@@ -580,10 +582,20 @@ class _Prefetch(object):
                 self.jobs[cid] = self.pool.submit(self._one, url)
 
     def _one(self, url):
+        # Сайт, обойдённый на этой неделе, не обходим заново: всё, что с
+        # него брали, уже лежит в базе. Второй прогон по той же нише
+        # иначе стучится в те же сотни сайтов ради тех же данных.
+        if db.visited_recently(url):
+            return {"emails": [], "phones": [], "telegram": [], "tech": {},
+                    "pages": 0, "error": "", "text": [], "socials": {},
+                    "skipped": True}
         # Своя сессия на поток: requests.Session не рассчитана на то,
         # чтобы из неё ходили одновременно.
         try:
-            return site_src.crawl(url, session=requests.Session())
+            res = site_src.crawl(url, session=requests.Session())
+            db.mark_visited(url, res.get("pages") or 0,
+                            ok=bool(res.get("pages")))
+            return res
         except Exception as e:                       # pragma: no cover
             return {"emails": [], "phones": [], "telegram": [], "tech": {},
                     "pages": 0, "error": str(e)[:200], "text": [],
@@ -1154,7 +1166,12 @@ def task_find(task_id, params):
         # из карты и телефон с сайта проверяются по-разному.
         origin = (row.get("source") or "справочник").split(" + ")[0]
         for ph in phones[:4]:
-            db.add_contact(cid, "phone", ph, "general", 85, "unchecked", origin)
+            # Заглушки из вёрстки попадают и в карты: +7 999 999-99-99
+            # там встречается ничуть не реже, чем на сайтах.
+            ok_phone = site_src._clean_phone(ph)
+            if ok_phone:
+                db.add_contact(cid, "phone", ok_phone, "general", 85,
+                               "unchecked", origin)
         for addr in emails[:3]:
             db.add_contact(cid, "email", addr, site_src.guess_owner(addr), 85,
                            "unchecked", origin)

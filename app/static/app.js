@@ -335,6 +335,17 @@ $("btn-log").onclick = () => {
   $("btn-log").textContent = l.hidden ? "Журнал" : "Скрыть журнал";
 };
 
+$("btn-dedupe").onclick = async () => {
+  const found = await post("/api/dedupe", {dry: true});
+  if (!found || !found.ok) { toast("не вышло"); return; }
+  if (!found.found) { toast("Дублей не нашлось"); return; }
+  if (!confirm(`Похожих пар: ${found.found}. Склеить? Контакты, заметки и `
+             + `реквизиты перейдут на одну запись, вторая исчезнет.`)) return;
+  const d = await post("/api/dedupe", {});
+  toast(`Склеено: ${d.merged}`);
+  loadCompanies(true); loadStats();
+};
+
 $("btn-clear").onclick = async () => {
   if (!confirm("Удалить все найденные компании и контакты? Отменить нельзя.")) return;
   await post("/api/clear", {});
@@ -650,6 +661,15 @@ function signalChips(sig) {
   return out.map(([t, hot]) => `<span class="sig ${hot ? "hot" : ""}">${t}</span>`).join("");
 }
 
+function notesHtml(list) {
+  if (!list.length) return `<p class="nobody">Пока пусто.</p>`;
+  return list.map((n) => `<div class="note-row">
+      <span class="note-when">${ruStamp(n.created_at)}</span>
+      <span class="note-text">${esc(n.text)}</span>
+      <button class="note-x" data-drop="${n.id}" title="Удалить">×</button>
+    </div>`).join("");
+}
+
 // ── Карточка компании ────────────────────────────────────
 // Какая карточка открыта. Нужно помнить между перерисовками: пока идёт
 // задача, таблица обновляется каждые полторы секунды, и без этого
@@ -668,6 +688,15 @@ function fact(value, label, cls) {
 }
 
 const money = (v) => (v / 1e6).toFixed(v >= 1e8 ? 0 : 1) + " млн ₽";
+// Заметка хранит время числом, а не строкой: по нему они и
+// упорядочиваются.
+const ruStamp = (ts) => {
+  if (!ts) return "";
+  const d = new Date(Number(ts) * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 const ruDate = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
   return m ? `${m[3]}.${m[2]}.${m[1]}` : (iso || "");
@@ -773,6 +802,24 @@ async function toggleCard(tr, id) {
       ${socials.length ? socials.map(contactRow).join("")
         : `<p class="nobody">Не нашлось ни на сайте, ни в карточках справочников.
            ${sig.vk_group ? "" : "Сообщество ВК ищется по ссылке, которую компания опубликовала сама, — если её нигде нет, программа не угадывает."}</p>`}
+      <h4 class="mt">Что дальше</h4>
+      <div class="next">
+        <input type="text" class="next-step" data-id="${c.id}"
+               placeholder="позвонить, отправить письмо…"
+               value="${esc(c.next_step || "")}">
+        <input type="date" class="next-date" data-id="${c.id}"
+               value="${esc(c.next_date || "")}">
+      </div>
+      <div class="detail-links">
+        <button class="btn sm" data-letter="${c.id}">Письмо через ИИ</button>
+      </div>
+      <div class="letter" data-letter-box="${c.id}" hidden></div>
+
+      <h4 class="mt">Заметки</h4>
+      <div class="notes" data-notes="${c.id}">${notesHtml(d.notes || [])}</div>
+      <textarea class="note-new" data-note="${c.id}" rows="2"
+                placeholder="что сказали, о чём договорились — Ctrl+Enter"></textarea>
+
       ${(d.search || []).length ? `
         <h4 class="mt">Найти руководителя вручную</h4>
         <p class="hint-sm">Программа сюда не ходит и ничего не сохраняет:
@@ -835,6 +882,7 @@ async function toggleCard(tr, id) {
     </section>
   </div>`;
   bindCopy(holder);
+  bindWork(holder, c);
   const del = holder.querySelector("[data-del]");
   if (del) del.onclick = async (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -842,6 +890,81 @@ async function toggleCard(tr, id) {
     await post("/api/company/" + c.id + "/delete", {blacklist: true});
     toast("Удалено");
     loadCompanies(); loadStats();
+  };
+}
+
+// Работа с компанией: следующий шаг, заметки, письмо.
+//
+// Всё сохраняется само, без кнопки «сохранить»: человек в этот момент
+// держит трубку, и лишнее нажатие он просто не сделает.
+function bindWork(root, c) {
+  const step = root.querySelector(".next-step");
+  const date = root.querySelector(".next-date");
+  const save = async () => {
+    await post("/api/company/" + c.id, {
+      next_step: step.value.trim(), next_date: date.value});
+    c.next_step = step.value.trim();
+    c.next_date = date.value;
+    loadStats();
+  };
+  step.onchange = save;
+  date.onchange = save;
+
+  const box = root.querySelector(".notes");
+  const field = root.querySelector(".note-new");
+
+  function bindDrops() {
+    box.querySelectorAll("[data-drop]").forEach((b) => {
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        const d = await post("/api/company/" + c.id + "/note",
+                             {delete: Number(b.dataset.drop)});
+        if (d && d.ok) { box.innerHTML = notesHtml(d.notes); bindDrops(); }
+      };
+    });
+  }
+  bindDrops();
+
+  field.onkeydown = async (e) => {
+    if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
+    const text = field.value.trim();
+    if (!text) return;
+    field.value = "";
+    const d = await post("/api/company/" + c.id + "/note", {text});
+    if (d && d.ok) { box.innerHTML = notesHtml(d.notes); bindDrops(); toast("Записано"); }
+    else toast((d && d.error) || "не записалось");
+  };
+
+  const letterBtn = root.querySelector("[data-letter]");
+  const letterBox = root.querySelector("[data-letter-box]");
+  letterBtn.onclick = async (e) => {
+    e.stopPropagation();
+    letterBtn.disabled = true;
+    letterBtn.textContent = "пишу…";
+    letterBox.hidden = false;
+    letterBox.innerHTML = `<div class="skeleton" style="height:90px"></div>`;
+    const d = await post("/api/company/" + c.id + "/letter", {});
+    letterBtn.disabled = false;
+    letterBtn.textContent = "Письмо через ИИ";
+    if (!d || !d.ok) {
+      letterBox.innerHTML = `<p class="bad">${esc((d && d.error) || "не вышло")}</p>`;
+      return;
+    }
+    // Письмо не отправляется отсюда и не сохраняется: это черновик,
+    // который человек прочитает и поправит под себя.
+    letterBox.innerHTML = `
+      <p class="letter-subj"><b>Тема:</b> ${esc(d.subject)}</p>
+      <pre class="letter-body">${esc(d.body)}</pre>
+      <div class="detail-links">
+        <button class="btn sm" data-copy-letter>Скопировать</button>
+        ${d.to ? `<a class="btn sm" href="mailto:${esc(d.to)}?subject=${
+            encodeURIComponent(d.subject)}&body=${
+            encodeURIComponent(d.body)}">Открыть в почте (${esc(d.to)})</a>` : ""}
+      </div>`;
+    letterBox.querySelector("[data-copy-letter]").onclick = (ev) => {
+      ev.stopPropagation();
+      copy(d.subject + "\n\n" + d.body);
+    };
   };
 }
 
