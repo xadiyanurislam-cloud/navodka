@@ -19,7 +19,7 @@ from app import settings                                    # noqa: E402
 settings.data_dir = lambda: _TMP
 settings.db_path = lambda: os.path.join(_TMP, "test.sqlite3")
 
-from app import ai, db, enrich, export, geo, profile, score, social, update  # noqa: E402
+from app import ai, db, diag, enrich, export, geo, profile, score, social, update  # noqa: E402
 from app.sources import dadata, fns, gis2, hh, importer, site, zakupki  # noqa: E402
 
 
@@ -521,6 +521,44 @@ class FindByTrade(unittest.TestCase):
         rows = hh.search_employers_by_text("стоматология",
                                            session_factory=lambda: FakeSession())
         self.assertEqual([r["name"] for r in rows], ["Стоматология Улыбка"])
+
+
+class ExitCountry(unittest.TestCase):
+    """Откуда программа выходит в интернет.
+
+    Три российских источника отказывают тремя разными способами при
+    работающей сети — это не три поломки, а одна: зарубежный адрес.
+    Строка нужна, чтобы это не приходилось угадывать.
+    """
+
+    class _Resp:
+        status_code = 200
+        def __init__(self, d): self._d = d
+        def json(self): return self._d
+
+    def _session(self, payload):
+        outer = self
+
+        class S:
+            def get(self, url, timeout=None):
+                return outer._Resp(payload)
+        return S()
+
+    def test_country_code_is_normalised(self):
+        self.assertEqual(diag._where(self._session({"country": "Germany", "cc": "de"})),
+                         ("Germany", "DE"))
+
+    def test_russian_address_reads_as_ru(self):
+        self.assertEqual(diag._where(self._session({"country": "Russia", "cc": "ru"}))[1],
+                         "RU")
+
+    def test_no_answer_is_not_a_crash(self):
+        """Определить страну не вышло — проверка источников всё равно
+        должна дойти до конца."""
+        class Dead:
+            def get(self, url, timeout=None):
+                raise OSError("нет сети")
+        self.assertEqual(diag._where(Dead()), ("", ""))
 
 
 class SavedSearches(unittest.TestCase):

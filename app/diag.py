@@ -30,6 +30,44 @@ def _get(session, url, params=None, timeout=15):
         return None, 0, str(e)[:200]
 
 
+# Российские источники, которые режут зарубежные адреса. Список нужен не
+# для кода, а для объяснения: когда падают именно они, причина одна.
+RU_ONLY = "hh.ru, ФНС и Госзакупки"
+
+
+def _where(s):
+    """Из какой страны программа выходит в интернет.
+
+    Одна строка, зато решающая. hh.ru, ФНС и Госзакупки закрыты для
+    зарубежных адресов, и когда три разных источника отказывают тремя
+    разными способами — 403, пустой ответ и обрыв TLS, — а сеть при этом
+    работает, причина почти всегда одна: включённый VPN. Без этой строки
+    её приходится угадывать, и угадывают обычно неверно, пытаясь чинить
+    программу.
+
+    Ни ключи, ни собранные данные никуда не отправляются: сервису виден
+    только адрес, с которого пришёл запрос, — тот же, что видит любой
+    открытый в браузере сайт. Запрос делается по нажатию «Проверить
+    источники», а не сам по себе.
+    """
+    for url, get in (
+        ("https://api.myip.com", lambda d: (d.get("country"), d.get("cc"))),
+        ("https://ipinfo.io/json", lambda d: (d.get("country"), d.get("country"))),
+        ("https://ifconfig.co/json", lambda d: (d.get("country"), d.get("country_iso"))),
+    ):
+        try:
+            r = s.get(url, timeout=8)
+            if r.status_code != 200:
+                continue
+            d = r.json() or {}
+        except Exception:
+            continue
+        name, code = get(d)
+        if name:
+            return str(name), str(code or "").upper()
+    return "", ""
+
+
 def _row(name, ok, note, ms=0, hint=""):
     return {"name": name, "ok": ok, "note": note, "ms": ms, "hint": hint}
 
@@ -40,6 +78,7 @@ def run():
     s = requests.Session()
     s.headers.update({"User-Agent": settings.USER_AGENT, "Accept": "application/json"})
     out = []
+    country, cc = "", ""      # страна выхода; заполняется ниже, если есть связь
 
     # Первыми — сведения о самой сборке. Без них после обновления нельзя
     # понять, новая программа не работает или запускается старая.
@@ -68,6 +107,28 @@ def run():
         # интернета» значит уводить от настоящей причины.
         out.append(_row("Интернет", True,
                         "связь есть, ответ %s" % r.status_code, ms))
+
+        # Откуда именно мы выходим. Ставится сразу после связи, потому
+        # что объясняет отказы всех источников ниже разом.
+        country, cc = _where(s)
+        if not country:
+            out.append(_row("Откуда выходим", None,
+                            "определить не удалось",
+                            hint="Не страшно: строка нужна только для "
+                                 "объяснения отказов российских источников."))
+        elif cc == "RU":
+            out.append(_row("Откуда выходим", True,
+                            "%s — российский адрес, ограничений по стране нет"
+                            % country))
+        else:
+            out.append(_row("Откуда выходим", False,
+                            "%s — зарубежный адрес" % country,
+                            hint="Вот и причина. %s закрыты для зарубежных "
+                                 "адресов и отвечают отказом независимо от "
+                                 "программы. Выключите VPN целиком (не только "
+                                 "в браузере), закройте и откройте программу, "
+                                 "нажмите «Проверить источники» ещё раз."
+                                 % RU_ONLY))
 
         # 2. hh.ru настоящим поисковым запросом, а не пингом: отказ
         #    приходит именно на поиск. Перебираем те же способы связи,
@@ -106,23 +167,37 @@ def run():
             done = True
             break
         if not done:
+            # Отказ всем трём способам, включая подделку отпечатка
+            # Chrome, — это отказ адресу, а не программе.
+            hint = net.missing_note()
+            if cc and cc != "RU":
+                hint = ("Отказ пришёл на все способы, включая подделку "
+                        "отпечатка Chrome. Значит, hh отклоняет не программу, "
+                        "а адрес: выход в интернет идёт через %s. Выключите "
+                        "VPN и повторите проверку." % country)
             out.append(_row("hh.ru — поиск", False,
                             "не подошёл ни один способ: " + "; ".join(tried),
-                            hint=net.missing_note()))
+                            hint=hint))
 
     # 3. ФНС — без ключа, по известному ИНН Сбербанка.
     r, ms, err = _get(s, "https://bo.nalog.ru/nbo/organizations/search",
                       {"query": "7707083893", "page": 0})
+    abroad = ("Источник закрыт для зарубежных адресов, а выход идёт через "
+              "%s. Дело не в программе — выключите VPN." % country) \
+        if (cc and cc != "RU") else ""
     if err:
-        out.append(_row("ФНС (отчётность)", False, err))
+        out.append(_row("ФНС (отчётность)", False, err, hint=abroad))
     else:
         try:
             n = len(r.json() if isinstance(r.json(), list)
                     else (r.json().get("content") or []))
         except Exception:
             n = 0
+        # Пустой ответ на ИНН Сбербанка — это не «нет данных»: у ФНС они
+        # есть заведомо. Так отвечает источник, когда не хочет отвечать.
         out.append(_row("ФНС (отчётность)", r.status_code == 200 and n > 0,
-                        "ответ %s, записей %d" % (r.status_code, n), ms))
+                        "ответ %s, записей %d" % (r.status_code, n), ms,
+                        hint=abroad if n == 0 else ""))
 
     # 4. DaData — только если задан ключ.
     token = db.get_setting("dadata_token", "")
@@ -164,8 +239,8 @@ def run():
                       {"searchString": "7707083893", "pageNumber": 1}, timeout=20)
     if err:
         out.append(_row("Госзакупки", False, err,
-                        hint="Источник необязательный: он включается "
-                             "галочкой в обогащении."))
+                        hint=abroad or "Источник необязательный: он включается "
+                                       "галочкой в обогащении."))
     else:
         out.append(_row("Госзакупки", r.status_code == 200,
                         "ответ %s" % r.status_code, ms))
