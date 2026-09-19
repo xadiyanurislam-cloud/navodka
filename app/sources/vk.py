@@ -14,7 +14,20 @@
 писали. Остаётся сверить фамилию с ЕГРЮЛ и сказать, совпало или нет.
 
 Нужен сервисный ключ: vk.com/apps?act=manage → создать приложение →
-«Сервисный ключ доступа». Выдаётся сразу, без модерации.
+«Сервисный ключ доступа». Выдаётся сразу, без модерации, срок не
+ограничен.
+
+Важное ограничение, из которого следует вся здешняя логика. Сервисный
+ключ умеет не всё: groups.getById с ним работает, а groups.search — нет,
+поиск по сообществам ВК разрешает только ключом пользователя, который
+живёт час и требует входа через браузер. Для программы, которая должна
+работать сама, это не годится.
+
+Поэтому группу мы не ищем, а узнаём: ссылку на неё компания уже
+опубликовала — на своём сайте или в карточке справочника, и к моменту
+этого шага она лежит в базе. По ссылке достаточно getById. Поиск по
+названию остался запасным путём на случай, если ключ пользователя всё же
+задан, и отключается после первого отказа.
 """
 import re
 import time
@@ -56,8 +69,57 @@ def _call(method, params, token, session=None, timeout=15):
             return None, "слишком часто"        # обрабатывается повтором
         if code == 29:
             return None, "у ключа ВК кончился дневной лимит"
+        if code in (15, 27, 28):
+            # 15 — доступ запрещён, 27/28 — метод требует ключа
+            # сообщества или приложения. Для поиска по сообществам это
+            # означает одно: сервисным ключом так нельзя.
+            return None, ("этот метод недоступен сервисному ключу "
+                          "(ВК: %s)" % msg[:90])
         return None, "ВК ответил ошибкой %s: %s" % (code, msg[:120])
     return d.get("response"), ""
+
+
+SCREEN_RE = re.compile(r"(?:https?://)?(?:m\.)?vk\.com/([A-Za-z0-9_.]{2,60})", re.I)
+
+# Адреса самого ВК, которые встречаются в ссылках, но группой не являются.
+NOT_A_GROUP = {"share", "share.php", "away.php", "im", "video", "audio",
+               "widget_community.php", "js", "login", "id0"}
+
+
+def screen_name(url):
+    """Короткое имя сообщества из ссылки. Пустая строка — не то."""
+    m = SCREEN_RE.search(url or "")
+    if not m:
+        return ""
+    name = m.group(1).strip("/.")
+    if not name or name.lower() in NOT_A_GROUP:
+        return ""
+    return name
+
+
+def by_url(url, token, session=None, on_log=None):
+    """Сообщество по ссылке, которую компания опубликовала сама.
+
+    Главный путь: работает сервисным ключом и не зависит от поиска.
+    Возвращает ({id, name, url}, ошибка).
+    """
+    name = screen_name(url)
+    if not name or not token:
+        return {}, ""
+    resp, err = _call("groups.getById",
+                      {"group_id": name,
+                       "fields": "contacts,description,site,members_count"},
+                      token, session)
+    if err:
+        return {}, err
+    groups = (resp or {}).get("groups") or (resp if isinstance(resp, list) else [])
+    if not groups:
+        return {}, ""
+    g = groups[0]
+    return {"id": g.get("id"), "name": g.get("name") or "",
+            "url": "https://vk.com/" + (g.get("screen_name") or
+                                        ("club%s" % g.get("id"))),
+            "raw": g}, ""
 
 
 def find_group(name, token, city_id=None, session=None, on_log=None):
@@ -80,7 +142,10 @@ def find_group(name, token, city_id=None, session=None, on_log=None):
     if err:
         if on_log:
             on_log("ВК: %s" % err, "warn")
-        return {}
+        # Отдаём ошибку наружу отдельным полем: вызывающий должен
+        # отличить «не нашлось» от «этим ключом так нельзя» и во втором
+        # случае перестать пробовать.
+        return {"error": err}
     items = (resp or {}).get("items") or []
     for it in items:
         # Отсекаем заведомо не то: закрытые и удалённые сообщества.
@@ -92,6 +157,15 @@ def find_group(name, token, city_id=None, session=None, on_log=None):
                 "url": "https://vk.com/" + (it.get("screen_name") or
                                             ("club%s" % it.get("id")))}
     return {}
+
+
+def contacts_from_group(g, token, session=None):
+    """Контактные лица из уже полученной карточки сообщества.
+
+    Отдельно от group_contacts, чтобы не ходить в ВК второй раз за тем,
+    что уже пришло в ответе by_url.
+    """
+    return _people(g or {}, token, session)
 
 
 def group_contacts(group_id, token, session=None, on_log=None):
@@ -113,7 +187,11 @@ def group_contacts(group_id, token, session=None, on_log=None):
     groups = (resp or {}).get("groups") or (resp if isinstance(resp, list) else [])
     if not groups:
         return [], {}
-    g = groups[0]
+    return _people(groups[0], token, session)
+
+
+def _people(g, token, session=None):
+    """Разбор контактов сообщества. Возвращает (список, сведения)."""
     about = {"site": g.get("site") or "", "members": g.get("members_count") or 0,
              "description": (g.get("description") or "")[:600]}
 

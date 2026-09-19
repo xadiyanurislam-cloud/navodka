@@ -4,6 +4,7 @@
 Сеть здесь не трогаем намеренно: тест, зависящий от чужого сервера, рано
 или поздно краснеет не из-за нашей ошибки, и его перестают читать.
 """
+import io
 import os
 import sys
 import tempfile
@@ -666,6 +667,29 @@ class DirectorInSocials(unittest.TestCase):
         from app.sources import vk
         self.assertTrue(vk._looks_same("Ромашка", "Ромашка | Цветы Москва"))
         self.assertFalse(vk._looks_same("Ромашка", "Котики и мемы"))
+
+    def test_group_is_taken_from_a_published_link(self):
+        """Сервисный ключ ВК не умеет искать сообщества по названию —
+        только открывать их по ссылке. Ссылку компания уже опубликовала."""
+        from app.sources import vk
+        self.assertEqual(vk.screen_name("https://vk.com/dentalux"), "dentalux")
+        self.assertEqual(vk.screen_name("https://m.vk.com/club123"), "club123")
+        self.assertEqual(vk.screen_name("https://dentalux.ru"), "")
+        # Кнопка «поделиться» — не сообщество.
+        self.assertEqual(vk.screen_name("https://vk.com/share.php?url=x"), "")
+
+    def test_service_key_refusal_is_told_apart_from_empty_result(self):
+        """«Не нашлось» и «этим ключом так нельзя» — разные исходы: во
+        втором случае повторять запрос на каждой компании незачем."""
+        from app.sources import vk
+        code = io.open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "app/sources/vk.py"), encoding="utf-8").read()
+        self.assertIn("недоступен сервисному ключу", code)
+        worker_code = io.open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "app/worker.py"), encoding="utf-8").read()
+        self.assertIn("_vk_search_off", worker_code)
 
     def test_post_tells_a_boss_from_a_sales_manager(self):
         from app.sources import vk

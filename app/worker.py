@@ -685,22 +685,66 @@ def task_ai(task_id, params):
     log("Разобрано компаний: %d" % done)
 
 
+# Поиск сообществ по названию сервисным ключом запрещён. Узнав это один
+# раз за прогон, перестаём пробовать: ответ будет тот же, а запрос —
+# лишняя секунда на каждой компании.
+_vk_search_off = {"off": False}
+
+
+def _known_vk_link(cid):
+    """Ссылка на сообщество, которую компания уже опубликовала.
+
+    К этому шагу она обычно лежит в базе: её приносит обход сайта или
+    карточка Яндекса. Это и есть главный путь — getById по ссылке
+    работает сервисным ключом, в отличие от поиска.
+    """
+    rows = db.conn().execute(
+        "SELECT value FROM contacts WHERE company_id=? AND kind='social'",
+        (cid,)).fetchall()
+    for r in rows:
+        if vk.screen_name(r["value"]):
+            return r["value"]
+    return ""
+
+
 def _vk_contacts(cid, row, token, http, log):
-    """Группа компании во ВКонтакте и её контактные лица.
+    """Сообщество компании во ВКонтакте и его контактные лица.
 
     Возвращает True, если нашёлся контакт первого лица. Молчит, когда не
     нашлось: у большинства компаний группы либо нет, либо контакты в ней
     не заполнены, и писать об этом в журнал по каждой строке — значит
     засыпать его пустотой.
     """
-    g = vk.find_group(row["name"], token, session=http, on_log=log)
+    g, contacts, about = {}, [], {}
+
+    link = _known_vk_link(cid)
+    if link:
+        g, err = vk.by_url(link, token, session=http, on_log=log)
+        if err:
+            log("   ВК: %s" % err, "warn")
+            return False
+        if g:
+            contacts, about = vk.contacts_from_group(g.get("raw"), token, http)
+
+    if not g and not _vk_search_off["off"]:
+        # Запасной путь — поиск по названию. Работает только с ключом
+        # пользователя; сервисный получает отказ, и тогда выключаем.
+        found = vk.find_group(row["name"], token, session=http, on_log=log)
+        if found.get("error"):
+            _vk_search_off["off"] = True
+            log("   ВК: поиск по названию этому ключу недоступен — дальше "
+                "работаем только по ссылкам с сайтов и из справочников.", "warn")
+            return False
+        g = found or {}
+        if g:
+            contacts, about = vk.group_contacts(g["id"], token, session=http,
+                                                on_log=log)
     if not g:
         return False
+
     db.add_signal(cid, "vk_group", g["url"])
     db.add_contact(cid, "social", g["url"], "general", 80, "unchecked",
                    "группа ВКонтакте")
-
-    contacts, about = vk.group_contacts(g["id"], token, session=http, on_log=log)
     if about.get("members"):
         db.add_signal(cid, "vk_members", about["members"])
     if not contacts:
