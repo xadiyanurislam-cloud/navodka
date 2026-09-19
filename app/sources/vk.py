@@ -122,6 +122,49 @@ def by_url(url, token, session=None, on_log=None):
             "raw": g}, ""
 
 
+def by_domain(site, token, session=None, on_log=None):
+    """Сообщество по домену сайта — с обязательной сверкой.
+
+    Компании сплошь и рядом берут для группы то же короткое имя, что и
+    для домена: romashka.ru → vk.com/romashka. Это догадка, и сама по
+    себе она ничего не стоит: под тем же именем может сидеть кто угодно,
+    а чужая группа в карточке хуже пустой клетки — по ней напишут.
+
+    Поэтому догадку обязательно проверяем. Засчитываем только если в
+    самой группе в поле «Сайт» стоит тот же домен: это уже не совпадение
+    имён, а подтверждение от самой компании. Если поля нет — отказываемся,
+    даже когда группа существует и название похоже.
+    """
+    host = domain_of(site)
+    if not host or not token:
+        return {}, ""
+    label = host.split(".")[0]
+    if len(label) < 4 or label in ("www", "shop", "site", "home", "info"):
+        return {}, ""
+    got, err = by_url("https://vk.com/" + label, token, session)
+    if err or not got:
+        return {}, err
+    raw = got.get("raw") or {}
+    if domain_of(raw.get("site") or "") != host:
+        if on_log:
+            on_log("ВК: vk.com/%s существует, но своим сайтом называет не "
+                   "%s — не засчитываю" % (label, host))
+        return {}, ""
+    if on_log:
+        on_log("ВК: vk.com/%s подтверждена — сама группа ссылается на %s"
+               % (label, host))
+    return got, ""
+
+
+def domain_of(url):
+    """Второй уровень домена из любого вида ссылки."""
+    u = (url or "").strip().lower()
+    u = re.sub(r"^https?://", "", u).split("/")[0].split("?")[0]
+    if u.startswith("www."):
+        u = u[4:]
+    return u if "." in u else ""
+
+
 def find_group(name, token, city_id=None, session=None, on_log=None):
     """Группа компании по названию. Возвращает лучшую из найденных.
 

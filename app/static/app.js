@@ -455,6 +455,8 @@ $("btn-import").onclick = () => {
   run("/api/import", {text}, "Импорт");
 };
 
+$("btn-socials").onclick = () => run("/api/socials",
+  {limit: $("e-limit").value, only_empty: true}, "Поиск соцсетей");
 $("btn-enrich").onclick = () => run("/api/enrich", {
   limit: $("e-limit").value, verify: $("e-verify").checked,
   fns: $("e-fns").checked, zakupki: $("e-zakupki").checked,
@@ -778,6 +780,7 @@ document.addEventListener("keydown", (e) => {
 const STATUS = {queued: "в очереди", running: "выполняется", done: "готово",
                 error: "ошибка", stopped: "остановлено"};
 const KINDS = {find: "Поиск компаний", hh_search: "Поиск по вакансиям",
+               socials: "Поиск соцсетей",
                gis_search: "Поиск по 2ГИС", import: "Импорт списка",
                enrich: "Обогащение", ai: "ИИ-анализ"};
 let lastTask = null;
@@ -910,6 +913,18 @@ const NET_NAME = {vk: "ВКонтакте", telegram: "Telegram", tenchat: "TenC
                   instagram: "Instagram", whatsapp: "WhatsApp",
                   ok: "Одноклассники", youtube: "YouTube", dzen: "Дзен",
                   rutube: "Rutube"};
+
+// Короткая подпись сети по адресу. В строке таблицы места на
+// «ВКонтакте» нет, а «ВК» читается так же однозначно.
+const NET_SHORT = [[/vk\.com/i, "ВК"], [/t\.me|telegram/i, "TG"],
+                   [/tenchat/i, "TenChat"], [/ok\.ru/i, "ОК"],
+                   [/youtube/i, "YouTube"], [/dzen/i, "Дзен"],
+                   [/rutube/i, "Rutube"], [/instagram/i, "Inst"],
+                   [/wa\.me|whatsapp/i, "WhatsApp"]];
+function netName(url) {
+  for (const [rx, name] of NET_SHORT) if (rx.test(url || "")) return name;
+  return "ссылка";
+}
 
 // ── Контакты ─────────────────────────────────────────────
 function contactRow(c) {
@@ -1580,11 +1595,21 @@ async function loadCompanies(force) {
     const cts = all.slice(0, 3).map(contactRow).join("")
       + (all.length > 3
          ? `<div class="ct c-more">и ещё ${all.length - 3}</div>` : "");
+    // Соцсети — отдельной строкой под названием, а не в общей очереди
+    // из трёх контактов: там их всегда вытесняют телефоны, и найденная
+    // группа компании остаётся невидимой до открытия карточки.
+    const soc = (r.contacts || []).filter((x) => x.kind === "social");
+    const socLine = soc.length
+      ? `<div class="soc-line">${soc.slice(0, 4).map((x) =>
+          `<a class="soc" href="${esc(x.value)}" target="_blank"
+              title="${esc(x.source || "")}">${esc(netName(x.value))}</a>`).join("")}${
+          soc.length > 4 ? `<span class="soc more">+${soc.length - 4}</span>` : ""}</div>`
+      : "";
     return `<tr class="row" data-id="${r.id}">
       <td class="c-pick"><input type="checkbox" class="pick-one" data-id="${r.id}"
         ${picked.has(String(r.id)) ? "checked" : ""}></td>
       <td>${scoreBadge(r.score)}</td>
-      <td><div class="co">${esc(r.name)}</div><div class="co-meta">${meta}</div></td>
+      <td><div class="co">${esc(r.name)}</div><div class="co-meta">${meta}</div>${socLine}</td>
       <td>${r.director ? esc(r.director) : `<span class="nobody">—</span>`}
           <div class="co-meta">${esc(r.director_post || "")}</div></td>
       <td>${cts || `<span class="nobody">—</span>`}</td>

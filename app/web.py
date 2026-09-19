@@ -269,6 +269,15 @@ def create_app():
         })
         return jsonify(ok=True, task_id=task_id)
 
+    @app.post("/api/socials")
+    def api_socials():
+        """Отдельный проход за соцсетями по уже собранной базе."""
+        d = request.get_json(silent=True) or {}
+        return jsonify(ok=True, task_id=db.create_task("socials", {
+            "limit": max(1, min(1000, int(d.get("limit") or 100))),
+            "only_empty": bool(d.get("only_empty", True)),
+        }))
+
     @app.post("/api/ai/check")
     def api_ai_check():
         cfg = ai.config()

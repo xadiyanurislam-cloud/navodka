@@ -22,7 +22,7 @@ settings.data_dir = lambda: _TMP
 settings.db_path = lambda: os.path.join(_TMP, "test.sqlite3")
 
 from app import (ai, db, diag, enrich, export, geo, net, profile, score,  # noqa: E402
-                 social, update, web)
+                 social, update, web, worker)
 from app.sources import dadata, fns, gis2, hh, importer, site, zakupki  # noqa: E402
 
 
@@ -2610,6 +2610,136 @@ class ScoreBreakdown(unittest.TestCase):
         self.assertEqual(keys, set(score.WEIGHTS),
                          "в справке не все слагаемые")
         self.assertTrue(all(x["why"] for x in d["legend"]))
+
+
+class SocialsFirstClass(unittest.TestCase):
+    """Соцсети — то, ради чего программу и открывают: по ним пишут,
+    когда на почту не отвечают, а в группе ВК видны контактные лица."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().execute("DELETE FROM contacts")
+        db.conn().commit()
+
+    def test_domain_is_taken_from_any_shape_of_link(self):
+        from app.sources import vk as vk_src
+        self.assertEqual(vk_src.domain_of("https://Romashka.RU/kontakty"),
+                         "romashka.ru")
+        self.assertEqual(vk_src.domain_of("www.romashka.ru"), "romashka.ru")
+        self.assertEqual(vk_src.domain_of("romashka"), "")
+
+    def test_group_is_taken_only_when_it_names_our_site(self):
+        """Чужая группа в карточке хуже пустой клетки: по ней напишут."""
+        from app.sources import vk as vk_src
+        calls = []
+
+        def fake_by_url(url, token, session=None):
+            calls.append(url)
+            return {"id": 1, "name": "Ромашка", "url": "https://vk.com/romashka",
+                    "raw": {"site": "https://romashka.ru"}}, ""
+
+        real = vk_src.by_url
+        vk_src.by_url = fake_by_url
+        try:
+            got, err = vk_src.by_domain("https://romashka.ru", "ключ")
+        finally:
+            vk_src.by_url = real
+        self.assertEqual(err, "")
+        self.assertEqual(got["url"], "https://vk.com/romashka")
+        self.assertEqual(calls, ["https://vk.com/romashka"])
+
+    def test_group_with_another_site_is_refused(self):
+        from app.sources import vk as vk_src
+        real = vk_src.by_url
+        vk_src.by_url = lambda url, token, session=None: (
+            {"id": 2, "name": "Кто-то ещё", "url": "https://vk.com/romashka",
+             "raw": {"site": "https://другой-сайт.рф"}}, "")
+        try:
+            got, err = vk_src.by_domain("https://romashka.ru", "ключ")
+        finally:
+            vk_src.by_url = real
+        self.assertEqual(got, {}, "засчитали чужую группу")
+
+    def test_group_without_a_site_field_is_refused(self):
+        """Совпадение имён — не подтверждение."""
+        from app.sources import vk as vk_src
+        real = vk_src.by_url
+        vk_src.by_url = lambda url, token, session=None: (
+            {"id": 3, "name": "Ромашка", "url": "https://vk.com/romashka",
+             "raw": {}}, "")
+        try:
+            got, _err = vk_src.by_domain("https://romashka.ru", "ключ")
+        finally:
+            vk_src.by_url = real
+        self.assertEqual(got, {})
+
+    def test_too_short_label_is_not_even_tried(self):
+        """vk.com/abc — это чей угодно адрес, только не наш."""
+        from app.sources import vk as vk_src
+        tried = []
+        real = vk_src.by_url
+        vk_src.by_url = lambda url, token, session=None: (tried.append(url), ({}, ""))[1]
+        try:
+            vk_src.by_domain("https://abc.ru", "ключ")
+        finally:
+            vk_src.by_url = real
+        self.assertEqual(tried, [])
+
+    def test_socials_add_to_the_score(self):
+        row = {"director": "", "site": ""}
+        without, _ = score.compute(row, {}, [])
+        with_soc, parts = score.compute(
+            row, {}, [{"kind": "social", "owner": "general", "verified": "unchecked"}])
+        self.assertGreater(with_soc, without)
+        self.assertTrue(any(p["key"] == "has_social" and p["got"] for p in parts))
+
+    def test_missing_socials_are_named_in_the_breakdown(self):
+        _v, parts = score.compute({"director": "", "site": ""}, {}, [])
+        miss = [p for p in parts if p["key"] == "has_social"]
+        self.assertEqual(len(miss), 1)
+        self.assertFalse(miss[0]["got"])
+        self.assertIn("не нашлось", miss[0]["text"])
+
+    def test_new_contact_is_reported_as_new_once(self):
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
+        first = db.add_contact(cid, "social", "https://vk.com/x", "general",
+                               80, "unchecked", "сайт")
+        again = db.add_contact(cid, "social", "https://vk.com/x", "general",
+                               80, "unchecked", "сайт")
+        self.assertTrue(first)
+        self.assertFalse(again, "повторный контакт находкой не является")
+
+    def test_pass_refuses_when_there_is_nothing_to_look_at(self):
+        """Соцсети ищутся по сайту — без сайта искать не по чему."""
+        db.upsert_company({"name": "Без сайта", "source": "тест"})
+        tid = db.create_task("socials", {})
+        with self.assertRaises(RuntimeError) as e:
+            worker.task_socials(tid, {})
+        self.assertIn("сайт", str(e.exception))
+
+    def test_pass_skips_those_who_already_have_socials(self):
+        cid, _ = db.upsert_company({"name": "С соцсетями", "source": "тест",
+                                    "site": "https://a.ru"})
+        db.add_contact(cid, "social", "https://vk.com/a", "general", 80,
+                       "unchecked", "сайт")
+        db.upsert_company({"name": "Без соцсетей", "source": "тест",
+                           "site": "https://b.ru"})
+        seen = []
+        real = worker.site_src.crawl
+        worker.site_src.crawl = lambda site, **k: (seen.append(site), {"socials": {}})[1]
+        try:
+            worker.task_socials(db.create_task("socials", {}), {"only_empty": True})
+        finally:
+            worker.site_src.crawl = real
+        self.assertEqual(seen, ["https://b.ru"])
+
+    def test_socials_reach_the_export(self):
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
+        db.add_contact(cid, "social", "https://vk.com/x", "general", 80,
+                       "unchecked", "сайт")
+        rows = export.rows_for_export(db.conn())
+        self.assertTrue(any("vk.com/x" in (r.get("social") or "") for r in rows))
 
 
 if __name__ == "__main__":

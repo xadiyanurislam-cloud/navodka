@@ -31,6 +31,7 @@ WEIGHTS = {
     "lpr_found": 25,         # контакт первого лица НАЙДЕН, а не выведен
     "lpr_guessed": 8,        # выведен по схеме — уже что-то, но догадка
     "mail_verified": 15,     # почта руководителя отвечает на проверку
+    "has_social": 8,         # есть куда написать помимо почты
 }
 
 # Размер, при котором сделка вообще возможна. Микробизнес не платит, у
@@ -64,6 +65,9 @@ WHY = {
     "lpr_guessed": "Адрес руководителя выведен по схеме домена компании. "
                    "Это догадка: пробовать написать можно, рассчитывать — нет.",
     "mail_verified": "Почта руководителя прошла проверку по SMTP — ящик живой.",
+    "has_social": "Есть сообщество или канал: туда пишут, когда на почту "
+                  "не отвечают, а в группе ВК вдобавок видны контактные "
+                  "лица, которых компания указала сама.",
 }
 
 
@@ -139,6 +143,10 @@ def compute(company, signals, contacts):
                        "почта есть" if "email" in kinds else "почты нет"))
     score += take(part("has_phone", "phone" in kinds,
                        "телефон есть" if "phone" in kinds else "телефона нет"))
+    socials = [c for c in contacts if c["kind"] == "social"]
+    score += take(part("has_social", bool(socials),
+                       "соцсетей: %d" % len(socials) if socials
+                       else "соцсетей не нашлось"))
 
     # Контакт первого лица — то, ради чего всё затевалось. Найденный и
     # выведенный по схеме весят по-разному: по первому можно звонить, по
@@ -167,6 +175,7 @@ def legend():
     """Все слагаемые с весами — для справки, вне привязки к компании."""
     order = ("vacancies_sales", "calltracking", "lpr_found", "size_fit",
              "has_director", "zakupki_contact", "mail_verified", "telephony",
-             "crm", "lpr_guessed", "has_site", "has_email", "has_phone", "chat")
+             "crm", "lpr_guessed", "has_social", "has_site", "has_email",
+             "has_phone", "chat")
     return [{"key": k, "points": WEIGHTS[k], "why": WHY.get(k, "")}
             for k in order]

@@ -323,13 +323,17 @@ def add_contact(company_id, kind, value, owner="unknown", confidence=50,
                 verified="unchecked", source=""):
     value = (value or "").strip()
     if not value:
-        return
+        return False
     c = conn()
-    c.execute("""INSERT OR IGNORE INTO contacts
+    cur = c.execute("""INSERT OR IGNORE INTO contacts
                  (company_id, kind, value, owner, confidence, verified, source, created_at)
                  VALUES (?,?,?,?,?,?,?,?)""",
-              (company_id, kind, value, owner, confidence, verified, source, now()))
+                    (company_id, kind, value, owner, confidence, verified,
+                     source, now()))
     c.commit()
+    # True — контакт действительно новый. Нужно тем, кто считает находки:
+    # повторно встреченный телефон находкой не является.
+    return cur.rowcount > 0
 
 
 def add_signal(company_id, key, value=""):

@@ -16,7 +16,7 @@ import time
 
 import requests
 
-from . import ai, db, enrich, geo, profile, score, settings, social, verify
+from . import ai, db, enrich, geo, net, profile, score, settings, social, verify
 from .sources import (dadata, fns, gis2, hh, importer, osm,
                       site as site_src, vk, yandex, zakupki)
 
@@ -1311,8 +1311,92 @@ def task_find(task_id, params):
         log("Новых компаний нет — обогащать нечего.", "warn")
 
 
+def task_socials(task_id, params):
+    """Пройтись по компаниям без соцсетей и попробовать их найти.
+
+    Отдельно от обогащения намеренно. Обогащение — долгий проход, в
+    котором соцсети лишь одна строка из двадцати; когда нужны именно
+    они, гонять весь цикл ради одной строки незачем. Плюс этот проход
+    можно натравить на базу, собранную раньше, не трогая всё остальное.
+
+    Два способа, оба — только то, что компания опубликовала сама:
+    ссылки с её же сайта и группа ВК, подтверждённая ссылкой на этот
+    сайт из самой группы. Догадки не сохраняются: чужая группа в
+    карточке хуже пустой клетки — по ней напишут.
+    """
+    limit = max(1, min(1000, int(params.get("limit") or 100)))
+    only_empty = params.get("only_empty", True)
+
+    def log(msg, level="info"):
+        db.log(task_id, msg, level)
+
+    c = db.conn()
+    where = ""
+    if only_empty:
+        where = ("AND id NOT IN (SELECT company_id FROM contacts "
+                 "WHERE kind='social')")
+    rows = c.execute(
+        "SELECT id, name, site FROM companies "
+        "WHERE COALESCE(site,'') <> '' %s ORDER BY score DESC LIMIT ?"
+        % where, (limit,)).fetchall()
+    if not rows:
+        raise RuntimeError(
+            "не нашлось компаний, у которых есть сайт и нет соцсетей. "
+            "Соцсети ищутся по сайту и по карточке справочника — без "
+            "сайта искать не по чему.")
+
+    db.update_task(task_id, total=len(rows), done=0)
+    log("Компаний к проверке: %d" % len(rows))
+    vk_token = db.get_setting("vk_token", "")
+    if not vk_token:
+        log("Сервисный ключ ВК не задан — группа ВК по домену искаться не "
+            "будет. Ключ бесплатный: vk.com/apps?act=manage", "warn")
+
+    http = net.plain(browser=True)
+    found_total = with_any = 0
+    for i, row in enumerate(rows, 1):
+        if _should_stop():
+            log("Остановлено пользователем.", "warn")
+            break
+        _say(task_id, log, "%s · найдено %d" % (row["name"][:40], found_total))
+        got = 0
+        try:
+            data = site_src.crawl(row["site"], session=http, max_pages=5,
+                                  budget=12)
+        except Exception as e:
+            data = {}
+            log("%s: сайт не открылся (%s)" % (row["name"], str(e)[:70]), "warn")
+        for net_name, title, url in social.as_links(data.get("socials") or {}):
+            if db.add_contact(row["id"], "social", url, "general", 80,
+                              "unchecked", "сайт: %s" % title):
+                got += 1
+        if vk_token and not (data.get("socials") or {}).get("vk"):
+            group, err = vk.by_domain(row["site"], vk_token, session=http,
+                                      on_log=log)
+            if err:
+                log("ВК: %s" % err, "warn")
+            elif group:
+                if db.add_contact(row["id"], "social", group["url"], "general",
+                                  85, "unchecked", "ВК: подтверждена сайтом"):
+                    got += 1
+        if got:
+            found_total += got
+            with_any += 1
+        db.update_task(task_id, done=i)
+        time.sleep(0.2)
+
+    log("Готово. Новых ссылок: %d, компаний с соцсетями стало больше на %d."
+        % (found_total, with_any))
+    if not found_total:
+        log("Ничего не нашлось. Соцсети берутся только оттуда, где компания "
+            "их опубликовала сама: со своего сайта и из карточки "
+            "справочника. Угадывать программа не станет — чужая группа в "
+            "карточке хуже пустой клетки.", "warn")
+
+
 HANDLERS = {
     "ai": task_ai,
+    "socials": task_socials,
     "find": task_find,
     "hh_search": task_hh_search,
     "gis_search": task_gis_search,
