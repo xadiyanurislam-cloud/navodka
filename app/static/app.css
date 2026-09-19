@@ -1034,3 +1034,17 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
    косметическая: «Дента-Люкс» стоматологией себя не называет, и без
    тега такая компания не найдётся вообще. */
 .trade-items .pick.weak{opacity:.55}
+
+/* Слово из каталога — это значение, тема — только переключатель списка.
+   Пока они выглядели одинаково, человек жал тему и ждал, что поиск
+   переключится вместе с ней. */
+.trades .lbl{display:block;margin-bottom:7px}
+.trade-items .pick{border-color:var(--accent);color:var(--accent);
+  background:var(--accent-soft)}
+.trade-items .pick:hover{background:var(--accent);color:#fff}
+.trade-items .pick.is-on{background:var(--accent);color:#fff;
+  box-shadow:0 0 0 3px var(--accent-soft)}
+.trade-items .pick.weak{border-color:var(--line);color:var(--ink-3);
+  background:var(--surface-2);opacity:1}
+.trade-items .pick.weak:hover{border-color:var(--ink-3);color:var(--ink)}
+#trade-note.warn-note{color:var(--warn)}

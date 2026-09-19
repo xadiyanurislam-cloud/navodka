@@ -2798,5 +2798,62 @@ class TradeCatalog(unittest.TestCase):
         self.assertIn("автосервис", words)
 
 
+class CatalogIsTwoSteps(unittest.TestCase):
+    """Тема только переключает список, а ищется слово. Пока два ряда
+    кнопок выглядели одинаково, человек жал тему, видел в поле прежний
+    запрос и считал это поломкой."""
+
+    def setUp(self):
+        db.init()
+        self.html = web.create_app().test_client().get("/").get_data(as_text=True)
+        self.js = io.open(os.path.join(os.path.dirname(__file__), "..",
+                                       "app", "static", "app.js"),
+                          encoding="utf-8").read()
+
+    def test_steps_are_numbered_on_the_page(self):
+        self.assertIn("1. выберите тему", self.html)
+        self.assertIn("2. нажмите вид деятельности", self.html)
+
+    def test_chosen_word_is_marked(self):
+        self.assertIn("markTrade", self.js)
+        self.assertIn("is-on", self.js)
+
+    def test_own_word_is_named_in_the_note(self):
+        """«Сейчас ищется дизайн — своё слово, не из списка»: иначе
+        расхождение между полем и списком ничем не объясняется."""
+        self.assertIn("не из списка", self.js)
+
+    def test_theme_click_does_not_touch_the_field(self):
+        """Тема меняет только видимый список — поле трогать нельзя,
+        иначе набранное руками пропадёт от случайного нажатия."""
+        block = self.js[self.js.index('$("trade-tabs").onclick'):]
+        block = block[:block.index("};")]
+        self.assertNotIn('$("q-text").value =', block)
+
+
+class DesignAndArchitecture(unittest.TestCase):
+    """«Дизайн» искали руками, а тега для него не было — находились
+    только те, у кого это слово стоит в названии."""
+
+    def test_they_search_by_tags_now(self):
+        from app.sources import osm
+        city = {"name": "Москва", "ll": "37.6,55.7", "spn": "0.9,0.5"}
+        for word, tag in (("дизайн", "graphic_design"),
+                          ("дизайн интерьера", "interior_decoration"),
+                          ("архитектурное бюро", "architect"),
+                          ("клининг", "cleaning")):
+            self.assertIn(tag, osm.build_query(word, city),
+                          "«%s» ищется только по названию" % word)
+
+    def test_rubric_names_are_in_russian(self):
+        """В карточку должно попадать «Дизайн-студия», а не graphic_design:
+        список читает продавец, а не картограф."""
+        from app.sources import osm
+        for tag in ("graphic_design", "interior_decoration", "architect",
+                    "cleaning"):
+            self.assertIn(tag, osm.RUBRIC_RU)
+            self.assertRegex(osm.RUBRIC_RU[tag], "[А-Яа-я]")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

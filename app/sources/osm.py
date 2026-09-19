@@ -73,6 +73,9 @@ TAGS = {
     "кадров": ['["office"="employment_agency"]'],
     "рекрут": ['["office"="employment_agency"]'],
     "реклам": ['["office"="advertising_agency"]'],
+    "дизайн": ['["office"="graphic_design"]', '["shop"="interior_decoration"]'],
+    "интерьер": ['["shop"="interior_decoration"]'],
+    "архитект": ['["office"="architect"]'],
     "маркетинг": ['["office"="advertising_agency"]'],
     "ветеринар": ['["amenity"="veterinary"]'],
     "аптек": ['["amenity"="pharmacy"]'],
@@ -162,7 +165,9 @@ RUBRIC_RU = {
     "builder": "Строительство", "plumber": "Сантехник",
     "electrician": "Электрик", "hvac": "Вентиляция и кондиционеры",
     "carpenter": "Столярные работы", "window_construction": "Окна",
-    "plasterer": "Отделочные работы",
+    "plasterer": "Отделочные работы", "graphic_design": "Дизайн-студия",
+    "interior_decoration": "Дизайн интерьера", "architect": "Архитектурное бюро",
+    "cleaning": "Клининг",
 }
 
 

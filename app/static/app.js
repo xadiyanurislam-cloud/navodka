@@ -459,6 +459,30 @@ $("btn-import").onclick = () => {
 // открывший программу впервые, не знает, что в неё писать: разница
 // между «грузоперевозки» и «транспортная компания» решает, найдётся
 // сотня компаний или три.
+// Тема только переключает список, а ищется слово. Два ряда кнопок
+// подряд читаются как один выбор, поэтому подпись к теме говорит «1.»,
+// подпись к словам «2.», а выбранное слово подсвечено: иначе человек
+// жмёт тему, видит в поле прежний запрос и считает это поломкой.
+function markTrade() {
+  const cur = $("q-text").value.trim().toLowerCase();
+  let known = false;
+  document.querySelectorAll(".trade-items .pick").forEach((el) => {
+    const on = el.dataset.q.toLowerCase() === cur;
+    el.classList.toggle("is-on", on);
+    if (on) known = true;
+  });
+  const note = $("trade-note");
+  if (cur && !known) {
+    note.innerHTML = `Сейчас ищется <b>${esc($("q-text").value.trim())}</b> —
+      своё слово, не из списка. Нажмите любое ниже, чтобы заменить.`;
+    note.classList.add("warn-note");
+  } else {
+    note.textContent = "Бледные слова ищутся только по названию — у них нет "
+      + "тега на карте, и компания, не назвавшая себя так, не найдётся";
+    note.classList.remove("warn-note");
+  }
+}
+
 $("trade-tabs").onclick = (e) => {
   const tab = e.target.closest(".trade-tab");
   if (!tab) return;
@@ -466,18 +490,22 @@ $("trade-tabs").onclick = (e) => {
     (t) => t.classList.toggle("is-on", t === tab));
   document.querySelectorAll(".trade-items").forEach(
     (box) => { box.hidden = box.dataset.group !== tab.dataset.group; });
+  markTrade();
 };
 document.querySelectorAll(".trade-items").forEach((box) => {
   box.onclick = (e) => {
     const pick = e.target.closest(".pick");
     if (!pick) return;
     $("q-text").value = pick.dataset.q;
+    markTrade();
     // Подставили — и сразу показали, что дальше: иначе человек жмёт
     // слово и ждёт, что поиск пойдёт сам.
     $("q-text").focus();
     toast("Вписано: " + pick.dataset.q + ". Проверьте города и жмите «Найти компании»");
   };
 });
+$("q-text").oninput = markTrade;
+markTrade();
 
 $("btn-socials").onclick = () => run("/api/socials",
   {limit: $("e-limit").value, only_empty: true}, "Поиск соцсетей");

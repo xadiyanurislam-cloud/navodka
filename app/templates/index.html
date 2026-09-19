@@ -128,12 +128,15 @@
               </div>
 
               <div class="trades">
+                <span class="lbl">Готовый список — 1. выберите тему</span>
                 <div class="trade-tabs" id="trade-tabs">
                   {% for g in trades %}
                   <button class="trade-tab{% if loop.first %} is-on{% endif %}"
                           data-group="{{ loop.index0 }}">{{ g.title }}</button>
                   {% endfor %}
                 </div>
+                <span class="lbl">2. нажмите вид деятельности — он попадёт
+                  в поле «Вид деятельности» наверху</span>
                 {% for g in trades %}
                 <div class="trade-items" data-group="{{ loop.index0 }}"
                      {% if not loop.first %}hidden{% endif %}>
@@ -144,9 +147,9 @@
                   {% endfor %}
                 </div>
                 {% endfor %}
-                <em class="fld-hint">Бледные слова ищутся только по названию —
-                   у них нет тега на карте, и компания, не назвавшая себя так,
-                   не найдётся</em>
+                <em class="fld-hint" id="trade-note">Бледные слова ищутся
+                   только по названию — у них нет тега на карте, и компания,
+                   не назвавшая себя так, не найдётся</em>
               </div>
             </div>
           </section>
