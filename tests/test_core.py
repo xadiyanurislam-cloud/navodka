@@ -935,13 +935,19 @@ class JunkAndSocials(unittest.TestCase):
         calls = []
 
         class Resp:
+            encoding = "utf-8"
             def __init__(self, code, html=""):
-                self.status_code, self.text = code, html
+                self.status_code = code
+                self._body = html.encode("utf-8")
                 self.headers = {"Content-Type": "text/html"}
+            def iter_content(self, n):
+                yield self._body
+            def close(self): pass
 
         class Sess:
             headers = {}
-            def get(self, url, timeout=None, allow_redirects=True, headers=None):
+            def get(self, url, timeout=None, allow_redirects=True,
+                    headers=None, stream=False):
                 as_browser = bool(headers and "Mozilla" in
                                   (headers.get("User-Agent") or ""))
                 calls.append(as_browser)
@@ -958,12 +964,15 @@ class JunkAndSocials(unittest.TestCase):
 
         class Resp:
             status_code = 403
-            text = ""
+            encoding = "utf-8"
             headers = {"Content-Type": "text/html"}
+            def iter_content(self, n): yield b""
+            def close(self): pass
 
         class Sess:
             headers = {}
-            def get(self, url, timeout=None, allow_redirects=True, headers=None):
+            def get(self, url, timeout=None, allow_redirects=True,
+                    headers=None, stream=False):
                 return Resp()
 
         res = site.crawl("https://glz.ru", session=Sess(), max_pages=1, pause=0)
@@ -1025,6 +1034,59 @@ class Speed(unittest.TestCase):
         self.assertIn("/team", head)
         self.assertIn("/komanda", head)
         self.assertIn("/rukovodstvo", head)
+
+
+class HugePages(unittest.TestCase):
+    """Разбор разметки — работа процессора, а она держит общую блокировку
+    Python. Пока ею заняты фоновые потоки, окно не рисуется, и Windows
+    подписывает его «Не отвечает»."""
+
+    def _session(self, body):
+        class Resp:
+            status_code = 200
+            headers = {"Content-Type": "text/html"}
+            encoding = "utf-8"
+            def iter_content(self, n):
+                for i in range(0, len(body), n):
+                    yield body[i:i + n]
+            def close(self): pass
+
+        class Sess:
+            headers = {}
+            def get(self, url, **kw):
+                return Resp()
+        return Sess()
+
+    def _page(self, mb):
+        return ("<html><body><a href='mailto:head@x.ru'>почта</a>"
+                + ("<div>товар</div>" * int(mb * 65000))
+                + "<footer>vk.com/xcompany</footer></body></html>").encode("utf-8")
+
+    def test_huge_page_is_parsed_quickly(self):
+        from app.sources import site
+        import time as _t
+        t0 = _t.time()
+        site.crawl("https://x.ru", session=self._session(self._page(4)),
+                   max_pages=1, pause=0)
+        spent = _t.time() - t0
+        self.assertLess(spent, 1.0, "четыре мегабайта разбираются %.1f с" % spent)
+
+    def test_footer_survives_the_trimming(self):
+        """Соцсети стоят в подвале, то есть в самом конце документа.
+        Обрезать хвост нельзя — ради него всё и читается."""
+        from app.sources import site
+        res = site.crawl("https://x.ru", session=self._session(self._page(4)),
+                         max_pages=1, pause=0)
+        self.assertIn("head@x.ru", res["emails"])
+        self.assertIn("vk", res["socials"])
+
+    def test_small_page_is_not_touched(self):
+        from app.sources import site
+        body = b"<html>a@b.ru vk.com/small</html>"
+        res = site.crawl("https://x.ru", session=self._session(body),
+                         max_pages=1, pause=0)
+        self.assertIn("a@b.ru", res["emails"])
+        self.assertEqual(res["socials"].get("vk"), ["small"])
 
 
 class RunLimit(unittest.TestCase):

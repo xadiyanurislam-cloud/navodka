@@ -45,6 +45,19 @@ BOSS_POSTS = ("генеральный директор", "директор", "р
               "управляющий", "президент", "главный врач", "заведующий",
               "председатель")
 
+# Сколько разметки читать и сколько разбирать.
+#
+# Это разные числа, и разница важна. Читать дёшево — это сеть; разбирать
+# дорого — регулярки по мегабайтам держат общую блокировку Python и
+# подвешивают окно программы. Поэтому читаем с запасом, а разбираем
+# начало и конец: контакты стоят в шапке, а соцсети — в подвале, то есть
+# в самом конце документа. Середина страницы — товары и текст, в них
+# ничего нужного нет.
+PARSE_HEAD = 300 * 1024
+PARSE_TAIL = 150 * 1024
+# Предел на случай, когда вместо страницы отдают поток без конца.
+HARD_CAP = 8 * 1024 * 1024
+
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 PHONE_RE = re.compile(r"(?:\+7|8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 TG_RE = re.compile(r"(?:t\.me|telegram\.me)/([A-Za-z0-9_]{5,32})")
@@ -270,6 +283,50 @@ def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None):
     seen_html = 0
     browser = {"on": False}     # перешли ли на представление браузером
 
+    def get(url, headers=None):
+        """Забрать страницу, читая не больше разумного.
+
+        Раньше бралось всё тело целиком. На сайте с гигантской главной
+        это оборачивалось и минутой ожидания, и, что хуже, разбором
+        мегабайтов разметки регулярками — а такая работа держит общую
+        блокировку Python. Пока четыре потока этим заняты, потоку,
+        который рисует окно, блокировка не достаётся, и Windows
+        подписывает окно «Не отвечает».
+
+        Страница читается целиком, но в руках остаётся только начало и
+        конец: контакты стоят в шапке, соцсети — в подвале, а середина
+        занята товарами и текстом.
+        """
+        r = s.get(url, timeout=timeout, allow_redirects=True,
+                  headers=headers, stream=True)
+        if r.status_code != 200 or "text/html" not in (r.headers.get("Content-Type") or ""):
+            r.close()
+            r._navodka_html = ""
+            return r
+        # Читаем страницу целиком, но держим только начало и конец.
+        # Середина — товары и текст, в них ничего нужного нет, а вот
+        # подвал с соцсетями стоит в самом конце документа, и обрезать
+        # его нельзя. Память при этом ограничена: сколько бы ни весила
+        # страница, в руках остаётся не больше полумегабайта.
+        head, head_size, tail, size = [], 0, b"", 0
+        try:
+            for chunk in r.iter_content(65536):
+                size += len(chunk)
+                if head_size < PARSE_HEAD:
+                    head.append(chunk)
+                    head_size += len(chunk)
+                else:
+                    tail = (tail + chunk)[-PARSE_TAIL:]
+                if size >= HARD_CAP:
+                    break
+        except Exception:
+            pass
+        finally:
+            r.close()
+        raw = b"".join(head) + ((b"\n" + tail) if tail else b"")
+        r._navodka_html = raw.decode(r.encoding or "utf-8", "replace")
+        return r
+
     def fetch(url):
         """Забрать страницу, при отказе — ещё раз, как браузер.
 
@@ -282,8 +339,7 @@ def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None):
         """
         from .. import net
         try:
-            r = s.get(url, timeout=timeout, allow_redirects=True,
-                      headers=net.BROWSER_HEADERS if browser["on"] else None)
+            r = get(url, net.BROWSER_HEADERS if browser["on"] else None)
         except Exception:
             r = None
         if r is not None and r.status_code not in (403, 406, 429, 503):
@@ -293,9 +349,7 @@ def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None):
                 else "сайт не отвечает"
         browser["on"] = True
         try:
-            r2 = s.get(url, timeout=timeout, allow_redirects=True,
-                       headers=net.BROWSER_HEADERS)
-            return r2, ""
+            return get(url, net.BROWSER_HEADERS), ""
         except Exception as e:
             return r, str(e)[:200]
 
@@ -311,7 +365,7 @@ def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None):
                 result["error"] = "сайт ответил %s" % r.status_code
             continue
         seen_html += 1
-        html = r.text
+        html = getattr(r, "_navodka_html", "") or ""
 
         for m in EMAIL_RE.findall(html):
             a = _clean_email(m)

@@ -554,8 +554,12 @@ class _Prefetch(object):
     страниц, и держать их для пятисот компаний разом незачем.
     """
 
-    WORKERS = 4
-    WINDOW = 8
+    # Три, а не четыре: разбор разметки — работа процессора, а она в
+    # Python держит общую блокировку. Четыре потока её выедали, и окну,
+    # которое рисуется в главном потоке, времени не оставалось — Windows
+    # подписывал его «Не отвечает».
+    WORKERS = 3
+    WINDOW = 6
 
     def __init__(self, rows, log, should_stop=None):
         from concurrent.futures import ThreadPoolExecutor
