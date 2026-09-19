@@ -455,6 +455,30 @@ $("btn-import").onclick = () => {
   run("/api/import", {text}, "Импорт");
 };
 
+// Каталог тематик. Поле «Вид деятельности» — пустая строка, и человек,
+// открывший программу впервые, не знает, что в неё писать: разница
+// между «грузоперевозки» и «транспортная компания» решает, найдётся
+// сотня компаний или три.
+$("trade-tabs").onclick = (e) => {
+  const tab = e.target.closest(".trade-tab");
+  if (!tab) return;
+  document.querySelectorAll(".trade-tab").forEach(
+    (t) => t.classList.toggle("is-on", t === tab));
+  document.querySelectorAll(".trade-items").forEach(
+    (box) => { box.hidden = box.dataset.group !== tab.dataset.group; });
+};
+document.querySelectorAll(".trade-items").forEach((box) => {
+  box.onclick = (e) => {
+    const pick = e.target.closest(".pick");
+    if (!pick) return;
+    $("q-text").value = pick.dataset.q;
+    // Подставили — и сразу показали, что дальше: иначе человек жмёт
+    // слово и ждёт, что поиск пойдёт сам.
+    $("q-text").focus();
+    toast("Вписано: " + pick.dataset.q + ". Проверьте города и жмите «Найти компании»");
+  };
+});
+
 $("btn-socials").onclick = () => run("/api/socials",
   {limit: $("e-limit").value, only_empty: true}, "Поиск соцсетей");
 $("btn-enrich").onclick = () => run("/api/enrich", {

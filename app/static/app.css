@@ -1016,3 +1016,21 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
   color:var(--accent);background:var(--accent-soft);white-space:nowrap}
 .soc:hover{background:var(--accent);color:#fff}
 .soc.more{color:var(--ink-3);background:var(--cold-bg)}
+
+/* ── Каталог тематик ──────────────────────────────────────
+   Список из семидесяти слов одним полотном не читается, а по темам —
+   читается: человек знает, в какой он отрасли, и ищет только в ней. */
+.trades{margin-top:14px;padding-top:14px;border-top:1px solid var(--line-2)}
+.trade-tabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}
+.trade-tab{border:1px solid var(--line);background:var(--surface);
+  color:var(--ink-2);border-radius:20px;padding:5px 12px;font:inherit;
+  font-size:12px;cursor:pointer;transition:all .12s ease}
+.trade-tab:hover{border-color:var(--ink-3);color:var(--ink)}
+.trade-tab.is-on{background:var(--ink);color:var(--surface);
+  border-color:var(--ink)}
+.trade-items{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}
+.trade-items[hidden]{display:none}
+/* Бледное слово — то, у которого нет тега на карте. Разница не
+   косметическая: «Дента-Люкс» стоматологией себя не называет, и без
+   тега такая компания не найдётся вообще. */
+.trade-items .pick.weak{opacity:.55}

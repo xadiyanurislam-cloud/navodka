@@ -13,7 +13,8 @@ import time
 from flask import (Flask, Response, jsonify, render_template, request,
                    send_file)
 
-from . import ai, db, diag, export, geo, score, settings, update, worker
+from . import (ai, db, diag, export, geo, score, settings, trades,
+               update, worker)
 from .sources import gis2, hh
 
 
@@ -110,7 +111,8 @@ def create_app():
             "index.html",
             app_name=settings.APP_NAME, version=settings.VERSION,
             areas=hh.AREAS, presets=hh.PRESETS,
-            rubrics=gis2.RUBRICS, cities=gis2.CITIES,
+            rubrics=trades.all_words(), trades=trades.catalog(),
+            cities=gis2.CITIES,
             dadata_token=db.get_setting("dadata_token", ""),
             gis_key=db.get_setting("gis_key", ""),
             ai_key=db.get_setting("ai_key", ""),

@@ -22,7 +22,7 @@ settings.data_dir = lambda: _TMP
 settings.db_path = lambda: os.path.join(_TMP, "test.sqlite3")
 
 from app import (ai, db, diag, enrich, export, geo, net, profile, score,  # noqa: E402
-                 social, update, web, worker)
+                 social, trades, update, web, worker)
 from app.sources import dadata, fns, gis2, hh, importer, site, zakupki  # noqa: E402
 
 
@@ -2740,6 +2740,62 @@ class SocialsFirstClass(unittest.TestCase):
                        "unchecked", "сайт")
         rows = export.rows_for_export(db.conn())
         self.assertTrue(any("vk.com/x" in (r.get("social") or "") for r in rows))
+
+
+class TradeCatalog(unittest.TestCase):
+    """Поле «Вид деятельности» — пустая строка, и разница между
+    «грузоперевозки» и «транспортная компания» решает, найдётся сотня
+    компаний или три."""
+
+    def test_catalog_is_grouped_and_not_empty(self):
+        cat = trades.catalog()
+        self.assertGreaterEqual(len(cat), 8)
+        for g in cat:
+            self.assertTrue(g["title"])
+            self.assertTrue(g["items"], g["title"])
+
+    def test_no_word_repeats_across_groups(self):
+        """Одно слово в двух темах — повод гадать, какая из них правильная."""
+        seen = {}
+        for g in trades.catalog():
+            for it in g["items"]:
+                self.assertNotIn(it["q"], seen,
+                                 "«%s» уже есть в теме «%s»"
+                                 % (it["q"], seen.get(it["q"])))
+                seen[it["q"]] = g["title"]
+
+    def test_tag_mark_is_computed_not_written_by_hand(self):
+        """Пометка, проставленная руками, разойдётся со словарём тегов."""
+        self.assertTrue(trades.tagged("стоматология"))
+        self.assertTrue(trades.tagged("грузоперевозки"))
+        self.assertFalse(trades.tagged("совершенно небывалое занятие"))
+
+    def test_almost_everything_is_searchable_by_tags(self):
+        """Список без тегов — это список слов, по которым ничего не
+        найдётся у компаний с выдуманными названиями."""
+        items = [it for g in trades.catalog() for it in g["items"]]
+        weak = [it["q"] for it in items if not it["tagged"]]
+        self.assertLessEqual(len(weak), len(items) // 10,
+                             "без тегов слишком много: %s" % weak)
+
+    def test_every_word_builds_a_real_query(self):
+        from app.sources import osm
+        city = {"name": "Москва", "ll": "37.6,55.7", "spn": "0.9,0.5"}
+        for q in trades.all_words():
+            self.assertTrue(osm.build_query(q, city),
+                            "«%s» не превращается в запрос" % q)
+
+    def test_catalog_reaches_the_page(self):
+        db.init()
+        html = web.create_app().test_client().get("/").get_data(as_text=True)
+        self.assertIn("trade-tab", html)
+        self.assertIn("Медицина и здоровье", html)
+        self.assertIn('data-q="стоматология"', html)
+
+    def test_hints_for_the_input_come_from_the_same_list(self):
+        words = trades.all_words()
+        self.assertEqual(len(words), len(set(words)))
+        self.assertIn("автосервис", words)
 
 
 if __name__ == "__main__":

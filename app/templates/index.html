@@ -112,7 +112,8 @@
                   <input id="q-text" type="text" list="q-hints"
                          placeholder="стоматология" value="">
                   <em class="fld-hint">Короче — лучше: «стоматология» найдёт больше,
-                     чем «стоматологическая клиника премиум-класса»</em>
+                     чем «стоматологическая клиника премиум-класса».
+                     Не знаете, с чего начать — возьмите из списка ниже</em>
                 </label>
                 <datalist id="q-hints">
                   {% for r in rubrics %}<option value="{{ r }}">{% endfor %}
@@ -124,6 +125,28 @@
                   <em class="fld-hint">Несколько — с зажатым Ctrl. «Россия целиком»
                      отключает справочники: они ищут по карте, а не по стране</em>
                 </label>
+              </div>
+
+              <div class="trades">
+                <div class="trade-tabs" id="trade-tabs">
+                  {% for g in trades %}
+                  <button class="trade-tab{% if loop.first %} is-on{% endif %}"
+                          data-group="{{ loop.index0 }}">{{ g.title }}</button>
+                  {% endfor %}
+                </div>
+                {% for g in trades %}
+                <div class="trade-items" data-group="{{ loop.index0 }}"
+                     {% if not loop.first %}hidden{% endif %}>
+                  {% for it in g["items"] %}
+                  <button class="pick{% if not it.tagged %} weak{% endif %}"
+                          data-q="{{ it.q }}"
+                          title="{% if it.tagged %}Ищется по тегам карты: найдутся и те, у кого это не написано в названии{% else %}Тега в карте нет — ищется только по названию, найдётся меньше{% endif %}">{{ it.q }}</button>
+                  {% endfor %}
+                </div>
+                {% endfor %}
+                <em class="fld-hint">Бледные слова ищутся только по названию —
+                   у них нет тега на карте, и компания, не назвавшая себя так,
+                   не найдётся</em>
               </div>
             </div>
           </section>
