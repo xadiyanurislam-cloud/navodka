@@ -892,6 +892,31 @@ class OpenStreetMap(unittest.TestCase):
         self.assertEqual(len(calls), 2, "второе зеркало не попробовали")
 
 
+class MergingSources(unittest.TestCase):
+    """Одна компания из разных источников — одна строка.
+
+    В ЕГРЮЛ есть ИНН и руководитель, но нет способа позвонить; в карте
+    есть телефон, но нет ИНН. Пока они считались разными компаниями,
+    половина карточек оставалась пустой при том, что данные пришли.
+    """
+
+    def test_legal_form_and_quotes_do_not_make_a_new_company(self):
+        from app import worker
+        self.assertEqual(worker.norm_name('ООО "АН АЛТАЙ"'),
+                         worker.norm_name("АН Алтай"))
+        self.assertEqual(worker.norm_name("Стоматология «Улыбка»"),
+                         worker.norm_name("ООО Стоматология Улыбка"))
+
+    def test_double_prefix_is_stripped(self):
+        from app import worker
+        self.assertEqual(worker.norm_name("ООО НПО Ромашка"), "нпо ромашка")
+
+    def test_different_companies_stay_different(self):
+        from app import worker
+        self.assertNotEqual(worker.norm_name("ООО Ромашка"),
+                            worker.norm_name("ООО Ромашка-2"))
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()

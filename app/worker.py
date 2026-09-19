@@ -10,6 +10,7 @@
 обхода — это норма, и продолжить надо с того же места, а не с начала.
 """
 import json
+import re
 import threading
 import time
 
@@ -691,6 +692,25 @@ def task_ai(task_id, params):
 _vk_search_off = {"off": False}
 
 
+# Организационная шелуха в названиях. «ООО "АН АЛТАЙ"» из ЕГРЮЛ и «АН
+# Алтай» из карты — одна компания, и пока они считались разными, карточка
+# оставалась без телефона при том, что телефон пришёл.
+_OPF_RE = re.compile(
+    r"^\s*(ООО|ОАО|ЗАО|ПАО|АО|ИП|НКО|АНО|НАО|ГБУ|МБУ|ФГУП|МУП|ТСЖ|СНТ)\s+",
+    re.I)
+
+
+def norm_name(name):
+    """Название без формы собственности, кавычек и лишних знаков."""
+    s = (name or "").strip()
+    for _ in range(2):                      # «ООО НПО Ромашка»
+        s = _OPF_RE.sub("", s)
+    s = re.sub(r"[«»\"'`]", " ", s)
+    s = re.sub(r"[^\w\s-]", " ", s, flags=re.U)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+
 def _known_vk_link(cid):
     """Ссылка на сообщество, которую компания уже опубликовала.
 
@@ -845,26 +865,78 @@ def task_find(task_id, params):
     http = requests.Session()
     http.headers.update({"User-Agent": settings.USER_AGENT})
     errors = []
-    # Ключ — название в нижнем регистре: одна и та же компания приходит
-    # из справочника как «Стоматология Улыбка», а из ЕГРЮЛ как
-    # «ООО "Улыбка"». Полного совпадения не будет, но точные дубли внутри
-    # одного прогона отсечь надо, иначе список вдвое длиннее, чем правда.
-    rows, seen = [], set()
+    # Одна и та же компания приходит из разных источников по-разному, и
+    # ценность у каждого своя: в карте есть телефон и сайт, но нет ИНН; в
+    # ЕГРЮЛ есть ИНН и руководитель, но нет ни одного способа позвонить.
+    # Поэтому повторную запись мы не выбрасываем, а сливаем с первой —
+    # иначе половина карточек остаётся пустой при том, что данные
+    # пришли, просто в разных ответах.
+    rows, by_key = [], {}
+
+    def keys_of(row):
+        """Чем эту компанию можно опознать. Порядок не важен: совпадения
+        по любому ключу достаточно."""
+        out = []
+        inn = (row.get("inn") or "").strip()
+        if inn:
+            out.append("инн:" + inn)
+        site = (row.get("site") or "").strip().lower()
+        site = site.split("//")[-1].split("/")[0].replace("www.", "")
+        if site:
+            out.append("сайт:" + site)
+        name = norm_name(row.get("name"))
+        if name:
+            out.append("имя:" + name)
+        return out
 
     def add(row, source):
-        key = (row.get("inn") or "").strip() or \
-            (row.get("site") or "").strip().lower() or \
-            (row.get("name") or "").strip().lower()
-        if not key or key in seen:
+        ks = keys_of(row)
+        if not ks:
             return False
-        seen.add(key)
+        old = next((by_key[k] for k in ks if k in by_key), None)
+        if old is not None:
+            merge_into(old, row, source)
+            return False
         row["source"] = source
         rows.append(row)
+        for k in ks:
+            by_key[k] = row
         return True
+
+    def merge_into(old, new, source):
+        """Дополнить уже найденную компанию тем, чего у неё не было."""
+        for field in ("inn", "ogrn", "site", "director", "director_post",
+                      "address", "okved", "okved_name", "region", "status",
+                      "founded", "employees"):
+            if not (old.get(field) or "") and new.get(field):
+                old[field] = new[field]
+        for field in ("phones", "emails", "links"):
+            have = old.setdefault(field, []) or []
+            for v in (new.get(field) or []):
+                if v not in have:
+                    have.append(v)
+            old[field] = have
+        # Источники копим списком: по нему видно, откуда что взялось, и
+        # это единственный способ потом понять, какой источник полезен.
+        src = old.get("source") or ""
+        if source not in src.split(" + "):
+            old["source"] = (src + " + " + source) if src else source
+        # Ключи новой записи теперь тоже ведут к объединённой.
+        for k in keys_of(new):
+            by_key.setdefault(k, old)
 
     for city in cities:
         if _should_stop():
             break
+
+        if not city.get("ll") and (want_osm or want_gis or want_yandex):
+            # Ловушка, в которую попадают первым делом: «Россия целиком»
+            # выглядит как «искать везде», а на деле отключает все карты
+            # разом — они ищут по прямоугольнику на карте, а не по стране.
+            # Остаются ЕГРЮЛ и hh, и карточки выходят без единого телефона.
+            log("«%s»: справочники ищут по городу, поэтому здесь работают "
+                "только ЕГРЮЛ и hh — без телефонов и сайтов. Выберите "
+                "города, чтобы получить контакты." % city["name"], "warn")
 
         if want_osm and city.get("ll"):
             log("OpenStreetMap · %s" % city["name"])
@@ -960,19 +1032,21 @@ def task_find(task_id, params):
         cid, is_new = db.upsert_company(row)
         added += 1 if is_new else 0
         known += 0 if is_new else 1
+        # Откуда контакт — видно в карточке, и это не украшение: телефон
+        # из карты и телефон с сайта проверяются по-разному.
+        origin = (row.get("source") or "справочник").split(" + ")[0]
         for ph in phones[:4]:
-            db.add_contact(cid, "phone", ph, "general", 85, "unchecked", "2ГИС")
+            db.add_contact(cid, "phone", ph, "general", 85, "unchecked", origin)
         for addr in emails[:3]:
             db.add_contact(cid, "email", addr, site_src.guess_owner(addr), 85,
-                           "unchecked", "2ГИС")
+                           "unchecked", origin)
         # Ссылки, которые компания указала в карточке Яндекса: среди них
         # её страницы в соцсетях. Сама компания их и опубликовала.
         for url in links[:6]:
             net_name = social.which(url)
             if net_name:
                 db.add_contact(cid, "social", url, "general", 82, "unchecked",
-                               "%s: %s" % (row.get("source") or "справочник",
-                                           net_name))
+                               "%s: %s" % (origin, net_name))
         # По какому слову компания попала в список. Через неделю это
         # единственный способ вспомнить, зачем она здесь.
         db.add_signal(cid, "found_by", query)

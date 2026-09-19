@@ -374,6 +374,15 @@ def create_app():
             where.append("ai_fit >= 60")
         elif only == "zakupki":
             where.append("id IN (SELECT company_id FROM signals WHERE key='zakupki_person')")
+        elif only == "contactable":
+            # Компания без единого способа связи — не лид, а строка в
+            # реестре. Держать её в общем списке можно, показывать первой
+            # нельзя.
+            where.append("(site <> '' OR id IN (SELECT company_id FROM contacts "
+                         "WHERE kind IN ('phone','email','social')))")
+        elif only == "empty":
+            where.append("(site = '' AND id NOT IN (SELECT company_id FROM "
+                         "contacts WHERE kind IN ('phone','email','social')))")
         elif only == "fresh":
             # Вакансия, вывешенная на этой неделе: повод для звонка ещё
             # горячий, и о нём можно говорить в настоящем времени.
