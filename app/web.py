@@ -7,6 +7,7 @@
 import json
 import os
 import threading
+import time
 
 from flask import Flask, Response, jsonify, render_template, request
 
@@ -14,8 +15,8 @@ from . import ai, db, diag, export, geo, settings, update, worker
 from .sources import gis2, hh
 
 
-def _open_outside(url):
-    """Отдать адрес системе. Возвращает (получилось, что пошло не так).
+def _open_outside(url, is_path=False):
+    """Отдать адрес или путь системе. Возвращает (получилось, ошибка).
 
     Способов несколько, и это не перестраховка. Модуль webbrowser в
     собранном exe срывается: он ищет браузер по путям и переменным
@@ -26,6 +27,15 @@ def _open_outside(url):
     """
     import subprocess
     tried = []
+
+    if is_path and os.name == "nt":
+        # Папку открываем проводником напрямую: startfile на каталоге
+        # иногда молчит, а explorer берёт путь всегда.
+        try:
+            subprocess.Popen(["explorer", os.path.normpath(url)])
+            return True, ""
+        except Exception as e:
+            tried.append("explorer: %s" % str(e)[:80])
 
     if os.name == "nt":
         try:
@@ -507,6 +517,50 @@ def create_app():
         return jsonify(ok=True)
 
     # ── Выгрузка ─────────────────────────────────────────
+    @app.post("/api/save")
+    def api_save():
+        """Сохранить выгрузку в файл и открыть папку с ним.
+
+        Раньше Excel и CSV были ссылками на скачивание, и это была
+        ошибка: окно программы — не браузер, качать файлы оно не умеет.
+        Windows получал от него пустой путь и показывал «не удаётся найти
+        "\\"» вместо файла.
+
+        Настольная программа и не должна ничего «скачивать»: она пишет
+        файл на диск, в свою папку рядом с базой, и показывает, куда.
+        """
+        d = request.get_json(silent=True) or {}
+        fmt = "csv" if (d.get("fmt") or "xlsx") == "csv" else "xlsx"
+        cond, args = _company_where(d.get("q") or "", d.get("only") or "",
+                                    d.get("ids") or "")
+        rows = export.rows_for_export(db.conn(), cond, tuple(args))
+        if not rows:
+            return jsonify(ok=False, error="выгружать нечего — список пуст")
+
+        folder = os.path.join(settings.data_dir(), "Выгрузки")
+        os.makedirs(folder, exist_ok=True)
+        name = "navodka-%s.%s" % (time.strftime("%Y%m%d-%H%M"), fmt)
+        path = os.path.join(folder, name)
+
+        blob = None
+        if fmt == "xlsx":
+            blob = export.to_xlsx(rows)
+            if blob is None:                      # openpyxl не собрался
+                fmt, name = "csv", name[:-4] + "csv"
+                path = os.path.join(folder, name)
+        if blob is None:
+            blob = export.to_csv(rows)
+        try:
+            with open(path, "wb") as f:
+                f.write(blob)
+        except Exception as e:
+            return jsonify(ok=False, error="не удалось записать файл: %s"
+                                           % str(e)[:160])
+
+        opened, _ = _open_outside(folder, is_path=True)
+        return jsonify(ok=True, path=path, folder=folder, name=name,
+                       count=len(rows), opened=opened)
+
     @app.get("/api/export.<fmt>")
     def api_export(fmt):
         cond, args = _company_where(request.args.get("q") or "",

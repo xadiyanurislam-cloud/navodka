@@ -364,17 +364,34 @@ def apply_installer(setup_url, on_log=None, setup_api=""):
     except Exception:
         pass
 
+    if not os.path.exists(path):
+        return False, "файл установщика не сохранился", False
+
     log("Запускаю установку...")
-    flags = " ".join(SETUP_FLAGS)
-    cmd = 'timeout /t 4 /nobreak >nul & start "" "%s" %s' % (path, flags)
+    # Запускаем напрямую, без cmd.
+    #
+    # Раньше здесь была строка вида cmd /c "timeout … & start "" "путь"".
+    # Она задумывалась как пауза перед установкой, а на деле ломалась на
+    # кавычках: subprocess берёт всю команду в кавычки целиком, внутри
+    # уже стоят свои, и до Windows доходит обрывок пути. На экране это
+    # выглядело как «Windows не удаётся найти "\\"» вместо установки.
+    #
+    # Пауза не нужна вовсе: программа закрывается сама через полторы
+    # секунды (см. _exit_soon в web.py), а установщик собран с
+    # CloseApplications — менеджер перезапуска Windows закроет её и сам,
+    # если она почему-то задержится.
     try:
-        subprocess.Popen(["cmd", "/c", cmd],
-                         creationflags=0x00000008 | 0x08000000)  # DETACHED | NO_WINDOW
+        subprocess.Popen([path] + SETUP_FLAGS,
+                         creationflags=0x00000008 | 0x08000000,  # DETACHED | NO_WINDOW
+                         close_fds=True)
     except Exception as e:
-        return False, "не удалось запустить установщик: %s" % str(e)[:160], False
+        return False, ("не удалось запустить установщик: %s. Файл лежит "
+                       "здесь: %s — запустите его вручную"
+                       % (str(e)[:120], path)), False
 
     return True, ("Обновление скачано. Программа сейчас закроется, "
-                  "установка пройдёт сама и откроет новую версию."), True
+                  "установка пройдёт сама и откроет новую версию. Если "
+                  "этого не случилось — запустите %s" % path), True
 
 
 def run(info, on_log=None):

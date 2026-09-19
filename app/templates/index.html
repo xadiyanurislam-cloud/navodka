@@ -45,10 +45,10 @@
     </div>
     <div class="bar-stats" id="stats"></div>
     <div class="bar-actions">
-      <!-- Ссылки собираются на лету: выгружается то, что на экране, а не
-           вся база. Адрес дописывает fixExport() в app.js. -->
-      <a class="btn" id="exp-xlsx" href="/api/export.xlsx">Excel</a>
-      <a class="btn quiet" id="exp-csv" href="/api/export.csv">CSV</a>
+      <!-- Кнопки, а не ссылки: окно программы не браузер и качать файлы
+           не умеет. Файл пишется на диск, папка открывается. -->
+      <button class="btn" id="exp-xlsx">Excel</button>
+      <button class="btn quiet" id="exp-csv">CSV</button>
     </div>
   </header>
 

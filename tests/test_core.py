@@ -622,6 +622,19 @@ class UpdateDownload(unittest.TestCase):
         finally:
             update._routes = was
 
+    def test_installer_is_launched_without_cmd(self):
+        """cmd /c с кавычками внутри ломает путь: subprocess берёт всю
+        команду в кавычки, внутри уже стоят свои, и до Windows доходит
+        обрывок. На экране это было «Windows не удаётся найти "\\"»."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = io.open(os.path.join(root, "app/update.py"),
+                       encoding="utf-8").read()
+        i = code.index("def apply_installer")
+        block = code[i:code.index("def run(", i)]
+        self.assertNotIn('"cmd"', block)
+        self.assertNotIn("timeout /t", block)
+        self.assertIn("subprocess.Popen([path] + SETUP_FLAGS", block)
+
     def test_truncated_file_is_refused(self):
         """Обрезанный установщик хуже отсутствующего: он запустится."""
         from app import update

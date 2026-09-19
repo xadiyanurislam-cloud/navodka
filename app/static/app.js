@@ -901,16 +901,31 @@ function sortRows(rows) {
 // Выгрузка отдаёт то же, что на экране. Иначе человек отбирает двадцать
 // подходящих компаний, жмёт «Excel» и получает всю базу — и фильтрует
 // второй раз, уже в Excel.
+function exportWhat() {
+  return picked.size ? {ids: [...picked].join(",")} : {q: $("q").value, only};
+}
+
 function fixExport() {
-  const sel = picked.size ? {ids: [...picked].join(",")} : {q: $("q").value, only};
-  const qs = new URLSearchParams(sel).toString();
-  $("exp-xlsx").href = "/api/export.xlsx?" + qs;
-  $("exp-csv").href = "/api/export.csv?" + qs;
   const n = picked.size;
   $("exp-xlsx").textContent = n ? `Excel (${n})` : "Excel";
-  $("exp-xlsx").title = n ? `Выгрузить ${n} отмеченных`
-    : (($("q").value || only) ? "Выгрузить то, что сейчас в списке" : "Выгрузить всю базу");
+  $("exp-xlsx").title = n ? `Сохранить ${n} отмеченных`
+    : (($("q").value || only) ? "Сохранить то, что сейчас в списке"
+                             : "Сохранить всю базу");
 }
+
+// Выгрузка — это сохранение файла, а не скачивание. Окно программы не
+// браузер: ссылка на файл в нём приводила к «Windows не удаётся найти».
+async function saveExport(fmt) {
+  const btn = $(fmt === "csv" ? "exp-csv" : "exp-xlsx");
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = "сохраняю…";
+  const d = await post("/api/save", Object.assign({fmt}, exportWhat()));
+  btn.disabled = false; btn.textContent = was;
+  if (!d || !d.ok) { toast((d && d.error) || "не сохранилось"); return; }
+  toast(`Сохранено: ${d.name} — ${d.count} компаний${d.opened ? "" : " (папка: " + d.folder + ")"}`);
+}
+$("exp-xlsx").onclick = () => saveExport("xlsx");
+$("exp-csv").onclick = () => saveExport("csv");
 
 async function loadCompanies() {
   const d = await get("/api/companies?" + new URLSearchParams({q: $("q").value, only}));
