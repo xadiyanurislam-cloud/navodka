@@ -397,7 +397,10 @@ def task_enrich(task_id, params):
                 db.add_contact(cid, "telegram", "@" + tg, "general", 70, "unchecked", "сайт компании")
 
             # Соцсети компании — теми адресами, что она сама опубликовала.
-            for net, title, url in social.as_links(res.get("socials") or {}):
+            # Имя переменной не net: так зовётся модуль сетевого слоя, и
+            # цикл затенял его до конца функции. Сейчас после цикла к нему
+            # не обращаются, но это вопрос везения, а не устройства.
+            for _net, title, url in social.as_links(res.get("socials") or {}):
                 db.add_contact(cid, "social", url, "general", 85, "unchecked",
                                "сайт: %s" % title)
             for group, titles in (res.get("tech") or {}).items():

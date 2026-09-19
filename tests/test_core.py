@@ -2986,7 +2986,14 @@ class ParallelAI(unittest.TestCase):
         app = web.create_app().test_client()
         app.post("/api/ai", json={"threads": 99})
         self.assertEqual(db.get_setting("ai_threads", ""), "8")
+        # Ноль потоков бессмысленен, и ближайшее законное значение —
+        # один. Раньше ноль читался как «не задано» и молча становился
+        # четырьмя: человек просил меньше, а получал больше.
         app.post("/api/ai", json={"threads": 0})
+        self.assertEqual(db.get_setting("ai_threads", ""), "1")
+        app.post("/api/ai", json={"threads": ""})
+        self.assertEqual(db.get_setting("ai_threads", ""), "4")
+        app.post("/api/ai", json={"threads": "абв"})
         self.assertEqual(db.get_setting("ai_threads", ""), "4")
 
     def test_limit_is_retried_not_dropped(self):
@@ -3153,6 +3160,121 @@ class StallWatchdog(unittest.TestCase):
         worker._stall["worst"] = max(worker._stall["worst"], 7.5)
         self.assertEqual(worker._stall["worst"], 7.5)
         worker._stall["worst"] = 0.0
+
+
+class AuditFindings(unittest.TestCase):
+    """Найдено сплошной проверкой кода. Каждое — настоящая ошибка,
+    а не придирка: ниже сказано, чем именно она оборачивалась."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().execute("DELETE FROM notes")
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    # 1. Заметки переживали свою компанию
+    def test_notes_die_with_the_company(self):
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
+        db.add_note(cid, "позвонил, просили письмо")
+        db.delete_company(cid)
+        left = db.conn().execute("SELECT COUNT(*) n FROM notes "
+                                 "WHERE company_id=?", (cid,)).fetchone()["n"]
+        self.assertEqual(left, 0, "заметки остались от удалённой компании")
+
+    def test_old_orphans_can_be_swept(self):
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
+        db.add_note(cid, "хвост")
+        db.conn().execute("DELETE FROM companies WHERE id=?", (cid,))
+        db.conn().commit()
+        self.assertGreaterEqual(db.clean_orphans(), 1)
+        self.assertEqual(db.conn().execute(
+            "SELECT COUNT(*) n FROM notes").fetchone()["n"], 0)
+
+    # 2. Нечисловое значение в числовом поле роняло сервер
+    def test_letters_in_a_number_field_do_not_break_anything(self):
+        for url, body in (("/api/enrich", {"limit": "абв"}),
+                          ("/api/ai", {"threads": "x"}),
+                          ("/api/socials", {"limit": None}),
+                          ("/api/find", {"query": "тест", "cities": ["Москва"],
+                                         "pages": "много"})):
+            r = self.app.post(url, json=body)
+            self.assertLess(r.status_code, 500, "%s упал" % url)
+
+    def test_junk_in_the_query_string_does_not_break_the_list(self):
+        for q in ("limit=абв", "limit=-5", "limit=999999", "per=x",
+                  "ids=1;DROP TABLE companies"):
+            r = self.app.get("/api/companies?" + q)
+            self.assertLess(r.status_code, 500, q)
+
+    def test_bounds_are_still_enforced(self):
+        self.assertEqual(web.num("999", 5, 1, 10), 10)
+        self.assertEqual(web.num("-3", 5, 1, 10), 1)
+        self.assertEqual(web.num("", 5, 1, 10), 5)
+        self.assertEqual(web.num(None, 5, 1, 10), 5)
+        self.assertEqual(web.num("7", 5, 1, 10), 7)
+
+    # 3. Пустой список городов молча отключал все справочники
+    def test_search_without_cities_is_refused(self):
+        d = self.app.post("/api/find", json={"query": "стоматология",
+                                             "cities": []}).get_json()
+        self.assertFalse(d["ok"])
+        self.assertIn("город", d["error"])
+
+    def test_search_with_a_city_goes_through(self):
+        d = self.app.post("/api/find", json={"query": "стоматология",
+                                             "cities": ["Москва"]}).get_json()
+        self.assertTrue(d["ok"])
+
+    # 4. Адреса из макетов попадали в список как живые
+    def test_template_domains_are_thrown_out(self):
+        from app.sources import site as site_src
+        for addr in ("info@example.com", "mail@yourdomain.ru",
+                     "a@test.com", "x@site.com"):
+            self.assertEqual(site_src._clean_email(addr), "",
+                             "«%s» принят за живой адрес" % addr)
+
+    def test_real_addresses_survive_including_cyrillic(self):
+        from app.sources import site as site_src
+        for addr in ("info@romashka.ru", "иванов@ромашка.рф",
+                     "ivanov@sub.romashka.co.uk"):
+            self.assertEqual(site_src._clean_email(addr), addr.lower(), addr)
+
+    def test_malformed_addresses_are_refused(self):
+        from app.sources import site as site_src
+        for addr in ("a@b.c", "нет-собаки", "a@@b.ru", "a@b..ru", "a@b."):
+            self.assertEqual(site_src._clean_email(addr), "", addr)
+
+
+class LinksFromStrangers(unittest.TestCase):
+    """Адреса приходят с чужих сайтов, то есть их пишет кто угодно, а
+    окно программы имеет доступ к её же API и к сохранённым ключам."""
+
+    def setUp(self):
+        self.js = io.open(os.path.join(os.path.dirname(__file__), "..",
+                                       "app", "static", "app.js"),
+                          encoding="utf-8").read()
+
+    def test_every_href_goes_through_the_check(self):
+        import re
+        raw = re.findall(r'href="\$\{(\w+)\(', self.js)
+        self.assertTrue(raw)
+        self.assertEqual(set(raw), {"safeUrl"},
+                         "ссылка вставляется мимо проверки схемы")
+
+    def test_apostrophe_is_escaped_too(self):
+        """Экранирование без апострофа рвёт атрибуты в одинарных
+        кавычках."""
+        self.assertIn("&#39;", self.js)
+
+    def test_allowed_schemes_are_a_whitelist(self):
+        """Запрещать по одной значит однажды забыть про data: или
+        vbscript:."""
+        block = self.js[self.js.index("function safeUrl"):]
+        block = block[:block.index("\n}")]
+        self.assertIn("https?:", block)
+        self.assertNotIn("javascript", block.lower().replace(
+            "javascript:alert(1)", ""))
 
 
 if __name__ == "__main__":

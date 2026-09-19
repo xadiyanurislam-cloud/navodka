@@ -258,10 +258,16 @@ def blacklist_clear():
 
 
 def delete_company(company_id):
-    """Удалить компанию вместе со всем, что к ней относится."""
+    """Удалить компанию вместе со всем, что к ней относится.
+
+    Заметок здесь раньше не было, и они оставались в базе навсегда,
+    привязанные к несуществующей компании: место занимают, показать их
+    негде, а при совпадении нового идентификатора они всплыли бы в чужой
+    карточке.
+    """
     c = conn()
-    c.execute("DELETE FROM contacts WHERE company_id=?", (company_id,))
-    c.execute("DELETE FROM signals WHERE company_id=?", (company_id,))
+    for table in ("contacts", "signals", "notes"):
+        c.execute("DELETE FROM %s WHERE company_id=?" % table, (company_id,))
     c.execute("DELETE FROM companies WHERE id=?", (company_id,))
     c.commit()
 
@@ -489,6 +495,23 @@ def clean_junk_phones():
         c.executemany("DELETE FROM contacts WHERE id=?", [(i,) for i in bad])
         c.commit()
     return len(bad)
+
+
+def clean_orphans():
+    """Записи, оставшиеся от удалённых компаний.
+
+    До сих пор удаление компании не трогало её заметки, и в базе у тех,
+    кто чистил список, лежат чужие хвосты.
+    """
+    c = conn()
+    n = 0
+    for table in ("contacts", "signals", "notes"):
+        cur = c.execute(
+            "DELETE FROM %s WHERE company_id NOT IN (SELECT id FROM companies)"
+            % table)
+        n += cur.rowcount or 0
+    c.commit()
+    return n
 
 
 # ── Склейка дублей ───────────────────────────────────────

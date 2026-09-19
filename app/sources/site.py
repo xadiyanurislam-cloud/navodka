@@ -67,6 +67,17 @@ TG_RE = re.compile(r"(?:t\.me|telegram\.me)/([A-Za-z0-9_]{5,32})")
 BAD_TAIL = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js",
             ".woff", ".woff2", ".ttf", ".ico", ".pdf", ".mp4")
 
+# Домены из макетов. Их забывают убрать ровно так же, как телефон
+# 8 800 555-35-35, и продавец тратит на каждый по письму, прежде чем
+# понять, что писал в пустоту.
+JUNK_DOMAINS = {
+    "example.com", "example.org", "example.net", "example.ru",
+    "domain.com", "domain.ru", "yourdomain.com", "yourdomain.ru",
+    "mysite.ru", "site.com", "sitename.ru", "test.com", "test.ru",
+    "mail.example.com", "company.com", "yourcompany.com",
+    "email.com", "yoursite.ru", "адрес.рф",
+}
+
 # Бесплатный номер — сильнейший признак телефонных продаж. Его заводят
 # только там, где звонков много и за них платят: сам номер стоит денег,
 # и ради двух звонков в неделю его никто не берёт.
@@ -250,6 +261,17 @@ def _clean_email(addr):
         if len(local) > 12:
             return ""
     if dom.endswith((".png", ".jpg", ".js", ".css")):
+        return ""
+    if dom in JUNK_DOMAINS:
+        return ""
+    # Последняя проверка формы. Сюда попадают не только находки
+    # регулярного выражения, но и адреса из чужих ответов, где на форму
+    # никто не смотрел: «a@b.c» адресом не является.
+    #
+    # Кириллица разрешена намеренно: домены в зоне .рф настоящие, и
+    # отсечь их латинским шаблоном значит выбросить живые адреса.
+    if not re.match(r"^[^\s@]+@[^\s@.]+(\.[^\s@.]+)*\.[^\W\d_]{2,}$",
+                    a, re.U):
         return ""
     return a
 

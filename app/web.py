@@ -88,6 +88,22 @@ def _exit_soon(delay=1.5):
 STARTED_AT = int(time.time())
 
 
+def num(value, default, low, high):
+    """Число из запроса — с границами и без падения.
+
+    int() на строке «абв» поднимает исключение, и ответом становится
+    пятисотая ошибка: снаружи это выглядит как сломанная программа,
+    хотя сломано всего лишь одно поле формы. Пустое поле формы приходит
+    пустой строкой, а не отсутствующим ключом, поэтому проверять на
+    None мало.
+    """
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        n = default
+    return max(low, min(high, n))
+
+
 # Признаки, которые видно в строке списка. Всё остальное — в карточке.
 LIST_SIGNALS = ("hh_vacancies", "hh_fresh_days", "tech_calltracking",
                 "tech_crm", "tech_telephony", "gis_rubric", "size",
@@ -161,11 +177,20 @@ def create_app():
         query = (d.get("query") or "").strip()
         if not query:
             return jsonify(ok=False, error="впишите, кого ищем")
+        # Пустой список городов означал «Россия целиком», а это отключает
+        # все справочники разом: они ищут по прямоугольнику на карте, а
+        # не по стране. Прийти к такому поиску случайно, сняв выделение,
+        # нельзя — это должен быть выбор, а не промах.
+        if not [str(c).strip() for c in (d.get("cities") or []) if str(c).strip()]:
+            return jsonify(ok=False, error=(
+                "выберите хотя бы один город. «Россия целиком» в списке "
+                "тоже есть, но она отключает справочники — они ищут по "
+                "карте, а не по стране"))
         params = {
             "query": query[:120],
             "cities": [str(c) for c in (d.get("cities") or [])][:14],
-            "pages": max(1, min(10, int(d.get("pages") or 3))),
-            "limit": max(10, min(5000, int(d.get("limit") or 200))),
+            "pages": num(d.get("pages"), 3, 1, 10),
+            "limit": num(d.get("limit"), 200, 10, 5000),
             "sources": {
                 "osm": bool(d.get("osm", True)),
                 "gis": bool(d.get("gis", True)),
@@ -195,11 +220,11 @@ def create_app():
         return {
             "queries": queries[:12],
             "areas": areas[:8] or [str(d.get("area") or "113")],
-            "period": max(1, min(30, int(d.get("period") or 30))),
-            "pages": max(1, min(20, int(d.get("pages") or 5))),
+            "period": num(d.get("period"), 30, 1, 30),
+            "pages": num(d.get("pages"), 5, 1, 20),
             "in_title": bool(d.get("in_title", True)),
             "skip_agencies": bool(d.get("skip_agencies", True)),
-            "max_open": max(0, min(5000, int(d.get("max_open") or 0))),
+            "max_open": num(d.get("max_open"), 0, 0, 5000),
             "then_enrich": bool(d.get("then_enrich")),
             "then_zakupki": bool(d.get("then_zakupki")),
             "then_ai": bool(d.get("then_ai")),
@@ -214,7 +239,7 @@ def create_app():
         # открыли — и форма та же, что вчера, а не пустая.
         db.set_setting("last_search", json.dumps(params, ensure_ascii=False))
         if d.get("search_id"):
-            db.mark_search_run(int(d["search_id"]))
+            db.mark_search_run(num(d.get("search_id"), 0, 0, 2**31))
         return jsonify(ok=True, task_id=task_id, queries=len(params["queries"]))
 
     # ── Сохранённые поиски ───────────────────────────────
@@ -241,8 +266,8 @@ def create_app():
         d = request.get_json(silent=True) or {}
         task_id = db.create_task("gis_search", {
             "query": (d.get("query") or "").strip(),
-            "region": int(d.get("region") or 32),
-            "pages": max(1, min(10, int(d.get("pages") or 2))),
+            "region": num(d.get("region"), 32, 1, 999999),
+            "pages": num(d.get("pages"), 2, 1, 10),
         })
         return jsonify(ok=True, task_id=task_id)
 
@@ -256,7 +281,7 @@ def create_app():
     def api_enrich():
         d = request.get_json(silent=True) or {}
         task_id = db.create_task("enrich", {
-            "limit": max(1, min(500, int(d.get("limit") or 50))),
+            "limit": num(d.get("limit"), 50, 1, 500),
             "verify": bool(d.get("verify")),
             "fns": d.get("fns", True),
             "vk": d.get("vk", True),
@@ -271,10 +296,10 @@ def create_app():
         db.set_setting("ai_icp", (d.get("icp") or "").strip())
         db.set_setting("ai_offer", (d.get("offer") or "").strip())
         db.set_setting("ai_terms", (d.get("terms") or "").strip())
-        threads = max(1, min(8, int(d.get("threads") or 4)))
+        threads = num(d.get("threads"), 4, 1, 8)
         db.set_setting("ai_threads", str(threads))
         task_id = db.create_task("ai", {
-            "limit": max(1, min(300, int(d.get("limit") or 30))),
+            "limit": num(d.get("limit"), 30, 1, 300),
             "icp": d.get("icp") or "", "offer": d.get("offer") or "",
             "redo": bool(d.get("redo")), "threads": threads,
         })
@@ -285,7 +310,7 @@ def create_app():
         """Отдельный проход за соцсетями по уже собранной базе."""
         d = request.get_json(silent=True) or {}
         return jsonify(ok=True, task_id=db.create_task("socials", {
-            "limit": max(1, min(1000, int(d.get("limit") or 100))),
+            "limit": num(d.get("limit"), 100, 1, 1000),
             "only_empty": bool(d.get("only_empty", True)),
         }))
 
@@ -501,7 +526,7 @@ def create_app():
         # рисует: пятьсот строк со всеми контактами — это мегабайт JSON
         # на каждый опрос, и разбирает его тот же поток, который рисует
         # окно.
-        want = max(20, min(2000, int(request.args.get("limit") or 200)))
+        want = num(request.args.get("limit"), 200, 20, 2000)
         sql += " ORDER BY score DESC, id LIMIT %d" % want
 
         # Три запроса вместо тысячи.
@@ -604,7 +629,7 @@ def create_app():
         его в каждую колонку значит везти мегабайты ради эскизов.
         """
         c = db.conn()
-        per = max(5, min(200, int(request.args.get("per") or 20)))
+        per = num(request.args.get("per"), 20, 5, 200)
         out = {}
         for stage in STAGES:
             rows = c.execute(
@@ -802,7 +827,7 @@ def create_app():
     def api_company_note(cid):
         d = request.get_json(silent=True) or {}
         if d.get("delete"):
-            db.delete_note(int(d["delete"]))
+            db.delete_note(num(d.get("delete"), 0, 0, 2**31))
         else:
             if not db.add_note(cid, d.get("text") or ""):
                 return jsonify(ok=False, error="пустая заметка")

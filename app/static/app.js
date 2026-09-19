@@ -2,7 +2,26 @@
 // а вся логика всё равно живёт на стороне Python.
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s)
-  .replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+  .replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;",
+                                '"': "&quot;", "'": "&#39;"}[c]));
+
+// Адрес для href.
+//
+// Экранирование здесь не спасает: в javascript:alert(1) нет ни одного
+// опасного для разметки знака, и ссылка проходит escape целиком, а по
+// нажатию выполняется. Адреса приходят с чужих сайтов и из карточек
+// справочников, то есть их пишет кто угодно, а окно программы имеет
+// доступ к её же локальному API и к сохранённым ключам.
+//
+// Поэтому список разрешённых схем, а не список запрещённых: запрещать
+// по одной значит однажды забыть про data: или vbscript:.
+function safeUrl(u) {
+  const s = String(u == null ? "" : u).trim();
+  if (/^(https?:|mailto:|tel:)/i.test(s)) return esc(s);
+  // Адрес без схемы — обычное дело для сайта из справочника.
+  if (/^[\w-]+(\.[\w-]+)+(\/|$)/.test(s)) return esc("https://" + s);
+  return "";
+}
 
 async function post(url, body) {
   const r = await fetch(url, {
@@ -665,7 +684,7 @@ async function updCheck(quiet) {
     state.innerHTML = `Доступна <b>${esc(d.latest)}</b> — у вас ${esc(d.current)}
       <button class="btn primary sm" id="s-upd-go">Обновить</button>
       <span class="hint">${esc(how)}</span>` +
-      (direct ? ` <a class="hint" href="${esc(direct)}" target="_blank">скачать вручную</a>` : "");
+      (direct ? ` <a class="hint" href="${safeUrl(direct)}" target="_blank">скачать вручную</a>` : "");
     $("s-upd-go").onclick = updApply;
   } else if (!quiet) {
     state.textContent = `установлена последняя версия (${d.current})`;
@@ -992,7 +1011,7 @@ function contactRow(c) {
     const tail = c.value.split("/").slice(3).join("/") || host;
     return `<div class="ct ${lpr ? "lpr" : ""}">
       <span class="who">${lpr ? "ГД" : ""}</span>
-      <a class="val net" href="${esc(c.value)}" target="_blank"
+      <a class="val net" href="${safeUrl(c.value)}" target="_blank"
          title="${esc(NET_NAME[net] || host)}">${netIcon(net)}${esc(tail)}</a>
       ${lpr ? `<span class="mk ok">найден</span>` : ""}</div>`;
   }
@@ -1208,9 +1227,9 @@ async function toggleCard(tr, id) {
   const socials = cts.filter((x) => x.kind === "social");
   const rest = cts.filter((x) => x.kind !== "social");
   const links = [
-    c.site ? `<a href="${esc(c.site)}" target="_blank">сайт</a>` : "",
-    sig.hh_url ? `<a href="${esc(sig.hh_url)}" target="_blank">на hh.ru</a>` : "",
-    sig.zakupki_url ? `<a href="${esc(sig.zakupki_url)}" target="_blank">в закупках</a>` : "",
+    c.site ? `<a href="${safeUrl(c.site)}" target="_blank">сайт</a>` : "",
+    sig.hh_url ? `<a href="${safeUrl(sig.hh_url)}" target="_blank">на hh.ru</a>` : "",
+    sig.zakupki_url ? `<a href="${safeUrl(sig.zakupki_url)}" target="_blank">в закупках</a>` : "",
     c.inn ? `<a href="https://bo.nalog.ru/search?query=${esc(c.inn)}" target="_blank">отчётность</a>` : "",
   ].filter(Boolean).join("");
 
@@ -1227,7 +1246,7 @@ async function toggleCard(tr, id) {
         <p class="hint-sm">Программа сюда не ходит и ничего не сохраняет:
            по имени надёжно не найти, однофамильцев в любом городе сотни.</p>
         <div class="detail-links">${d.search.map(
-          (x) => `<a href="${esc(x.url)}" target="_blank">${esc(x.title)}</a>`).join("")}</div>` : ""}
+          (x) => `<a href="${safeUrl(x.url)}" target="_blank">${esc(x.title)}</a>`).join("")}</div>` : ""}
     </section>
 
     <section>
@@ -1635,7 +1654,7 @@ async function loadCompanies(force) {
     // приходится узнавать заново.
     const host = r.site ? r.site.replace(/^https?:\/\//, "") : "";
     const meta = [r.inn ? `<span>${esc(r.inn)}</span>` : "",
-                  host ? `<a href="${esc(r.site)}" target="_blank">${esc(host)}</a>` : "",
+                  host ? `<a href="${safeUrl(r.site)}" target="_blank">${esc(host)}</a>` : "",
                   r.region ? `<span>${esc(r.region)}</span>` : ""].filter(Boolean).join("");
     // Порядок: найденный контакт ГД, потом выведенный по схеме, потом всё
     // остальное. По сырой уверенности info@ с сайта обгонял бы оба.
@@ -1662,7 +1681,7 @@ async function loadCompanies(force) {
     const soc = (r.contacts || []).filter((x) => x.kind === "social");
     const socLine = soc.length
       ? `<div class="soc-line">${soc.slice(0, 4).map((x) =>
-          `<a class="soc" href="${esc(x.value)}" target="_blank"
+          `<a class="soc" href="${safeUrl(x.value)}" target="_blank"
               title="${esc(x.source || "")}">${esc(netName(x.value))}</a>`).join("")}${
           soc.length > 4 ? `<span class="soc more">+${soc.length - 4}</span>` : ""}</div>`
       : "";
