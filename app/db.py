@@ -229,12 +229,25 @@ def company_keys(row):
 
 
 def is_blacklisted(row):
+    """Отказывалась ли уже эта компания.
+
+    Тонкость в названии. «ООО Ромашка» есть в каждом регионе, и если
+    одна такая сказала «нет», это не значит, что молчать должны все
+    остальные. Поэтому совпадение по названию засчитывается только
+    тогда, когда опознать компанию точнее нечем: ни ИНН, ни
+    идентификатора работодателя у неё нет.
+
+    Когда ИНН есть и он не совпал — это другая компания, и название тут
+    ничего не решает.
+    """
     keys = company_keys(row)
     if not keys:
         return False
-    marks = ",".join("?" for _ in keys)
+    strong = [k for k in keys if not k.startswith("name:")]
+    look = strong or keys
+    marks = ",".join("?" for _ in look)
     got = conn().execute(
-        "SELECT 1 FROM blacklist WHERE key IN (%s) LIMIT 1" % marks, keys).fetchone()
+        "SELECT 1 FROM blacklist WHERE key IN (%s) LIMIT 1" % marks, look).fetchone()
     return got is not None
 
 
@@ -565,7 +578,9 @@ def find_duplicates():
     """
     import re as _re
     rows = conn().execute(
-        "SELECT id, name, inn, site, score FROM companies ORDER BY id").fetchall()
+        "SELECT id, name, inn, site, score, region FROM companies "
+        "ORDER BY id").fetchall()
+    by_id = {r["id"]: r for r in rows}
     seen, pairs = {}, []
     for r in rows:
         keys = []
@@ -579,10 +594,23 @@ def find_duplicates():
             r"^\s*(ООО|ОАО|ЗАО|ПАО|АО|ИП|НКО|АНО|НАО)\s+", "", name, flags=_re.I)
         name = _re.sub(r"\s+", " ", name).strip().lower()
         if len(name) >= 4:
-            keys.append("имя:" + name)
+            # Название — только вместе с городом. «Дентал» в Москве и
+            # «Дентал» в Петербурге — разные компании, а программа
+            # предлагала их склеить, и человек соглашался: кнопка
+            # называется «Склеить», а не «Проверьте, точно ли это одно».
+            keys.append("имя:%s|%s" % (name, (r["region"] or "").lower()))
         hit = next((seen[k] for k in keys if k in seen), None)
         if hit is not None and hit != r["id"]:
-            pairs.append((hit, r["id"]))
+            # Разные ИНН — разные юрлица, и никакое совпадение названия
+            # или домена этого не отменяет. Один сайт на две фирмы —
+            # обычное дело у групп компаний.
+            other = by_id.get(hit)
+            a = (r["inn"] or "").strip()
+            b = ((other["inn"] or "").strip() if other is not None else "")
+            if a and b and a != b:
+                hit = None
+            else:
+                pairs.append((hit, r["id"]))
         for k in keys:
             seen.setdefault(k, hit if hit is not None else r["id"])
     return pairs

@@ -194,6 +194,9 @@ def task_hh_search(task_id, params):
     errors = []
     queries_left = True
     employers, seen = [], set()
+    # Поиск по номеру вместо перебора списка: на тысяче работодателей
+    # перебор превращался в миллион сравнений.
+    by_id = {}
     for qi, text in enumerate(queries, 1):
         if not queries_left:
             break
@@ -218,8 +221,19 @@ def task_hh_search(task_id, params):
                 # Одна компания находится по нескольким запросам сразу —
                 # это норма. Складываем вакансии, а не заводим дубль.
                 if emp["id"] in seen:
-                    old = next(x for x in employers if x["id"] == emp["id"])
-                    old["vacancies"] += emp["vacancies"]
+                    old = by_id[emp["id"]]
+                    # Считаем вакансии по номерам, а не складываем итоги.
+                    # Одна и та же вакансия находится по двум запросам
+                    # сразу — «Руководитель отдела продаж» отвечает и на
+                    # «отдел продаж», и на «руководитель продаж», — и
+                    # сложение удваивало её. Число вакансий весит в
+                    # оценке четверть, так что удвоение поднимало
+                    # компанию в списке ни за что.
+                    for vid in (emp.get("vac_ids") or []):
+                        if vid not in old["vac_ids"]:
+                            old["vac_ids"].append(vid)
+                    old["vacancies"] = (len(old["vac_ids"]) or
+                                        old["vacancies"] + emp["vacancies"])
                     for t in emp.get("titles") or []:
                         if t not in old["titles"]:
                             old["titles"].append(t)
@@ -229,6 +243,8 @@ def task_hh_search(task_id, params):
                         old["fresh"] = emp["fresh"]
                     continue
                 seen.add(emp["id"])
+                emp.setdefault("vac_ids", [])
+                by_id[emp["id"]] = emp
                 employers.append(emp)
         if _should_stop():
             break
@@ -1269,9 +1285,13 @@ def task_find(task_id, params):
         site = site.split("//")[-1].split("/")[0].replace("www.", "")
         if site:
             out.append("сайт:" + site)
+        # Название — ключ слабый, и годится только вместе с городом.
+        # «Дентал» в Москве и «Дентал» в Петербурге — разные компании, а
+        # склеивались в одну: у объединённой оставался город первой, и
+        # вторая исчезала из выдачи совсем.
         name = norm_name(row.get("name"))
         if name:
-            out.append("имя:" + name)
+            out.append("имя:%s|%s" % (name, (row.get("region") or "").lower()))
         return out
 
     def full():

@@ -487,10 +487,15 @@ def create_app():
             # Компания без единого способа связи — не лид, а строка в
             # реестре. Держать её в общем списке можно, показывать первой
             # нельзя.
-            where.append("(site <> '' OR id IN (SELECT company_id FROM contacts "
+            where.append("(COALESCE(site,'') <> '' OR id IN (SELECT company_id FROM contacts "
                          "WHERE kind IN ('phone','email','social')))")
         elif only == "empty":
-            where.append("(site = '' AND id NOT IN (SELECT company_id FROM "
+            # COALESCE, а не просто site = ''. Компания, пришедшая без
+            # сайта вовсе, хранит в этом поле NULL, а NULL = '' в SQL не
+            # истина и не ложь — сравнение просто не срабатывает. Фильтр
+            # «Пустые» из-за этого не показывал ни одной пустой компании,
+            # то есть ровно тех, ради кого он и сделан.
+            where.append("(COALESCE(site,'') = '' AND id NOT IN (SELECT company_id FROM "
                          "contacts WHERE kind IN ('phone','email','social')))")
         elif only == "today":
             # Просроченное — тоже на сегодня: вчерашний звонок, который

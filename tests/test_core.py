@@ -3500,5 +3500,126 @@ class NotesBelongToTheirCompany(unittest.TestCase):
         self.assertEqual(row["stage"], "созвон")
 
 
+class SameNameDifferentCompanies(unittest.TestCase):
+    """«ООО Ромашка» есть в каждом регионе. Программа считала их одной
+    компанией в трёх местах сразу."""
+
+    def setUp(self):
+        db.init()
+        for t in ("companies", "blacklist", "contacts", "signals", "notes"):
+            db.conn().execute("DELETE FROM %s" % t)
+        db.conn().commit()
+
+    def test_refusal_of_one_does_not_bury_the_others(self):
+        cid, _ = db.upsert_company({"name": "ООО Ромашка", "inn": "7701111111",
+                                    "source": "тест"})
+        db.blacklist_add(cid, "отказались")
+        self.assertTrue(db.is_blacklisted({"inn": "7701111111",
+                                           "name": "ООО Ромашка"}))
+        self.assertFalse(db.is_blacklisted({"inn": "5402222222",
+                                            "name": "ООО Ромашка"}),
+                         "другая фирма с тем же названием скрыта")
+
+    def test_name_still_works_when_there_is_nothing_else(self):
+        """У компании из карты нет ни ИНН, ни идентификатора hh —
+        название единственное, чем её опознать."""
+        cid, _ = db.upsert_company({"name": "Кафе У Дома", "source": "тест"})
+        db.blacklist_add(cid, "отказались")
+        self.assertTrue(db.is_blacklisted({"name": "Кафе У Дома"}))
+
+    def test_merge_key_includes_the_city(self):
+        from app import worker as w
+        msk = w.norm_name("ООО «Дентал»")
+        self.assertTrue(msk)
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        self.assertIn('out.append("имя:%s|%s" % (name,', src)
+
+    def test_duplicates_are_not_offered_across_cities(self):
+        db.upsert_company({"name": "ООО Дентал", "region": "Москва",
+                           "source": "тест"})
+        db.upsert_company({"name": "Дентал", "region": "Санкт-Петербург",
+                           "source": "тест"})
+        self.assertEqual(db.find_duplicates(), [])
+
+    def test_duplicates_inside_one_city_are_still_offered(self):
+        a, _ = db.upsert_company({"name": "ООО Дентал", "region": "Москва",
+                                  "source": "тест"})
+        b, _ = db.upsert_company({"name": "Дентал", "region": "Москва",
+                                  "source": "тест"})
+        self.assertEqual(db.find_duplicates(), [(a, b)])
+
+    def test_different_inn_is_never_a_duplicate(self):
+        """Один сайт на две фирмы — обычное дело у групп компаний, а ИНН
+        разный значит разные юрлица."""
+        db.upsert_company({"name": "Группа А", "inn": "7701111111",
+                           "site": "https://g.ru", "source": "тест"})
+        db.upsert_company({"name": "Группа Б", "inn": "7702222222",
+                           "site": "https://g.ru", "source": "тест"})
+        self.assertEqual(db.find_duplicates(), [])
+
+
+class VacancyCount(unittest.TestCase):
+    """Число вакансий весит в оценке четверть. «Руководитель отдела
+    продаж» находится и по «отдел продаж», и по «руководитель продаж»."""
+
+    def test_same_vacancy_is_not_counted_twice(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        block = src[src.index('if emp["id"] in seen:'):]
+        block = block[:block.index("seen.add")]
+        self.assertIn("vac_ids", block)
+        self.assertNotIn('old["vacancies"] += emp["vacancies"]', block)
+
+    def test_search_returns_vacancy_ids(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "sources", "hh.py"), encoding="utf-8").read()
+        self.assertIn('"vac_ids"', src)
+
+    def test_merge_is_not_quadratic(self):
+        """Перебор списка на каждой найденной компании превращался в
+        миллион сравнений на тысяче работодателей."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        self.assertIn("by_id[emp[\"id\"]]", src)
+
+
+class EmptyMeansEmpty(unittest.TestCase):
+    """NULL = '' в SQL не истина и не ложь — сравнение просто не
+    срабатывает, и фильтр «Пустые» не показывал ни одной пустой
+    компании, то есть ровно тех, ради кого он сделан."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().execute("DELETE FROM contacts")
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    def test_company_without_a_site_column_is_found(self):
+        db.upsert_company({"name": "Совсем пустая", "source": "тест"})
+        rows = self.app.get("/api/companies?only=empty").get_json()["rows"]
+        self.assertEqual([r["name"] for r in rows], ["Совсем пустая"])
+
+    def test_company_with_an_empty_string_site_is_found_too(self):
+        db.upsert_company({"name": "Сайт пустой строкой", "source": "тест",
+                           "site": ""})
+        rows = self.app.get("/api/companies?only=empty").get_json()["rows"]
+        self.assertEqual(len(rows), 1)
+
+    def test_company_with_contacts_is_not_empty(self):
+        cid, _ = db.upsert_company({"name": "С телефоном", "source": "тест"})
+        db.add_contact(cid, "phone", "+74951234567", "general", 90,
+                       "unchecked", "тест")
+        self.assertEqual(self.app.get("/api/companies?only=empty")
+                         .get_json()["rows"], [])
+
+    def test_contactable_sees_a_site_without_contacts(self):
+        db.upsert_company({"name": "Только сайт", "source": "тест",
+                           "site": "https://x.ru"})
+        rows = self.app.get("/api/companies?only=contactable").get_json()["rows"]
+        self.assertEqual(len(rows), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

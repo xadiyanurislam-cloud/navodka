@@ -235,12 +235,21 @@ def search_employers(text, area="113", period=30, pages=5, per_page=100,
                 "vacancy_url": v.get("alternate_url", ""),
                 "vacancy_name": v.get("name", ""),
                 "titles": [], "salaries": [], "fresh": None,
+                # Номера вакансий нужны там, где прогон идёт по
+                # нескольким запросам: «Руководитель отдела продаж»
+                # находится и по «отдел продаж», и по «руководитель
+                # продаж», и без номеров одна вакансия считалась бы
+                # дважды.
+                "vac_ids": [],
             })
             # Самая свежая вакансия компании: по ней видно, насколько
             # горячий признак.
             d = days_since(v.get("published_at") or v.get("created_at"))
             if d is not None and (row["fresh"] is None or d < row["fresh"]):
                 row["fresh"] = d
+            vid = str(v.get("id") or "")
+            if vid and vid not in row["vac_ids"]:
+                row["vac_ids"].append(vid)
             row["vacancies"] += 1
             # Названия вакансий — это описание отдела своими словами.
             # «Оператор колл-центра» говорит о телефонных продажах прямее
