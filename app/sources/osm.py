@@ -68,6 +68,47 @@ TAGS = {
     "детский сад": ['["amenity"="kindergarten"]'],
 }
 
+# Теги OSM по-русски. В карточку и в выгрузку должно попадать
+# «Агентство недвижимости», а не estate_agent: список читает продавец, а
+# не картограф.
+RUBRIC_RU = {
+    "dentist": "Стоматология", "clinic": "Клиника", "doctors": "Медцентр",
+    "hospital": "Больница", "pharmacy": "Аптека", "veterinary": "Ветклиника",
+    "car_repair": "Автосервис", "car": "Автосалон", "tyres": "Шиномонтаж",
+    "car_parts": "Автозапчасти", "fuel": "АЗС",
+    "hairdresser": "Парикмахерская", "beauty": "Салон красоты",
+    "massage": "Массажный салон", "fitness_centre": "Фитнес-клуб",
+    "lawyer": "Юридические услуги", "accountant": "Бухгалтерские услуги",
+    "insurance": "Страхование", "estate_agent": "Агентство недвижимости",
+    "travel_agency": "Турагентство", "employment_agency": "Кадровое агентство",
+    "advertising_agency": "Рекламное агентство", "it": "ИТ-компания",
+    "company": "Компания", "logistics": "Логистика", "moving_company": "Переезды",
+    "bank": "Банк", "cafe": "Кафе", "restaurant": "Ресторан", "bar": "Бар",
+    "fast_food": "Быстрое питание", "hotel": "Гостиница",
+    "school": "Школа", "language_school": "Языковая школа",
+    "driving_school": "Автошкола", "kindergarten": "Детский сад",
+    "copyshop": "Типография", "printer": "Типография",
+    "furniture": "Мебель", "doityourself": "Стройматериалы",
+    "hardware": "Хозтовары", "supermarket": "Супермаркет",
+    "convenience": "Магазин у дома", "clothes": "Одежда",
+    "laundry": "Прачечная", "dry_cleaning": "Химчистка",
+    "funeral_directors": "Ритуальные услуги", "optician": "Оптика",
+    "florist": "Цветы", "bakery": "Пекарня", "butcher": "Мясная лавка",
+    "jewelry": "Ювелирный", "mobile_phone": "Салон связи",
+    "computer": "Компьютерный магазин", "electronics": "Электроника",
+}
+
+
+def rubric_ru(tags):
+    """Понятное название рубрики из тегов OSM."""
+    for key in ("amenity", "shop", "office", "healthcare", "leisure",
+                "tourism", "craft"):
+        v = (tags.get(key) or "").strip()
+        if v:
+            return RUBRIC_RU.get(v, v.replace("_", " "))
+    return ""
+
+
 # Теги со ссылками на соцсети. Ради contact:vk всё и затевалось.
 LINK_TAGS = ("contact:vk", "contact:telegram", "contact:instagram",
              "contact:facebook", "contact:youtube", "contact:ok")
@@ -192,8 +233,7 @@ def search(query, city, pages=1, session=None, on_log=None, should_stop=None,
             "site": site,
             "phones": phones[:4],
             "links": [_full(l) for l in links][:6],
-            "rubric": t.get("amenity") or t.get("shop") or t.get("office")
-                      or t.get("healthcare") or "",
+            "rubric": rubric_ru(t),
             "emails": [e.strip() for e in (t.get("email") or
                                            t.get("contact:email") or "").split(";")
                        if e.strip()][:2],

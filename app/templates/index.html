@@ -125,6 +125,8 @@
               <label class="opt"><input id="q-hh" type="checkbox" checked>
                 <span>Работодатели hh.ru
                   <em>без ключа. Ищет по названию и отрасли, вакансии не нужны</em></span></label>
+              <label class="opt"><input id="q-skip-empty" type="checkbox" checked>
+                <span>Пропускать компании без контактов<em>ни сайта, ни телефона, ни ИНН — обогащать нечем, в списке только мешают</em></span></label>
               <label class="inline">Глубина
                 <input id="q-pages" type="number" min="1" max="10" value="3">
                 <em class="fld-hint">Страниц на каждый город. Больше — дольше и шире</em>
@@ -327,6 +329,7 @@
       <div class="chips" id="chips">
         <button class="chip is-active" data-only="">Все</button>
         <button class="chip" data-only="contactable">Есть чем связаться</button>
+        <button class="chip" data-only="social">Есть соцсети</button>
         <button class="chip" data-only="lpr_found">Контакт ГД найден</button>
         <button class="chip" data-only="director">Есть адрес ГД</button>
         <button class="chip" data-only="ai_fit">ИИ: подходят</button>

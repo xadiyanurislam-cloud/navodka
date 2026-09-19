@@ -113,6 +113,7 @@ function findForm() {
     yandex: $("q-yandex").checked,
     dadata: $("q-dadata").checked,
     hh: $("q-hh").checked,
+    skip_empty: $("q-skip-empty").checked,
     then_enrich: $("q-then").checked,
     then_zakupki: $("q-then-zak").checked,
     then_ai: $("q-then-ai").checked,
@@ -133,6 +134,7 @@ function fillFindForm(p) {
   $("q-yandex").checked = src.yandex !== false;
   $("q-dadata").checked = src.dadata !== false;
   $("q-hh").checked = src.hh !== false;
+  $("q-skip-empty").checked = p.skip_empty !== false;
   $("q-then").checked = !!p.then_enrich;
   $("q-then-zak").checked = !!p.then_zakupki;
   $("q-then-ai").checked = !!p.then_ai;
@@ -756,7 +758,10 @@ async function toggleCard(tr, id) {
     <section>
       <h4>Контакты</h4>
       ${rest.map(contactRow).join("") || "<span class='nobody'>—</span>"}
-      ${socials.length ? `<h4 class="mt">Соцсети</h4>${socials.map(contactRow).join("")}` : ""}
+      <h4 class="mt">Соцсети</h4>
+      ${socials.length ? socials.map(contactRow).join("")
+        : `<p class="nobody">Не нашлось ни на сайте, ни в карточках справочников.
+           ${sig.vk_group ? "" : "Сообщество ВК ищется по ссылке, которую компания опубликовала сама, — если её нигде нет, программа не угадывает."}</p>`}
       ${(d.search || []).length ? `
         <h4 class="mt">Найти руководителя вручную</h4>
         <p class="hint-sm">Программа сюда не ходит и ничего не сохраняет:

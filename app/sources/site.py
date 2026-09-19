@@ -261,16 +261,47 @@ def crawl(site, timeout=10, pause=0.7, max_pages=10, session=None):
                       "Accept-Language": "ru,en;q=0.8"})
     emails, phones, tg = set(), set(), set()
     seen_html = 0
+    browser = {"on": False}     # перешли ли на представление браузером
+
+    def fetch(url):
+        """Забрать страницу, при отказе — ещё раз, как браузер.
+
+        Каждый десятый сайт отвечает 403 всему, что не похоже на
+        человека: так настроены Cloudflare и половина коробочных CMS. Для
+        нас это выглядело как «сайт не открылся», хотя сайт жив и
+        прекрасно открывается в окне браузера. Второй заход с полным
+        набором браузерных заголовков снимает большую часть таких
+        отказов.
+        """
+        from .. import net
+        try:
+            r = s.get(url, timeout=timeout, allow_redirects=True,
+                      headers=net.BROWSER_HEADERS if browser["on"] else None)
+        except Exception:
+            r = None
+        if r is not None and r.status_code not in (403, 406, 429, 503):
+            return r, ""
+        if browser["on"]:
+            return r, ("сайт отклонил запрос (%s)" % r.status_code) if r is not None \
+                else "сайт не отвечает"
+        browser["on"] = True
+        try:
+            r2 = s.get(url, timeout=timeout, allow_redirects=True,
+                       headers=net.BROWSER_HEADERS)
+            return r2, ""
+        except Exception as e:
+            return r, str(e)[:200]
 
     for path in PATHS[:max_pages]:
         url = urljoin(base + "/", path.lstrip("/")) if path else base
-        try:
-            r = s.get(url, timeout=timeout, allow_redirects=True)
-        except Exception as e:
+        r, err = fetch(url)
+        if r is None:
             if not seen_html and not path:
-                result["error"] = str(e)[:200]
+                result["error"] = err or "сайт не отвечает"
             continue
         if r.status_code != 200 or "text/html" not in (r.headers.get("Content-Type") or ""):
+            if not seen_html and not path:
+                result["error"] = "сайт ответил %s" % r.status_code
             continue
         seen_html += 1
         html = r.text

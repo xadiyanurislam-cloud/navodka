@@ -1014,7 +1014,8 @@ def task_find(task_id, params):
     db.update_task(task_id, total=len(rows))
     log("Найдено записей: %d. Раскладываю по базе." % len(rows))
 
-    added = known = skipped = 0
+    skip_empty = params.get("skip_empty", True)
+    added = known = skipped = empty = 0
     for i, row in enumerate(rows, 1):
         if _should_stop():
             log("Остановлено пользователем.", "warn")
@@ -1022,6 +1023,16 @@ def task_find(task_id, params):
         if db.is_blacklisted({"inn": row.get("inn"), "hh_id": row.get("hh_id"),
                               "name": row.get("name")}):
             skipped += 1
+            db.update_task(task_id, done=i)
+            continue
+        # Компания, о которой не известно ничего, кроме названия, — это не
+        # лид, а строка в реестре. Обогащать её нечем: без сайта не с чего
+        # брать почты, без ИНН не спросить ЕГРЮЛ. В списке она только
+        # мешает искать те, с которыми можно работать.
+        if skip_empty and not (row.get("site") or row.get("phones")
+                               or row.get("emails") or row.get("links")
+                               or row.get("inn")):
+            empty += 1
             db.update_task(task_id, done=i)
             continue
         phones = row.pop("phones", []) or []
@@ -1058,10 +1069,15 @@ def task_find(task_id, params):
         db.update_task(task_id, done=i)
 
     total = db.conn().execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
-    log("Готово. Новых: %d, уже было: %d%s. Всего в базе: %d"
+    log("Готово. Новых: %d, уже было: %d%s%s. Всего в базе: %d"
         % (added, known,
-           (", пропущено из чёрного списка: %d" % skipped) if skipped else "",
+           (", пустых пропущено: %d" % empty) if empty else "",
+           (", из чёрного списка: %d" % skipped) if skipped else "",
            total))
+    if empty and not added:
+        log("Все находки оказались без контактов. Так бывает, когда "
+            "выбрана «Россия целиком» или не подключён ни один справочник.",
+            "warn")
 
     if params.get("then_enrich") and added:
         db.create_task("enrich", {

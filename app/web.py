@@ -140,6 +140,7 @@ def create_app():
                 "dadata": bool(d.get("dadata", True)),
                 "hh": bool(d.get("hh", True)),
             },
+            "skip_empty": bool(d.get("skip_empty", True)),
             "then_enrich": bool(d.get("then_enrich")),
             "then_zakupki": bool(d.get("then_zakupki")),
             "then_ai": bool(d.get("then_ai")),
@@ -383,6 +384,8 @@ def create_app():
         elif only == "empty":
             where.append("(site = '' AND id NOT IN (SELECT company_id FROM "
                          "contacts WHERE kind IN ('phone','email','social')))")
+        elif only == "social":
+            where.append("id IN (SELECT company_id FROM contacts WHERE kind='social')")
         elif only == "fresh":
             # Вакансия, вывешенная на этой неделе: повод для звонка ещё
             # горячий, и о нём можно говорить в настоящем времени.

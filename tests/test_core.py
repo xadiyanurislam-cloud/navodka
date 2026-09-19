@@ -917,6 +917,59 @@ class MergingSources(unittest.TestCase):
                             worker.norm_name("ООО Ромашка-2"))
 
 
+class JunkAndSocials(unittest.TestCase):
+    def test_osm_tag_is_shown_in_russian(self):
+        """Список читает продавец, а не картограф: «Агентство
+        недвижимости», а не estate_agent."""
+        from app.sources import osm
+        self.assertEqual(osm.rubric_ru({"office": "estate_agent"}),
+                         "Агентство недвижимости")
+        self.assertEqual(osm.rubric_ru({"amenity": "dentist"}), "Стоматология")
+        # Незнакомый тег хотя бы читается, а не остаётся с подчёркиваниями.
+        self.assertEqual(osm.rubric_ru({"shop": "что_то_новое"}), "что то новое")
+
+    def test_site_blocking_the_app_is_retried_as_a_browser(self):
+        """Каждый десятый сайт отвечает 403 всему, что не похоже на
+        человека. Для нас это выглядело как «сайт не открылся»."""
+        from app.sources import site
+        calls = []
+
+        class Resp:
+            def __init__(self, code, html=""):
+                self.status_code, self.text = code, html
+                self.headers = {"Content-Type": "text/html"}
+
+        class Sess:
+            headers = {}
+            def get(self, url, timeout=None, allow_redirects=True, headers=None):
+                as_browser = bool(headers and "Mozilla" in
+                                  (headers.get("User-Agent") or ""))
+                calls.append(as_browser)
+                return Resp(200, "почта: a@b.ru") if as_browser else Resp(403)
+
+        res = site.crawl("https://glz.ru", session=Sess(), max_pages=2, pause=0)
+        self.assertFalse(calls[0], "первый заход должен быть от имени программы")
+        self.assertTrue(calls[1], "после отказа не перешли на браузерные заголовки")
+        self.assertEqual(res["error"], "")
+        self.assertIn("a@b.ru", res["emails"])
+
+    def test_refusal_is_reported_not_swallowed(self):
+        from app.sources import site
+
+        class Resp:
+            status_code = 403
+            text = ""
+            headers = {"Content-Type": "text/html"}
+
+        class Sess:
+            headers = {}
+            def get(self, url, timeout=None, allow_redirects=True, headers=None):
+                return Resp()
+
+        res = site.crawl("https://glz.ru", session=Sess(), max_pages=1, pause=0)
+        self.assertTrue(res["error"], "отказ сайта потерялся")
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()
