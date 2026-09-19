@@ -8,19 +8,31 @@
 """
 import os
 
+from PyInstaller.utils.hooks import collect_all
+
+# curl_cffi — это не только питоновский код: рядом лежит скомпилированная
+# обёртка и своя сборка libcurl. Без них пакет попадает в exe, но падает
+# при импорте, а программа молча остаётся без запасного способа выйти в
+# сеть — того самого, которым обходится обрыв связи по отпечатку
+# рукопожатия. Поэтому собираем его целиком, а не по следам импортов.
+try:
+    _curl_datas, _curl_binaries, _curl_hidden = collect_all("curl_cffi")[:3]
+except Exception:
+    _curl_datas, _curl_binaries, _curl_hidden = [], [], []
+
 block_cipher = None
 ROOT = os.path.abspath(os.path.join(os.getcwd()))
 
 a = Analysis(
     ["../main.py"],
     pathex=[ROOT],
-    binaries=[],
+    binaries=_curl_binaries,
     # Шаблоны и статика — обычные файлы рядом с кодом, в exe они сами не
     # попадут. settings.resource_path ищет их относительно sys._MEIPASS.
     datas=[("../app/templates", "app/templates"),
            ("../app/static", "app/static"),
-           ("icon.ico", ".")],
-    hiddenimports=["dns.resolver", "openpyxl"],
+           ("icon.ico", ".")] + _curl_datas,
+    hiddenimports=["dns.resolver", "openpyxl", "curl_cffi"] + _curl_hidden,
     hookspath=[],
     runtime_hooks=[],
     # Тянуть эти пакеты незачем: PyInstaller подхватывает их следом за

@@ -22,7 +22,7 @@ import time
 
 import requests
 
-from . import db, settings
+from . import db, net, settings
 
 # Версия протокола Anthropic. Заголовок обязательный: без него сервер
 # отвечает отказом, не объясняя причины.
@@ -30,6 +30,12 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 DEFAULT_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
+# Посреднику Claude модель gpt-4o-mini не известна, и запрос с ней
+# отвечает отказом про неизвестную модель — а человек при этом уверен,
+# что не задавал никакой модели вовсе. Своё имя у каждого посредника, но
+# это встречается чаще прочих; точное берётся кнопкой «Показать
+# доступные модели».
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5"
 
 # Ответ просим в JSON: свободный текст пришлось бы разбирать регулярками,
 # а модель каждый раз оформляет его чуть иначе.
@@ -48,10 +54,20 @@ def config():
     return {
         "key": db.get_setting("ai_key", ""),
         "url": (db.get_setting("ai_url", "") or DEFAULT_URL).rstrip("/"),
-        "model": db.get_setting("ai_model", "") or DEFAULT_MODEL,
+        "model": model(db.get_setting("ai_model", ""),
+                       kind(db.get_setting("ai_kind", ""),
+                            db.get_setting("ai_url", ""))),
         "kind": kind(db.get_setting("ai_kind", ""),
                      db.get_setting("ai_url", "")),
     }
+
+
+def model(saved, kind_):
+    """Имя модели — заданное или разумное по формату."""
+    saved = (saved or "").strip()
+    if saved:
+        return saved
+    return DEFAULT_ANTHROPIC_MODEL if kind_ == "anthropic" else DEFAULT_MODEL
 
 
 def kind(saved, url):
@@ -76,6 +92,68 @@ def enabled():
     return bool(config()["key"])
 
 
+def _is_reset(err):
+    """Соединение оборвали, а не отказали.
+
+    Обрыв и отказ лечатся по-разному, и путать их нельзя: отказ значит
+    «сервер тебя услышал и сказал нет», обрыв — «до сервера не дошло».
+    """
+    t = str(err).lower()
+    return any(m in t for m in (
+        "10054", "connection aborted", "connection reset", "connectionreset",
+        "remotedisconnected", "eof occurred", "connection broken",
+        "recv failure", "ssl", "handshake"))
+
+
+def _explain(err):
+    """Ошибку связи — словами, а не текстом исключения Python."""
+    if not _is_reset(err):
+        return str(err)[:200]
+    tail = "" if net.HAVE_CURL else (
+        " Ещё: не установлена библиотека curl_cffi — без неё программа не "
+        "умеет менять отпечаток рукопожатия. Переустановите программу.")
+    return ("связь разорвана по дороге. Это не отказ сервера: он не успел "
+            "ответить. Так ведёт себя фильтр между вами и провайдером. "
+            "Проверьте адрес, попробуйте включить VPN или спросите у "
+            "продавца запасной адрес." + tail)
+
+
+def _transports(session=None):
+    """Чем идти в сеть: сначала обычно, потом с отпечатком браузера.
+
+    Посредник отвечал обрывом соединения, а не отказом, — так выглядит
+    не поломка сервера, а фильтр по дороге: он смотрит на отпечаток
+    TLS-рукопожатия и рвёт связь раньше, чем дело дойдёт до ответа. У
+    requests отпечаток свой, ни на один браузер не похожий; curl_cffi
+    делает рукопожатие как у Chrome, и тот же запрос проходит.
+    """
+    if session is not None:
+        return [session]
+    out = [requests.Session()]
+    if net.HAVE_CURL:
+        try:
+            out.append(net.curl_requests.Session(impersonate=net.IMPERSONATE))
+        except Exception:
+            pass
+    return out
+
+
+def _send(method, url, headers, timeout, body=None, session=None):
+    """Запрос с запасным путём. Возвращает (ответ, ошибка)."""
+    last = None
+    for s in _transports(session):
+        try:
+            if method == "GET":
+                return s.get(url, headers=headers, timeout=timeout), ""
+            return s.post(url, headers=headers, json=body, timeout=timeout), ""
+        except Exception as e:
+            last = e
+            # Отказ по существу повторять незачем: ответ будет тот же.
+            if not _is_reset(e):
+                break
+    return None, _explain(last)
+
+
 def ask(messages, cfg=None, timeout=90, max_tokens=700, session=None):
     """Один запрос к модели. Возвращает (текст, ошибка)."""
     cfg = cfg or config()
@@ -83,22 +161,41 @@ def ask(messages, cfg=None, timeout=90, max_tokens=700, session=None):
         return "", "ключ не задан"
     if cfg.get("kind") == "anthropic":
         return _ask_anthropic(messages, cfg, timeout, max_tokens, session)
-    s = session or requests.Session()
+    r, err = _send("POST", cfg["url"] + "/chat/completions",
+                   {"Authorization": "Bearer " + cfg["key"],
+                    "Content-Type": "application/json",
+                    "User-Agent": settings.USER_AGENT},
+                   timeout,
+                   body={"model": cfg["model"], "messages": messages,
+                         "temperature": 0.2, "max_tokens": max_tokens},
+                   session=session)
+    if r is None:
+        return "", err
     try:
-        r = s.post(
-            cfg["url"] + "/chat/completions",
-            headers={"Authorization": "Bearer " + cfg["key"],
-                     "Content-Type": "application/json",
-                     "User-Agent": settings.USER_AGENT},
-            json={"model": cfg["model"], "messages": messages,
-                  "temperature": 0.2, "max_tokens": max_tokens},
-            timeout=timeout)
         if r.status_code != 200:
             return "", "HTTP %s: %s" % (r.status_code, r.text[:200])
         data = r.json()
         return (data["choices"][0]["message"]["content"] or "").strip(), ""
     except Exception as e:
         return "", str(e)[:200]
+
+
+def endpoint(cfg):
+    """Куда уйдёт запрос. Показываем это в проверке связи: «не работает»
+    без адреса — гадание, а ошибка в адресе здесь самая частая.
+
+    Адрес принимаем в любом виде: и «https://router.cheap», и
+    «https://router.cheap/v1», и сразу «…/v1/messages». Человек копирует
+    то, что дал посредник, и подгонять ссылку под наш вкус не обязан.
+    """
+    base = (cfg.get("url") or "").rstrip("/")
+    if cfg.get("kind") != "anthropic":
+        return base + "/chat/completions"
+    if base.endswith("/v1/messages"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/messages"
+    return base + "/v1/messages"
 
 
 def _ask_anthropic(messages, cfg, timeout, max_tokens, session=None):
@@ -113,14 +210,7 @@ def _ask_anthropic(messages, cfg, timeout, max_tokens, session=None):
     «https://router.cheap/v1», и сразу «…/v1/messages». Человек копирует
     то, что дал посредник, и подгонять ссылку под наш вкус не обязан.
     """
-    s = session or requests.Session()
-    base = cfg["url"].rstrip("/")
-    if base.endswith("/v1/messages"):
-        url = base
-    elif base.endswith("/v1"):
-        url = base + "/messages"
-    else:
-        url = base + "/v1/messages"
+    url = endpoint(cfg)
 
     system = " ".join(m["content"] for m in messages if m.get("role") == "system")
     rest = [{"role": ("assistant" if m.get("role") == "assistant" else "user"),
@@ -130,13 +220,15 @@ def _ask_anthropic(messages, cfg, timeout, max_tokens, session=None):
             "temperature": 0.2, "messages": rest}
     if system:
         body["system"] = system
+    r, err = _send("POST", url,
+                   {"x-api-key": cfg["key"],
+                    "anthropic-version": ANTHROPIC_VERSION,
+                    "Content-Type": "application/json",
+                    "User-Agent": settings.USER_AGENT},
+                   timeout, body=body, session=session)
+    if r is None:
+        return "", err
     try:
-        r = s.post(url,
-                   headers={"x-api-key": cfg["key"],
-                            "anthropic-version": ANTHROPIC_VERSION,
-                            "Content-Type": "application/json",
-                            "User-Agent": settings.USER_AGENT},
-                   json=body, timeout=timeout)
         if r.status_code != 200:
             return "", "HTTP %s: %s" % (r.status_code, (r.text or "")[:200])
         data = r.json() or {}
@@ -160,7 +252,6 @@ def models(cfg=None, timeout=25, session=None):
     cfg = cfg or config()
     if not cfg["key"]:
         return [], "ключ не задан"
-    s = session or requests.Session()
     base = cfg["url"].rstrip("/")
     for tail in ("/v1/messages", "/messages"):
         if base.endswith(tail):
@@ -172,10 +263,9 @@ def models(cfg=None, timeout=25, session=None):
                      "anthropic-version": ANTHROPIC_VERSION})
     else:
         head["Authorization"] = "Bearer " + cfg["key"]
-    try:
-        r = s.get(url, headers=head, timeout=timeout)
-    except Exception as e:
-        return [], str(e)[:160]
+    r, err = _send("GET", url, head, timeout, session=session)
+    if r is None:
+        return [], err
     if r.status_code != 200:
         return [], "HTTP %s: %s" % (r.status_code, (r.text or "")[:160])
     try:
@@ -374,9 +464,13 @@ def letter(company, signals, contacts, offer="", icp="", cfg=None, session=None)
 
 def check(cfg=None):
     """Проверка связи — чтобы ключ не выяснялся посреди обхода тысячи компаний."""
+    cfg = cfg or config()
     t0 = time.time()
     text, err = ask([{"role": "user", "content": 'Ответь JSON: {"ok":true}'}],
                     cfg=cfg, max_tokens=20, timeout=30)
     if err:
-        return False, err
+        # Адрес и модель в тексте ошибки — не украшение: ошибка в них
+        # самая частая, а увидеть, куда именно ушёл запрос, иначе негде.
+        return False, "%s\nЗапрос уходил на %s, модель «%s»." % (
+            err, endpoint(cfg), cfg.get("model") or "—")
     return True, "ответ за %.1f с" % (time.time() - t0)

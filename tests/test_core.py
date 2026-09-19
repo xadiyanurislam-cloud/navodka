@@ -1992,5 +1992,97 @@ class TradeToTags(unittest.TestCase):
         self.assertLessEqual(q.count("nwr["), 10)
 
 
+class BrokenConnection(unittest.TestCase):
+    """Посредник отвечал не отказом, а обрывом связи: WinError 10054.
+    Это не поломка сервера — он не успел ответить."""
+
+    def test_reset_is_told_apart_from_refusal(self):
+        self.assertTrue(ai._is_reset(Exception(
+            "('Connection aborted.', ConnectionResetError(10054, "
+            "'Удаленный хост принудительно разорвал подключение'))")))
+        self.assertFalse(ai._is_reset(Exception("HTTP 401 unauthorized")))
+
+    def test_reset_is_explained_in_words(self):
+        note = ai._explain(Exception("ConnectionResetError(10054)"))
+        self.assertIn("разорвана", note)
+        self.assertNotIn("Traceback", note)
+
+    def test_second_transport_is_tried_after_a_reset(self):
+        """У requests свой отпечаток рукопожатия, ни на один браузер не
+        похожий. Фильтр по дороге рвёт связь именно по нему."""
+        calls = []
+
+        class Dead(object):
+            def post(self_inner, *a, **k):
+                calls.append("requests")
+                raise Exception("('Connection aborted.', "
+                                "ConnectionResetError(10054, 'разорвал'))")
+
+        class Alive(object):
+            def post(self_inner, *a, **k):
+                calls.append("curl")
+
+                class R:
+                    status_code = 200
+                    text = "{}"
+
+                    def json(self_r):
+                        return {"content": [{"type": "text", "text": "да"}]}
+                return R()
+
+        real = ai._transports
+        ai._transports = lambda session=None: [Dead(), Alive()]
+        try:
+            text, err = ai.ask([{"role": "user", "content": "?"}],
+                               cfg={"key": "k", "url": "https://router.cheap",
+                                    "model": "m", "kind": "anthropic"})
+        finally:
+            ai._transports = real
+        self.assertEqual((text, err), ("да", ""))
+        self.assertEqual(calls, ["requests", "curl"])
+
+    def test_refusal_is_not_retried(self):
+        """Отказ по существу повторять незачем: ответ будет тот же."""
+        calls = []
+
+        class Refuse(object):
+            def post(self_inner, *a, **k):
+                calls.append(1)
+                raise Exception("invalid api key")
+
+        real = ai._transports
+        ai._transports = lambda session=None: [Refuse(), Refuse()]
+        try:
+            ai.ask([{"role": "user", "content": "?"}],
+                   cfg={"key": "k", "url": "https://router.cheap",
+                        "model": "m", "kind": "anthropic"})
+        finally:
+            ai._transports = real
+        self.assertEqual(len(calls), 1)
+
+    def test_model_matches_the_format(self):
+        """gpt-4o-mini посреднику Claude не известна, и отказ про
+        неизвестную модель человек читает как поломку программы."""
+        self.assertEqual(ai.model("", "anthropic"), ai.DEFAULT_ANTHROPIC_MODEL)
+        self.assertEqual(ai.model("", "openai"), ai.DEFAULT_MODEL)
+        self.assertEqual(ai.model("своя-модель", "anthropic"), "своя-модель")
+
+    def test_address_is_named_in_the_check(self):
+        """«Не работает» без адреса — гадание."""
+        cfg = {"key": "", "url": "https://router.cheap", "model": "m",
+               "kind": "anthropic"}
+        ok, note = ai.check(cfg)
+        self.assertFalse(ok)
+        self.assertIn("https://router.cheap/v1/messages", note)
+
+    def test_endpoint_for_both_formats(self):
+        self.assertEqual(
+            ai.endpoint({"url": "https://router.cheap", "kind": "anthropic"}),
+            "https://router.cheap/v1/messages")
+        self.assertEqual(
+            ai.endpoint({"url": "https://api.openai.com/v1", "kind": "openai"}),
+            "https://api.openai.com/v1/chat/completions")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

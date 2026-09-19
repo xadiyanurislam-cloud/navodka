@@ -962,3 +962,8 @@ select[multiple] option:checked{
   background:linear-gradient(0deg,var(--accent),var(--accent));
   color:#fff}
 select[multiple] option{padding:3px 6px;border-radius:5px}
+
+/* Ошибка связи теперь рассказывает, куда ушёл запрос и с какой моделью,
+   и это две-три строки, а не полстроки. Без переносов они слипались в
+   одну кашу. */
+#ai-cfg-note{white-space:pre-line;line-height:1.5;max-width:70ch}
