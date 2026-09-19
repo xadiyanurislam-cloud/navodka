@@ -188,6 +188,7 @@ _LATER = {
     # потерять возможность отличить одно от другого.
     "ai_summary": "TEXT", "ai_segment": "TEXT", "ai_fit": "INTEGER",
     "ai_why": "TEXT", "ai_hook": "TEXT", "ai_opener": "TEXT",
+    "ai_kp": "TEXT",
     # Что делаем с компанией дальше и когда. Без этих двух полей список
     # через неделю превращается в кашу: стадия говорит, где компания, но
     # не говорит, чья сейчас очередь ходить.
@@ -605,7 +606,7 @@ def update_company_fields(company_id, patch):
                         "employees", "founded", "status", "capital",
                         "branches", "founders_count", "founders",
                         "okveds_extra", "growth", "ai_summary", "ai_segment",
-                        "ai_fit", "ai_why", "ai_hook", "ai_opener",
+                        "ai_fit", "ai_why", "ai_hook", "ai_opener", "ai_kp",
                         "next_step", "next_date")}
     if not allowed:
         return

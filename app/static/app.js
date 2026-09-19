@@ -463,6 +463,7 @@ $("btn-enrich").onclick = () => run("/api/enrich", {
 
 $("btn-ai").onclick = () => run("/api/ai", {
   icp: $("a-icp").value, offer: $("a-offer").value,
+  terms: $("a-terms").value,
   limit: $("a-limit").value, redo: $("a-redo").checked}, "ИИ-анализ");
 
 $("btn-ai-check").onclick = async () => {
@@ -1154,9 +1155,18 @@ async function toggleCard(tr, id) {
                value="${esc(c.next_date || "")}">
       </div>
       <div class="detail-links">
+        <button class="btn sm" data-analyze="${c.id}">Разобрать компанию</button>
         <button class="btn sm" data-letter="${c.id}">Письмо через ИИ</button>
+        <button class="btn sm" data-kp="${c.id}">Коммерческое предложение</button>
       </div>
       <div class="letter" data-letter-box="${c.id}" hidden></div>
+      <div class="letter" data-kp-box="${c.id}"${c.ai_kp ? "" : " hidden"}>${
+        c.ai_kp ? `<div class="kp"><p class="kp-title"><b>Составленное КП</b>
+          <span class="ai-mark">ИИ</span></p><pre class="letter-body">${
+          esc(c.ai_kp)}</pre></div>
+        <div class="detail-links">
+          <button class="btn sm" data-copy-saved-kp>Скопировать целиком</button>
+        </div>` : ""}</div>
 
       <h4 class="mt">Заметки</h4>
       <div class="notes" data-notes="${c.id}">${notesHtml(d.notes || [])}</div>
@@ -1278,6 +1288,87 @@ function bindWork(root, c) {
     letterBox.querySelector("[data-copy-letter]").onclick = (ev) => {
       ev.stopPropagation();
       copy(d.subject + "\n\n" + d.body);
+    };
+  };
+
+  // Разбор одной компании сейчас. Общий прогон идёт по тридцати
+  // карточкам и занимает минуты; когда открыта одна и звонить по ней
+  // надо сегодня, ждать незачем.
+  const anBtn = root.querySelector("[data-analyze]");
+  anBtn.onclick = async (e) => {
+    e.stopPropagation();
+    anBtn.disabled = true;
+    anBtn.textContent = "разбираю…";
+    const d = await post("/api/company/" + c.id + "/analyze", {});
+    anBtn.disabled = false;
+    anBtn.textContent = "Разобрать компанию";
+    if (!d || !d.ok) {
+      toast((d && d.error) || "не вышло");
+      return;
+    }
+    // Разбор ложится в те же поля, что и при общем прогоне, и
+    // показывать его отдельно значит завести второе место для одного и
+    // того же. Поэтому обновляем существующий блок, а если его не было
+    // (компанию разбирают впервые) — вставляем перед «Что дальше».
+    const fresh = await get("/api/company/" + c.id);
+    if (fresh && fresh.ok) {
+      const html = aiBlock(fresh.company, fresh.signals || {});
+      const old_ = root.querySelector(".ai-block");
+      if (old_) {
+        old_.outerHTML = html;
+      } else if (html) {
+        anBtn.closest(".detail-links").insertAdjacentHTML("beforebegin", html);
+      }
+      bindCopy(root);
+    }
+    loadCompanies();
+  };
+
+  const kpBtn = root.querySelector("[data-kp]");
+  const kpBox = root.querySelector("[data-kp-box]");
+  // Уже составленное КП показано сразу: составлять его заново — лишний
+  // запрос к модели за то, что уже лежит в базе.
+  const savedKp = root.querySelector("[data-copy-saved-kp]");
+  if (savedKp) {
+    savedKp.onclick = (ev) => {
+      ev.stopPropagation();
+      copy(c.ai_kp || "");
+    };
+    kpBtn.textContent = "Составить КП заново";
+  }
+  kpBtn.onclick = async (e) => {
+    e.stopPropagation();
+    kpBtn.disabled = true;
+    kpBtn.textContent = "составляю…";
+    kpBox.hidden = false;
+    kpBox.innerHTML = `<div class="skeleton" style="height:140px"></div>`;
+    const d = await post("/api/company/" + c.id + "/kp", {});
+    kpBtn.disabled = false;
+    kpBtn.textContent = "Коммерческое предложение";
+    if (!d || !d.ok) {
+      kpBox.innerHTML = `<p class="bad">${esc((d && d.error) || "не вышло")}</p>`;
+      return;
+    }
+    const block = (head, val) => val
+      ? `<h5>${esc(head)}</h5><p>${esc(val)}</p>` : "";
+    kpBox.innerHTML = `
+      <div class="kp">
+        <p class="kp-title"><b>${esc(d.title || "Коммерческое предложение")}</b>
+          <span class="ai-mark">ИИ</span></p>
+        ${d.intro ? `<p>${esc(d.intro)}</p>` : ""}
+        ${block("Задача", d.problem)}
+        ${block("Что предлагаем", d.solution)}
+        ${block("Условия", d.terms)}
+        ${block("Следующий шаг", d.next)}
+        ${(d.doubts || []).length ? `<h5>О чём спросят</h5><ul>${
+          d.doubts.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      </div>
+      <div class="detail-links">
+        <button class="btn sm" data-copy-kp>Скопировать целиком</button>
+      </div>`;
+    kpBox.querySelector("[data-copy-kp]").onclick = (ev) => {
+      ev.stopPropagation();
+      copy(d.text);
     };
   };
 }

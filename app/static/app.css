@@ -968,3 +968,17 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
    одну кашу. */
 #ai-cfg-note{white-space:pre-line;line-height:1.5;max-width:70ch}
 .ai-cfg .wide{grid-column:1/-1}
+
+/* ── Коммерческое предложение ─────────────────────────────
+   Письмо открывает разговор, КП его продолжает: его пересылают внутрь
+   компании и читают без вас. Отсюда разделы и разбор возражений —
+   в письме им не место. */
+.kp{background:var(--surface-2);border:1px solid var(--line-2);
+  border-radius:12px;padding:14px 16px;font-size:13px;line-height:1.6}
+.kp-title{font-size:14px;margin-bottom:8px;display:flex;align-items:center;
+  gap:8px;flex-wrap:wrap}
+.kp h5{margin:12px 0 3px;font-size:11px;letter-spacing:.05em;
+  text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.kp p{margin:0;color:var(--ink)}
+.kp ul{margin:4px 0 0;padding-left:18px;color:var(--ink-2)}
+.kp li{margin-bottom:3px}

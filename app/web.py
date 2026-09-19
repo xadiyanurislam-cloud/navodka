@@ -124,6 +124,7 @@ def create_app():
             update_token=db.get_setting("update_token", ""),
             ai_icp=db.get_setting("ai_icp", ""),
             ai_offer=db.get_setting("ai_offer", ""),
+            ai_terms=db.get_setting("ai_terms", ""),
             # В скрипт страницы это попадает как есть, поэтому «<»
             # экранируем: запрос человек пишет сам, и «</script>» в нём
             # сломал бы страницу целиком.
@@ -260,6 +261,7 @@ def create_app():
         d = request.get_json(silent=True) or {}
         db.set_setting("ai_icp", (d.get("icp") or "").strip())
         db.set_setting("ai_offer", (d.get("offer") or "").strip())
+        db.set_setting("ai_terms", (d.get("terms") or "").strip())
         task_id = db.create_task("ai", {
             "limit": max(1, min(300, int(d.get("limit") or 30))),
             "icp": d.get("icp") or "", "offer": d.get("offer") or "",
@@ -635,6 +637,81 @@ def create_app():
             if key in d:
                 db.set_setting(key, (d[key] or "").strip())
         return jsonify(ok=True)
+
+    def _company_facts(cid):
+        """Компания, её признаки и контакты — вход для любого разбора."""
+        c = db.conn()
+        row = c.execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
+        if row is None:
+            return None, None, None
+        sig = {r["key"]: r["value"] for r in
+               c.execute("SELECT key, value FROM signals WHERE company_id=?", (cid,))}
+        cts = [dict(x) for x in c.execute(
+            "SELECT kind, value, owner, confidence, verified, source "
+            "FROM contacts WHERE company_id=? ORDER BY confidence DESC", (cid,))]
+        return dict(row), sig, cts
+
+    @app.post("/api/company/<int:cid>/analyze")
+    def api_company_analyze(cid):
+        """Разобрать одну компанию сейчас, не дожидаясь общего прогона.
+
+        Общий прогон идёт по тридцати карточкам и занимает минуты. Когда
+        открыта одна и звонить по ней надо сегодня, ждать незачем.
+        """
+        row, sig, cts = _company_facts(cid)
+        if row is None:
+            return jsonify(ok=False, error="компания не найдена")
+        if not db.get_setting("ai_key", ""):
+            return jsonify(ok=False, error="не задан ключ ИИ — «Настройки» → «Ключ ИИ»")
+        brief = ai.company_brief(row, sig, cts)
+        data, err = ai.analyze(brief,
+                               icp=db.get_setting("ai_icp", ""),
+                               offer=db.get_setting("ai_offer", ""))
+        if err:
+            return jsonify(ok=False, error=err)
+        patch = {}
+        if data.get("summary"):
+            patch["ai_summary"] = str(data["summary"])[:400]
+        if data.get("segment"):
+            patch["ai_segment"] = str(data["segment"])[:40]
+        if data.get("fit") is not None:
+            try:
+                patch["ai_fit"] = max(0, min(100, int(data["fit"])))
+            except Exception:
+                pass
+        if data.get("fit_why"):
+            patch["ai_why"] = str(data["fit_why"])[:400]
+        if data.get("hook"):
+            patch["ai_hook"] = str(data["hook"])[:400]
+        if data.get("opener"):
+            patch["ai_opener"] = str(data["opener"])[:800]
+        if patch:
+            db.update_company_fields(cid, patch)
+        if isinstance(data.get("signals"), list) and data["signals"]:
+            db.add_signal(cid, "ai_signals",
+                          "; ".join(str(x) for x in data["signals"][:4])[:600])
+        return jsonify(ok=True, **patch)
+
+    @app.post("/api/company/<int:cid>/kp")
+    def api_company_kp(cid):
+        """Коммерческое предложение под эту компанию."""
+        row, sig, cts = _company_facts(cid)
+        if row is None:
+            return jsonify(ok=False, error="компания не найдена")
+        if not db.get_setting("ai_key", ""):
+            return jsonify(ok=False, error="не задан ключ ИИ — «Настройки» → «Ключ ИИ»")
+        data, err = ai.kp(row, sig, cts,
+                          offer=db.get_setting("ai_offer", ""),
+                          terms=db.get_setting("ai_terms", ""),
+                          icp=db.get_setting("ai_icp", ""))
+        if err:
+            return jsonify(ok=False, error=err)
+        plain = ai.kp_text(data, row.get("name") or "")
+        # КП пишут раз и возвращаются к нему: пересылают, правят, читают
+        # перед звонком. Держать его только на экране значит потерять при
+        # первом же закрытии карточки.
+        db.update_company_fields(cid, {"ai_kp": plain[:6000]})
+        return jsonify(ok=True, text=plain, **data)
 
     @app.post("/api/company/<int:cid>/letter")
     def api_company_letter(cid):

@@ -2388,5 +2388,154 @@ class ModelNotAvailable(unittest.TestCase):
         self.assertIn("и ещё 8", note)
 
 
+class CommercialProposal(unittest.TestCase):
+    """КП пересылают внутрь компании и читают без продавца. Выдуманная
+    цифра в нём хуже, чем её отсутствие: за неё потом спрашивают."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().commit()
+        self.cid, _ = db.upsert_company({"name": "ООО Ромашка", "source": "тест",
+                                         "inn": "7701234567"})
+        db.set_setting("ai_key", "тест")
+        db.set_setting("ai_offer", "Разбор записей звонков")
+        db.set_setting("ai_terms", "")
+        self.app = web.create_app().test_client()
+
+    def tearDown(self):
+        for k in ("ai_key", "ai_offer", "ai_terms"):
+            db.set_setting(k, "")
+
+    def _answer(self, payload):
+        return lambda messages, **k: (json.dumps(payload, ensure_ascii=False), "")
+
+    def test_offer_is_required(self):
+        """КП без описания того, что продаём, — это КП про ничто."""
+        db.set_setting("ai_offer", "")
+        d = self.app.post("/api/company/%d/kp" % self.cid).get_json()
+        self.assertFalse(d["ok"])
+        self.assertIn("Что продаём", d["error"])
+
+    def test_terms_reach_the_prompt(self):
+        seen = {}
+
+        def fake(messages, **k):
+            seen["text"] = "\n".join(m["content"] for m in messages)
+            return json.dumps({"solution": "с"}, ensure_ascii=False), ""
+
+        real = ai.ask
+        ai.ask = fake
+        db.set_setting("ai_terms", "18 000 ₽ в месяц, подключение 3 дня")
+        try:
+            self.app.post("/api/company/%d/kp" % self.cid)
+        finally:
+            ai.ask = real
+        self.assertIn("18 000 ₽", seen["text"])
+        self.assertIn("ни одной цифры, которой нет", seen["text"])
+
+    def test_without_terms_the_model_is_told_not_to_invent(self):
+        seen = {}
+
+        def fake(messages, **k):
+            seen["text"] = "\n".join(m["content"] for m in messages)
+            return json.dumps({"solution": "с"}, ensure_ascii=False), ""
+
+        real = ai.ask
+        ai.ask = fake
+        try:
+            self.app.post("/api/company/%d/kp" % self.cid)
+        finally:
+            ai.ask = real
+        self.assertIn("условия обсуждаются", seen["text"])
+
+    def test_sections_come_back_and_are_saved(self):
+        real = ai.ask
+        ai.ask = self._answer({
+            "title": "Заголовок", "intro": "Вступление", "problem": "Задача",
+            "solution": "Решение", "terms": "Условия", "next": "Шаг",
+            "doubts": ["раз", "два", "три", "четыре"]})
+        try:
+            d = self.app.post("/api/company/%d/kp" % self.cid).get_json()
+        finally:
+            ai.ask = real
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["solution"], "Решение")
+        self.assertEqual(len(d["doubts"]), 3, "возражений берём не больше трёх")
+        self.assertIn("Что предлагаем", d["text"])
+        row = db.conn().execute("SELECT ai_kp FROM companies WHERE id=?",
+                                (self.cid,)).fetchone()
+        self.assertIn("Решение", row["ai_kp"], "КП не сохранилось")
+
+    def test_answer_without_solution_is_refused(self):
+        """Пустой разбор выглядит как готовое КП и тем опаснее."""
+        real = ai.ask
+        ai.ask = self._answer({"title": "Только заголовок"})
+        try:
+            d = self.app.post("/api/company/%d/kp" % self.cid).get_json()
+        finally:
+            ai.ask = real
+        self.assertFalse(d["ok"])
+
+    def test_no_key_says_where_to_put_it(self):
+        db.set_setting("ai_key", "")
+        d = self.app.post("/api/company/%d/kp" % self.cid).get_json()
+        self.assertIn("Настройки", d["error"])
+
+
+class AnalyzeOneCompany(unittest.TestCase):
+    """Общий прогон идёт по тридцати карточкам и занимает минуты. Когда
+    открыта одна и звонить по ней надо сегодня, ждать незачем."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().commit()
+        self.cid, _ = db.upsert_company({"name": "ООО Василёк", "source": "тест"})
+        db.set_setting("ai_key", "тест")
+        self.app = web.create_app().test_client()
+
+    def tearDown(self):
+        db.set_setting("ai_key", "")
+
+    def test_result_lands_in_the_same_fields_as_the_bulk_run(self):
+        real = ai.ask
+        ai.ask = lambda messages, **k: (json.dumps({
+            "summary": "Чинит станки", "segment": "B2B", "fit": 77,
+            "fit_why": "похожи по размеру", "hook": "три вакансии",
+            "signals": ["8-800 на сайте", "вакансии в продажи"]},
+            ensure_ascii=False), "")
+        try:
+            d = self.app.post("/api/company/%d/analyze" % self.cid).get_json()
+        finally:
+            ai.ask = real
+        self.assertTrue(d["ok"])
+        row = db.conn().execute(
+            "SELECT ai_summary, ai_fit, ai_segment FROM companies WHERE id=?",
+            (self.cid,)).fetchone()
+        self.assertEqual(row["ai_summary"], "Чинит станки")
+        self.assertEqual(row["ai_fit"], 77)
+        self.assertEqual(row["ai_segment"], "B2B")
+        sig = db.conn().execute(
+            "SELECT value FROM signals WHERE company_id=? AND key='ai_signals'",
+            (self.cid,)).fetchone()
+        self.assertIn("8-800", sig["value"])
+
+    def test_out_of_range_score_is_clamped(self):
+        real = ai.ask
+        ai.ask = lambda messages, **k: (json.dumps({"fit": 300}), "")
+        try:
+            self.app.post("/api/company/%d/analyze" % self.cid)
+        finally:
+            ai.ask = real
+        row = db.conn().execute("SELECT ai_fit FROM companies WHERE id=?",
+                                (self.cid,)).fetchone()
+        self.assertEqual(row["ai_fit"], 100)
+
+    def test_missing_company_is_not_a_crash(self):
+        d = self.app.post("/api/company/999999/analyze").get_json()
+        self.assertFalse(d["ok"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
