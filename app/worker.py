@@ -321,11 +321,18 @@ def task_hh_search(task_id, params):
         % (added, known,
            (", пропущено из чёрного списка: %d" % skipped) if skipped else "",
            total))
-    if params.get("then_enrich") and added:
+    # Ставим обогащение по факту находок, а не только новых.
+    #
+    # Обогащение и так берёт только тех, у кого его ещё не было, поэтому
+    # условие «есть новые» ничего не защищало, а вредило: прогон,
+    # прерванный на середине, оставлял компании без обогащения навсегда —
+    # повторный поиск находил их же, новых не было, и очередь пустовала.
+    if params.get("then_enrich") and (added or known):
         # Поиск без обогащения — половина дела: в карточке одно название.
         # Ставим вторую задачу в очередь, чтобы не ждать у экрана.
         db.create_task("enrich", {
-            "limit": min(500, added), "fns": True, "only_lpr": True,
+            "limit": min(500, max(added + known, 1)), "fns": True,
+            "only_lpr": True,
             "zakupki": bool(params.get("then_zakupki")),
             # Цепочка идёт дальше сама: человек нажал одну кнопку и ушёл,
             # возвращаться к экрану ради второго и третьего нажатия он не
@@ -333,8 +340,8 @@ def task_hh_search(task_id, params):
             "then_ai": bool(params.get("then_ai")),
         })
         log("Обогащение поставлено в очередь.")
-    elif params.get("then_enrich") and not added:
-        log("Новых компаний нет — обогащать нечего.", "warn")
+    elif params.get("then_enrich"):
+        log("Обогащать нечего: ничего не найдено.", "warn")
 
 
 # ── Задача: обогащение ───────────────────────────────────
@@ -1529,9 +1536,13 @@ def task_find(task_id, params):
             "выбрана «Россия целиком» или не подключён ни один справочник.",
             "warn")
 
-    if params.get("then_enrich") and added:
+    # По факту находок, а не только новых: обогащение и так берёт лишь
+    # тех, у кого его ещё не было, а прерванный прогон иначе оставлял
+    # компании пустыми навсегда.
+    if params.get("then_enrich") and (added or known):
         db.create_task("enrich", {
-            "limit": min(500, added), "fns": True, "only_lpr": False,
+            "limit": min(500, max(added + known, 1)), "fns": True,
+            "only_lpr": False,
             "zakupki": bool(params.get("then_zakupki")),
             "then_ai": bool(params.get("then_ai")),
         })

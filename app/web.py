@@ -4,6 +4,7 @@
 Это не сайт: снаружи порт не слушается, авторизации нет и не нужно —
 программа работает на машине пользователя и видна только ему.
 """
+import datetime
 import json
 import os
 import re
@@ -102,6 +103,19 @@ def num(value, default, low, high):
     except (TypeError, ValueError, AttributeError):
         n = default
     return max(low, min(high, n))
+
+
+# Что делать дальше на каждой стадии и через сколько дней.
+#
+# Сроки не выдуманы из головы: «написали» ждёт три дня, потому что
+# раньше отвечать обычно не успевают, а позже про письмо забывают обе
+# стороны; «созвон» назначается на завтра, потому что договорённость
+# протухает за выходные.
+STAGE_NEXT = {
+    "в работе": ("связаться", 0),
+    "написали": ("проверить, ответили ли", 3),
+    "созвон": ("созвониться", 1),
+}
 
 
 # Признаки, которые видно в строке списка. Всё остальное — в карточке.
@@ -709,6 +723,34 @@ def create_app():
         if "next_date" in patch:
             val = (patch["next_date"] or "").strip()
             patch["next_date"] = val if re.match(r"^\d{4}-\d{2}-\d{2}$", val) else ""
+        # Смена стадии назначает следующий шаг, если его ещё нет.
+        #
+        # Воронка и «Сегодня» до сих пор не разговаривали: карточку
+        # перетаскивали в «созвон», а на экране «Сегодня» не появлялось
+        # ничего — срок надо было проставить руками, отдельно, в другой
+        # карточке. В итоге экран, отвечающий на вопрос «кому звонить»,
+        # у большинства оставался пустым, а стадия жила сама по себе.
+        #
+        # Своё не перетираем: если человек уже написал, что делать и
+        # когда, его слово сильнее нашего умолчания.
+        if patch.get("stage") and "next_date" not in patch:
+            cur = db.conn().execute(
+                "SELECT next_step, next_date FROM companies WHERE id=?",
+                (cid,)).fetchone()
+            if patch["stage"] == "отказ":
+                # Отказ — конец разговора, и висеть в списке на сегодня
+                # компания больше не должна. Снимаем срок всегда, а не
+                # только когда его нет: смысл как раз в том, чтобы убрать
+                # уже назначенный.
+                patch["next_date"] = ""
+                patch["next_step"] = ""
+            elif cur is not None and not (cur["next_date"] or "").strip():
+                step, days = STAGE_NEXT.get(patch["stage"], ("", None))
+                if days is not None:
+                    patch["next_date"] = (datetime.date.today() +
+                                          datetime.timedelta(days=days)).isoformat()
+                    if not (cur["next_step"] or "").strip():
+                        patch["next_step"] = step
         if patch:
             db.update_company_fields(cid, patch)
         return jsonify(ok=True)

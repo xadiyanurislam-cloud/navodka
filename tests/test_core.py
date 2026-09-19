@@ -4,6 +4,7 @@
 Сеть здесь не трогаем намеренно: тест, зависящий от чужого сервера, рано
 или поздно краснеет не из-за нашей ошибки, и его перестают читать.
 """
+import datetime
 import json
 import io
 import os
@@ -3542,11 +3543,31 @@ class SameNameDifferentCompanies(unittest.TestCase):
                            "source": "тест"})
         self.assertEqual(db.find_duplicates(), [])
 
-    def test_duplicates_inside_one_city_are_still_offered(self):
+    def test_twins_in_one_city_never_appear_at_all(self):
+        """Раньше они заводились и ждали ручной склейки. Теперь вторая
+        запись просто дополняет первую — ключи те же самые, и знать их
+        в момент записи программа уже могла."""
+        a, first = db.upsert_company({"name": "ООО Дентал", "region": "Москва",
+                                      "source": "карта"})
+        b, second = db.upsert_company({"name": "Дентал", "region": "Москва",
+                                       "source": "ЕГРЮЛ", "inn": "7701234567"})
+        self.assertTrue(first)
+        self.assertFalse(second, "завелась вторая запись о той же компании")
+        self.assertEqual(a, b)
+        row = db.conn().execute("SELECT inn FROM companies WHERE id=?",
+                                (a,)).fetchone()
+        self.assertEqual(row["inn"], "7701234567",
+                         "ИНН из второго источника не дополнил карточку")
+
+    def test_old_twins_are_still_found_for_merging(self):
+        """У тех, кто собирал базу прежними версиями, дубли уже лежат."""
         a, _ = db.upsert_company({"name": "ООО Дентал", "region": "Москва",
                                   "source": "тест"})
-        b, _ = db.upsert_company({"name": "Дентал", "region": "Москва",
-                                  "source": "тест"})
+        db.conn().execute("INSERT INTO companies (name, region, source, "
+                          "created_at, updated_at) VALUES (?,?,?,0,0)",
+                          ("Дентал", "Москва", "тест"))
+        db.conn().commit()
+        b = db.conn().execute("SELECT MAX(id) m FROM companies").fetchone()["m"]
         self.assertEqual(db.find_duplicates(), [(a, b)])
 
     def test_different_inn_is_never_a_duplicate(self):
@@ -3619,6 +3640,164 @@ class EmptyMeansEmpty(unittest.TestCase):
                            "site": "https://x.ru"})
         rows = self.app.get("/api/companies?only=contactable").get_json()["rows"]
         self.assertEqual(len(rows), 1)
+
+
+class BaseStaysClean(unittest.TestCase):
+    """База удваивалась на каждом повторном прогоне: у компании из карты
+    нет ни ИНН, ни идентификатора работодателя, и вчерашняя запись о ней
+    ничем не отличалась от сегодняшней."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().commit()
+
+    def test_second_run_does_not_double_the_base(self):
+        for _ in range(3):
+            db.upsert_company({"name": "ООО Ромашка", "region": "Москва",
+                               "source": "OSM", "site": "https://romashka.ru"})
+        n = db.conn().execute("SELECT COUNT(*) n FROM companies").fetchone()["n"]
+        self.assertEqual(n, 1)
+
+    def test_same_site_different_name_is_one_company(self):
+        a, _ = db.upsert_company({"name": "Ромашка", "source": "карта",
+                                  "site": "https://romashka.ru"})
+        b, _ = db.upsert_company({"name": "ООО «Ромашка-Плюс»",
+                                  "source": "ЕГРЮЛ",
+                                  "site": "http://www.romashka.ru/contacts"})
+        self.assertEqual(a, b)
+
+    def test_group_of_companies_is_not_glued(self):
+        """Один сайт на две фирмы — обычное дело, а ИНН решает."""
+        a, _ = db.upsert_company({"name": "Группа А", "inn": "7701111111",
+                                  "site": "https://g.ru", "source": "т"})
+        b, _ = db.upsert_company({"name": "Группа Б", "inn": "7702222222",
+                                  "site": "https://g.ru", "source": "т"})
+        self.assertNotEqual(a, b)
+
+    def test_same_name_other_city_stays_separate(self):
+        a, _ = db.upsert_company({"name": "ООО Ромашка", "region": "Москва",
+                                  "source": "т"})
+        b, _ = db.upsert_company({"name": "ООО Ромашка",
+                                  "region": "Новосибирск", "source": "т"})
+        self.assertNotEqual(a, b)
+
+    def test_second_source_fills_the_gaps(self):
+        a, _ = db.upsert_company({"name": "Ромашка", "region": "Москва",
+                                  "source": "карта", "site": "https://r.ru"})
+        db.upsert_company({"name": "ООО Ромашка", "region": "Москва",
+                           "source": "ЕГРЮЛ", "inn": "7701234567",
+                           "director": "Иванов И. И."})
+        row = db.conn().execute("SELECT inn, director, site FROM companies "
+                                "WHERE id=?", (a,)).fetchone()
+        self.assertEqual(row["inn"], "7701234567")
+        self.assertEqual(row["director"], "Иванов И. И.")
+        self.assertEqual(row["site"], "https://r.ru")
+
+
+class FunnelTalksToToday(unittest.TestCase):
+    """Карточку перетаскивали в «созвон», а на экране «Сегодня» не
+    появлялось ничего: срок надо было проставить руками, отдельно."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    def _stage(self, stage):
+        cid, _ = db.upsert_company({"name": "Компания " + stage, "source": "т"})
+        self.app.post("/api/company/%d" % cid, json={"stage": stage})
+        return db.conn().execute(
+            "SELECT stage, next_step, next_date FROM companies WHERE id=?",
+            (cid,)).fetchone()
+
+    def test_work_stage_means_today(self):
+        r = self._stage("в работе")
+        self.assertEqual(r["next_date"], datetime.date.today().isoformat())
+        self.assertTrue(r["next_step"])
+
+    def test_written_waits_three_days(self):
+        r = self._stage("написали")
+        self.assertEqual(r["next_date"],
+                         (datetime.date.today()
+                          + datetime.timedelta(days=3)).isoformat())
+
+    def test_call_is_tomorrow(self):
+        r = self._stage("созвон")
+        self.assertEqual(r["next_date"],
+                         (datetime.date.today()
+                          + datetime.timedelta(days=1)).isoformat())
+
+    def test_refusal_clears_the_plan(self):
+        """Отказ — конец разговора, и висеть в списке на сегодня компания
+        больше не должна."""
+        cid, _ = db.upsert_company({"name": "Отказ", "source": "т"})
+        self.app.post("/api/company/%d" % cid, json={"stage": "в работе"})
+        self.app.post("/api/company/%d" % cid, json={"stage": "отказ"})
+        r = db.conn().execute("SELECT next_date FROM companies WHERE id=?",
+                              (cid,)).fetchone()
+        self.assertEqual(r["next_date"] or "", "")
+
+    def test_own_plan_is_never_overwritten(self):
+        cid, _ = db.upsert_company({"name": "Своё", "source": "т"})
+        self.app.post("/api/company/%d" % cid,
+                      json={"next_step": "мой шаг", "next_date": "2030-01-01"})
+        self.app.post("/api/company/%d" % cid, json={"stage": "созвон"})
+        r = db.conn().execute("SELECT next_step, next_date FROM companies "
+                              "WHERE id=?", (cid,)).fetchone()
+        self.assertEqual(r["next_step"], "мой шаг")
+        self.assertEqual(r["next_date"], "2030-01-01")
+
+    def test_it_actually_shows_up_on_today(self):
+        cid, _ = db.upsert_company({"name": "Позвонить", "source": "т"})
+        self.app.post("/api/company/%d" % cid, json={"stage": "в работе"})
+        due = self.app.get("/api/today").get_json()["due"]
+        self.assertIn("Позвонить", [r["name"] for r in due])
+
+
+class StaleVacancy(unittest.TestCase):
+    """Свежесть собиралась, показывалась значком и была названа в
+    пояснении «сроком годности повода», а в оценке не участвовала."""
+
+    def test_fresh_beats_stale(self):
+        row = {"director": "Иванов", "site": "x.ru"}
+        fresh, _ = score.compute(row, {"hh_vacancies": "4",
+                                       "hh_fresh_days": "2"}, [])
+        month, _ = score.compute(row, {"hh_vacancies": "4",
+                                       "hh_fresh_days": "30"}, [])
+        old_, _ = score.compute(row, {"hh_vacancies": "4",
+                                      "hh_fresh_days": "120"}, [])
+        self.assertGreater(fresh, month)
+        self.assertGreater(month, old_)
+
+    def test_unknown_date_is_not_punished_as_stale(self):
+        """Дата приходит не всегда, и молчание — не признак старости."""
+        row = {"director": "Иванов", "site": "x.ru"}
+        unknown, _ = score.compute(row, {"hh_vacancies": "4"}, [])
+        old_, _ = score.compute(row, {"hh_vacancies": "4",
+                                      "hh_fresh_days": "120"}, [])
+        self.assertGreater(unknown, old_)
+
+    def test_it_is_explained_in_the_breakdown(self):
+        _v, parts = score.compute({"director": "", "site": ""},
+                                  {"hh_vacancies": "2",
+                                   "hh_fresh_days": "1"}, [])
+        p = [x for x in parts if x["key"] == "fresh_vacancy"][0]
+        self.assertTrue(p["got"])
+        self.assertTrue(p["why"])
+
+
+class ChainDoesNotStall(unittest.TestCase):
+    """Прогон, прерванный на середине, оставлял компании без обогащения
+    навсегда: повторный поиск находил их же, новых не было, и очередь
+    пустовала."""
+
+    def test_enrichment_is_queued_for_already_known_companies(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        self.assertEqual(src.count('then_enrich") and (added or known)'), 2)
+        self.assertNotIn('then_enrich") and added:', src)
 
 
 if __name__ == "__main__":

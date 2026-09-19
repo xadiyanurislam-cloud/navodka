@@ -10,6 +10,7 @@
 потоками, а у нас фоновый воркер пишет одновременно с тем, как интерфейс
 читает таблицу.
 """
+import re
 import json
 import sqlite3
 import threading
@@ -285,6 +286,25 @@ def delete_company(company_id):
     c.commit()
 
 
+_OPF_HEAD = re.compile(
+    r"^\s*(ООО|ОАО|ЗАО|ПАО|АО|ИП|НКО|АНО|НАО|ГБУ|МБУ|ФГУП|МУП)\s+", re.I)
+
+
+def _short_name(name):
+    """Название без формы собственности и знаков — ключ для склейки.
+
+    «ООО "Дентал"» из ЕГРЮЛ и «Дентал» с карты — одна компания, и пока
+    они считались разными, у человека в списке было две строки: в одной
+    ИНН без телефона, в другой телефон без ИНН.
+    """
+    s = _OPF_HEAD.sub("", (name or "").strip())
+    s = _OPF_HEAD.sub("", s)
+    s = re.sub(r"[«»\"\'`]", " ", s)
+    s = re.sub(r"[^\w\s-]", " ", s, flags=re.U)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s if len(s) >= 4 else ""
+
+
 def upsert_company(row):
     """Добавить компанию или дополнить существующую.
 
@@ -300,6 +320,43 @@ def upsert_company(row):
         found = c.execute("SELECT * FROM companies WHERE inn=?", (inn,)).fetchone()
     if found is None and hh_id:
         found = c.execute("SELECT * FROM companies WHERE hh_id=?", (hh_id,)).fetchone()
+
+    # Совпадение по домену и по названию с городом.
+    #
+    # Без этого база удваивалась на каждом повторном прогоне: у компании
+    # из карты нет ни ИНН, ни идентификатора работодателя, и вчерашняя
+    # запись о ней ничем не отличалась от сегодняшней. Дубли искались
+    # потом, отдельной кнопкой, вручную — при том что ровно те же ключи
+    # уже известны в момент записи.
+    #
+    # Разные ИНН при этом никогда не сливаются: один сайт и одно название
+    # на две фирмы — обычное дело у групп компаний, а ИНН у них разный, и
+    # это решающий довод.
+    host = host_of(row.get("site"))
+    if found is None and host:
+        cand = c.execute(
+            "SELECT * FROM companies WHERE site <> '' AND site IS NOT NULL "
+            "AND (site LIKE ? OR site LIKE ?) LIMIT 5",
+            ("%//" + host + "%", "%//www." + host + "%")).fetchall()
+        for x in cand:
+            if host_of(x["site"]) != host:
+                continue
+            if inn and (x["inn"] or "").strip() and x["inn"].strip() != inn:
+                continue
+            found = x
+            break
+    if found is None:
+        name_key = _short_name(row.get("name"))
+        region = (row.get("region") or "").strip()
+        if name_key and region:
+            for x in c.execute(
+                    "SELECT * FROM companies WHERE region=?", (region,)):
+                if _short_name(x["name"]) != name_key:
+                    continue
+                if inn and (x["inn"] or "").strip() and x["inn"].strip() != inn:
+                    continue
+                found = x
+                break
 
     # Возвращаем признак новизны вместе с идентификатором: по нему видно,
     # сколько компаний поиск принёс впервые, а сколько уже лежало. Без

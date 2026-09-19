@@ -32,6 +32,7 @@ WEIGHTS = {
     "lpr_guessed": 8,        # выведен по схеме — уже что-то, но догадка
     "mail_verified": 15,     # почта руководителя отвечает на проверку
     "has_social": 8,         # есть куда написать помимо почты
+    "fresh_vacancy": 10,     # вакансия висит прямо сейчас
 }
 
 # Размер, при котором сделка вообще возможна. Микробизнес не платит, у
@@ -68,6 +69,9 @@ WHY = {
     "has_social": "Есть сообщество или канал: туда пишут, когда на почту "
                   "не отвечают, а в группе ВК вдобавок видны контактные "
                   "лица, которых компания указала сама.",
+    "fresh_vacancy": "Вакансия опубликована на этой неделе. «Вчера искали "
+                     "третьего продавца» — повод для звонка; «полгода "
+                     "назад» — уже нет, и звонить с этим неловко.",
 }
 
 
@@ -93,7 +97,23 @@ def compute(company, signals, contacts):
             return p["points"]
         return 0
 
+    # Свежесть вакансии — срок годности самого повода.
+    #
+    # Программа её собирала, показывала значком в списке и даже писала в
+    # пояснении, что это «срок годности повода для звонка», — а в оценке
+    # не учитывала вовсе. Компания, искавшая продавцов полгода назад,
+    # стояла вровень с той, что ищет сегодня.
+    try:
+        fresh = int(signals.get("hh_fresh_days"))
+    except (TypeError, ValueError):
+        fresh = None
+
     vac = int(signals.get("hh_vacancies") or 0)
+    if vac and fresh is not None and fresh > 90:
+        # Вакансия трёхмесячной давности — это не «нанимают сейчас».
+        # Половина веса: объявление может висеть и потому, что закрыть
+        # его не выходит, а это тоже разговор.
+        vac = max(1, vac // 3)
     if vac:
         # Три вакансии и больше — отдел растёт, а не затыкает одну дыру.
         full = vac >= 3
@@ -105,6 +125,14 @@ def compute(company, signals, contacts):
     else:
         score += take(part("vacancies_sales", False,
                            "вакансий в продажи не нашлось"))
+
+    score += take(part("fresh_vacancy", fresh is not None and fresh <= 7,
+                       "вакансия опубликована %s"
+                       % ("сегодня" if fresh == 0 else "%d дн. назад" % fresh)
+                       if fresh is not None and fresh <= 7
+                       else ("вакансии %d дн. — повод остыл" % fresh
+                             if fresh is not None
+                             else "свежих вакансий не видно")))
 
     for key, label, nope in (
             ("calltracking", "коллтрекинг", "коллтрекинга на сайте нет"),
@@ -175,7 +203,7 @@ def legend():
     """Все слагаемые с весами — для справки, вне привязки к компании."""
     order = ("vacancies_sales", "calltracking", "lpr_found", "size_fit",
              "has_director", "zakupki_contact", "mail_verified", "telephony",
-             "crm", "lpr_guessed", "has_social", "has_site", "has_email",
-             "has_phone", "chat")
+             "crm", "fresh_vacancy", "lpr_guessed", "has_social",
+             "has_site", "has_email", "has_phone", "chat")
     return [{"key": k, "points": WEIGHTS[k], "why": WHY.get(k, "")}
             for k in order]
