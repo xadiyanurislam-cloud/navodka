@@ -12,9 +12,6 @@ API открытый и бесплатный, ключ не нужен — то�
 import re
 import time
 
-import requests
-
-from .. import settings
 
 BASE = "https://api.hh.ru"
 

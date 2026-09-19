@@ -17,7 +17,6 @@ import time
 
 import requests
 
-from .. import settings
 
 API = "https://search-maps.yandex.ru/v1/"
 

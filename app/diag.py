@@ -12,7 +12,7 @@ import time
 import requests
 
 from . import db, settings
-from .sources import fns, gis2
+from .sources import gis2
 
 
 def _get(session, url, params=None, timeout=15):

@@ -396,8 +396,6 @@ def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None, budget=25):
         except Exception as e:
             return r, str(e)[:200]
 
-    def out_of_time():
-        return time.time() - started > budget
 
     started = time.time()
     for path in PATHS[:max_pages]:

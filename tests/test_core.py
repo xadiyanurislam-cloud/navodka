@@ -1331,6 +1331,39 @@ class OldJunkPhones(unittest.TestCase):
         self.assertEqual(left, ["+79022216558"])
 
 
+class Appearance(unittest.TestCase):
+    def test_font_lives_inside_the_program(self):
+        """Программа настольная и должна открываться одинаково с
+        интернетом и без него. Шрифт из сети при отсутствии связи
+        подменяется системным, и половина вёрстки уезжает."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        fonts = os.path.join(root, "app/static/fonts")
+        for name in ("inter-cyrillic.woff2", "inter-latin.woff2"):
+            path = os.path.join(fonts, name)
+            self.assertTrue(os.path.exists(path), "нет файла шрифта: " + name)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(4), b"wOF2", "это не woff2: " + name)
+        # Лицензия обязана лежать рядом: OFL требует распространять её
+        # вместе со шрифтом.
+        self.assertTrue(os.path.exists(os.path.join(fonts, "Inter-LICENSE.txt")))
+
+    def test_css_does_not_reach_into_the_network(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        css = io.open(os.path.join(root, "app/static/app.css"),
+                      encoding="utf-8").read()
+        self.assertIn('url("/static/fonts/inter-cyrillic.woff2")', css)
+        self.assertNotIn("fonts.googleapis.com", css)
+        self.assertNotIn("fonts.gstatic.com", css)
+
+    def test_cyrillic_range_is_covered(self):
+        """Без диапазона кириллицы браузер возьмёт латинский файл, не
+        найдёт в нём русских букв и подставит системный шрифт."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        css = io.open(os.path.join(root, "app/static/app.css"),
+                      encoding="utf-8").read()
+        self.assertIn("U+0400-045F", css)
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()

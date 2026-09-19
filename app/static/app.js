@@ -810,24 +810,6 @@ async function toggleCard(tr, id) {
       ${socials.length ? socials.map(contactRow).join("")
         : `<p class="nobody">Не нашлось ни на сайте, ни в карточках справочников.
            ${sig.vk_group ? "" : "Сообщество ВК ищется по ссылке, которую компания опубликовала сама, — если её нигде нет, программа не угадывает."}</p>`}
-      <h4 class="mt">Что дальше</h4>
-      <div class="next">
-        <input type="text" class="next-step" data-id="${c.id}"
-               placeholder="позвонить, отправить письмо…"
-               value="${esc(c.next_step || "")}">
-        <input type="date" class="next-date" data-id="${c.id}"
-               value="${esc(c.next_date || "")}">
-      </div>
-      <div class="detail-links">
-        <button class="btn sm" data-letter="${c.id}">Письмо через ИИ</button>
-      </div>
-      <div class="letter" data-letter-box="${c.id}" hidden></div>
-
-      <h4 class="mt">Заметки</h4>
-      <div class="notes" data-notes="${c.id}">${notesHtml(d.notes || [])}</div>
-      <textarea class="note-new" data-note="${c.id}" rows="2"
-                placeholder="что сказали, о чём договорились — Ctrl+Enter"></textarea>
-
       ${(d.search || []).length ? `
         <h4 class="mt">Найти руководителя вручную</h4>
         <p class="hint-sm">Программа сюда не ходит и ничего не сохраняет:
@@ -857,6 +839,24 @@ async function toggleCard(tr, id) {
         ${fact(ruDate(sig.last_post), "последняя публикация")}
       </div>
       ${c.founders ? `<p class="small"><b>Учредители:</b> ${esc(c.founders)}</p>` : ""}
+      <h4 class="mt">Что дальше</h4>
+      <div class="next">
+        <input type="text" class="next-step" data-id="${c.id}"
+               placeholder="позвонить, отправить письмо…"
+               value="${esc(c.next_step || "")}">
+        <input type="date" class="next-date" data-id="${c.id}"
+               value="${esc(c.next_date || "")}">
+      </div>
+      <div class="detail-links">
+        <button class="btn sm" data-letter="${c.id}">Письмо через ИИ</button>
+      </div>
+      <div class="letter" data-letter-box="${c.id}" hidden></div>
+
+      <h4 class="mt">Заметки</h4>
+      <div class="notes" data-notes="${c.id}">${notesHtml(d.notes || [])}</div>
+      <textarea class="note-new" data-note="${c.id}" rows="2"
+                placeholder="что сказали, о чём договорились — Ctrl+Enter"></textarea>
+
       ${sig.sales_model ? `<p class="small"><b>Модель продаж:</b> ${esc(sig.sales_model)}</p>` : ""}
       ${c.okved_name ? `<p class="small"><b>ОКВЭД:</b> ${esc(c.okved)} ${esc(c.okved_name)}</p>` : ""}
       ${c.okveds_extra ? `<p class="small">Также: ${esc(c.okveds_extra)}</p>` : ""}
@@ -1138,8 +1138,14 @@ async function loadCompanies(force) {
       if (c.owner !== "director") return 2;
       return (c.source || "").indexOf("схеме") >= 0 ? 1 : 0;
     };
-    const cts = (r.contacts || []).slice().sort((a, b) => rank(a) - rank(b))
-      .slice(0, 4).map(contactRow).join("");
+    // В строке — три контакта, остальное в карточке. Пять телефонов
+    // подряд растягивают строку вдвое, а звонят всё равно по первому:
+    // список просматривают глазами сверху вниз, и высота строки решает,
+    // сколько компаний видно разом.
+    const all = (r.contacts || []).slice().sort((a, b) => rank(a) - rank(b));
+    const cts = all.slice(0, 3).map(contactRow).join("")
+      + (all.length > 3
+         ? `<div class="ct c-more">и ещё ${all.length - 3}</div>` : "");
     return `<tr class="row" data-id="${r.id}">
       <td class="c-pick"><input type="checkbox" class="pick-one" data-id="${r.id}"
         ${picked.has(String(r.id)) ? "checked" : ""}></td>

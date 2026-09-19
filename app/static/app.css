@@ -11,35 +11,65 @@
    домашней вечером — тёмная, и переключатель здесь был бы лишней
    кнопкой, которую нажимают один раз.
    ───────────────────────────────────────────────────────── */
+
+/* Шрифт лежит внутри программы, а не грузится из сети.
+   Причина простая: программа настольная и должна открываться одинаково
+   с интернетом и без него. Inter выбран за кириллицу, которая в нём
+   рисовалась вместе с латиницей, а не пристраивалась потом, и за
+   различимые цифры — по ним здесь читают баллы и телефоны.
+   Переменное начертание: один файл на все толщины вместо четырёх.
+   Лицензия SIL OFL, копия лежит рядом с файлами. */
+@font-face{
+  font-family:"Inter";font-style:normal;font-weight:400 700;font-display:swap;
+  src:url("/static/fonts/inter-cyrillic.woff2") format("woff2");
+  unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+@font-face{
+  font-family:"Inter";font-style:normal;font-weight:400 700;font-display:swap;
+  src:url("/static/fonts/inter-latin.woff2") format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,
+    U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,
+    U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
 :root{
-  --bg:#f7f7f8;
+  --bg:#f6f7f9;
   --surface:#ffffff;
-  --rail:#101114;
-  --rail-text:#8b8d96;
+  --rail:#111318;
+  --rail-text:#8a8d97;
   --rail-active:#ffffff;
-  --ink:#16171a;
-  --ink-2:#6a6d76;
-  --ink-3:#9a9da6;
-  --line:#e6e7ea;
-  --line-2:#f0f1f3;
+  --ink:#14161a;
+  --ink-2:#616672;
+  --ink-3:#8f949f;
+  --line:#e4e6ea;
+  --line-2:#eef0f3;
   --accent:#2f4bff;
-  --ok:#0f7a52;
-  --ok-bg:#eaf6f0;
+  --accent-soft:rgba(47,75,255,.10);
+  --ok:#0b7a4f;
+  --ok-bg:#e8f6ef;
   --warn:#8a5a00;
   --warn-bg:#fdf3e2;
   --err:#a3261f;
-  --hover:#fafafb;
+  --hover:#f8f9fb;
   --r:10px;
+  --r-lg:14px;
   --shadow:0 1px 2px rgba(16,17,20,.05);
+  --shadow-lift:0 4px 16px rgba(16,17,20,.08);
 }
 @media (prefers-color-scheme: dark){
   :root{
-    --bg:#0d0e11; --surface:#15171b; --rail:#0a0b0d; --rail-text:#7c7f88;
-    --ink:#e9eaee; --ink-2:#989ba4; --ink-3:#6d707a;
-    --line:#24262c; --line-2:#1c1e23; --accent:#7b8cff;
-    --ok:#4ec08d; --ok-bg:rgba(78,192,141,.12);
-    --warn:#dca24a; --warn-bg:rgba(220,162,74,.12);
-    --err:#e0736a; --hover:#191b20; --shadow:none;
+    /* Тёмная тема — не инверсия светлой. Чистый чёрный на подсвеченном
+       экране даёт ореол вокруг букв, поэтому фон синеватый и не самый
+       тёмный, а текст не чисто белый: контраст 1:16 вместо 1:21 читается
+       часами, а не минутами. */
+    --bg:#0e1013; --surface:#161920; --rail:#0a0c0f; --rail-text:#7e828d;
+    --ink:#e7e9ee; --ink-2:#9aa0ad; --ink-3:#6e747f;
+    --line:#252932; --line-2:#1c2028; --accent:#8095ff;
+    --accent-soft:rgba(128,149,255,.14);
+    --ok:#52c894; --ok-bg:rgba(82,200,148,.13);
+    --warn:#e0a955; --warn-bg:rgba(224,169,85,.13);
+    --err:#e8827a; --hover:#1a1e26;
+    --shadow:none; --shadow-lift:0 6px 20px rgba(0,0,0,.35);
   }
 }
 
@@ -47,10 +77,17 @@
 html,body{height:100%}
 body{
   margin:0;display:flex;background:var(--bg);color:var(--ink);
-  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;
-  -webkit-font-smoothing:antialiased;
+  font:14px/1.55 "Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+       Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  /* Разные формы нуля и единицы и плотные пары букв: в длинном списке
+     компаний это разница между «читается» и «разбирается». */
+  font-feature-settings:"cv05" 1,"cv08" 1,"ss03" 1;
+  font-variant-numeric:tabular-nums;
+  text-rendering:optimizeLegibility;
 }
-h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.011em}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.014em}
+h1{font-size:19px;letter-spacing:-.02em}
 p{margin:0}
 button,input,select,textarea{font:inherit;color:inherit}
 
@@ -562,3 +599,89 @@ label.inline em.fld-hint{flex-basis:100%;margin:0}
 .letter-subj{font-size:12.5px;margin-bottom:8px}
 .letter-body{white-space:pre-wrap;font:12.5px/1.65 inherit;color:var(--ink);
   margin-bottom:10px}
+
+/* ─────────────────────────────────────────────────────────
+   Правка оформления: читаемость длинного списка.
+
+   Всё ниже — про одно: в таблице сотня строк, и глаз должен цепляться
+   за нужное, а не разбирать однородную массу.
+   ───────────────────────────────────────────────────────── */
+
+/* Боковая колонка. Активный раздел отмечается полосой слева, а не
+   заливкой: заливка на тёмном фоне спорит с содержимым экрана. */
+.rail-btn{border-radius:10px;transition:background .15s,color .15s}
+.rail-btn:hover{background:rgba(255,255,255,.06)}
+.rail-btn.is-active{position:relative}
+.rail-btn.is-active::before{
+  content:"";position:absolute;left:-14px;top:50%;transform:translateY(-50%);
+  width:3px;height:22px;border-radius:0 3px 3px 0;background:var(--rail-active)}
+
+/* Шапка. Цифры — главное, что в ней есть, поэтому они крупнее и
+   набраны табличными знаками: в столбце единицы стоят под единицами. */
+.bar{align-items:center}
+.bar-title h1{line-height:1.25}
+.stat b{font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.stat.is-link{cursor:pointer;border-radius:8px;transition:background .15s}
+.stat.is-link:hover{background:var(--hover)}
+
+/* Кнопки. Разница между главной и обычной — в весе, а не в цвете:
+   цветных кнопок на экране должно быть не больше одной. */
+.btn{transition:border-color .15s,background .15s,opacity .15s;font-weight:500}
+.btn.primary{font-weight:550;box-shadow:var(--shadow)}
+.btn:focus-visible,.chip:focus-visible,input:focus-visible,select:focus-visible,
+textarea:focus-visible,.pick:focus-visible{
+  outline:2px solid var(--accent);outline-offset:1px}
+
+/* Фильтры. Активный — залит, остальные держатся на контуре. */
+.chip{transition:border-color .15s,background .15s,color .15s;font-weight:450}
+.chip.is-active{font-weight:550;box-shadow:var(--shadow)}
+
+/* Таблица. Строка подсвечивается целиком, разделители едва видны:
+   сетка из линий утомляет быстрее, чем помогает. */
+tbody tr.row{transition:background .12s}
+tbody tr.row:hover{background:var(--hover)}
+tbody tr.row.is-open{background:var(--accent-soft)}
+th{font-weight:550;letter-spacing:.04em;font-size:10.5px;text-transform:uppercase}
+.co{font-weight:550;letter-spacing:-.006em}
+.co-meta{font-variant-numeric:tabular-nums}
+
+/* Карточка компании. Приподнята над таблицей тенью, а не рамкой:
+   рамка внутри таблицы читается как ещё одна строка. */
+.detail{box-shadow:var(--shadow-lift);border-radius:var(--r-lg)}
+.detail h4{letter-spacing:.04em}
+
+/* Карточки источников. */
+.card{border-radius:var(--r-lg);transition:box-shadow .15s,border-color .15s}
+.card:hover{box-shadow:var(--shadow-lift)}
+.card h2{letter-spacing:-.015em}
+
+/* Поля ввода. Подсветка фокуса мягкая и без смещения: прыгающая на
+   пиксель рамка при наборе заметнее, чем кажется. */
+input[type=text],input[type=number],input[type=search],input[type=password],
+input[type=date],select,textarea{
+  transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus,textarea:focus{
+  border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* Телефоны и почта — моноширинными цифрами, чтобы одинаковые номера
+   выглядели одинаково, а разные различались с первого взгляда. */
+.c-val,.note-when,.facts b{font-variant-numeric:tabular-nums}
+
+/* Плотность списка.
+   Строка занимала столько места, что на экран помещалось четыре
+   компании из сотни. Список просматривают глазами сверху вниз, и
+   воздух здесь работает против: чем больше строк видно разом, тем
+   быстрее находится нужная. */
+td{padding:10px 14px}
+.co-meta{margin-top:2px}
+.c-lines{line-height:1.45}
+.sig{padding:1px 7px}
+
+/* Контакты в строке: не больше трёх, остальное — в карточке. */
+.c-more{font-size:11px;color:var(--ink-3);padding-left:2px}
+
+/* Значок календаря в тёмной теме рисуется браузером чёрным по чёрному.
+   Своего вида у него нет, поэтому просто осветляем. */
+@media (prefers-color-scheme: dark){
+  input[type=date]::-webkit-calendar-picker-indicator{filter:invert(.75)}
+}
