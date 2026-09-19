@@ -403,7 +403,12 @@ def create_app():
         sql = "SELECT * FROM companies"
         if cond:
             sql += " WHERE " + cond
-        sql += " ORDER BY score DESC, id LIMIT 500"
+        # Сколько строк отдавать. Интерфейс просит ровно столько, сколько
+        # рисует: пятьсот строк со всеми контактами — это мегабайт JSON
+        # на каждый опрос, и разбирает его тот же поток, который рисует
+        # окно.
+        want = max(20, min(2000, int(request.args.get("limit") or 200)))
+        sql += " ORDER BY score DESC, id LIMIT %d" % want
 
         # Три запроса вместо тысячи.
         #
@@ -428,7 +433,14 @@ def create_app():
         out = [dict(row, contacts=cts_by.get(row["id"], []),
                     signals=sig_by.get(row["id"], {})) for row in rows]
         total = c.execute("SELECT COUNT(*) n FROM companies").fetchone()["n"]
-        return jsonify(ok=True, rows=out, total=total, shown=len(out))
+        # Сколько строк подходит под фильтр — считаем отдельно, иначе
+        # «показать ещё» не знает, есть ли что показывать.
+        csql = "SELECT COUNT(*) n FROM companies"
+        if cond:
+            csql += " WHERE " + cond
+        matched = c.execute(csql, args).fetchone()["n"]
+        return jsonify(ok=True, rows=out, total=total, shown=matched,
+                       returned=len(out))
 
     @app.get("/api/company/<int:cid>")
     def api_company(cid):

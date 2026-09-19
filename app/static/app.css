@@ -538,3 +538,10 @@ label.inline em.fld-hint{flex-basis:100%;margin:0}
    среди полей, иначе она читается как ещё одна настройка. */
 .card .upd-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .card .upd-state{font-size:12px;color:var(--ink-2)}
+
+/* «Показать ещё» под таблицей. Строк может быть пятьсот, но рисовать их
+   все сразу — значит подвесить окно: их собирает тот же поток, который
+   окно и отрисовывает. */
+.more-rows{display:block;width:100%;border-top:1px solid var(--line-2);
+  border-radius:0 0 12px 12px;padding:12px;color:var(--ink-2)}
+.more-rows[hidden]{display:none}

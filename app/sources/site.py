@@ -261,7 +261,7 @@ def _clean_phone(raw):
     return ""
 
 
-def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None):
+def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None, budget=25):
     """Возвращает словарь с находками. Сеть не обязана быть доступной —
     при любой ошибке возвращаем то, что успели собрать."""
     base = normalize_url(site)
@@ -353,7 +353,19 @@ def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None):
         except Exception as e:
             return r, str(e)[:200]
 
+    def out_of_time():
+        return time.time() - started > budget
+
+    started = time.time()
     for path in PATHS[:max_pages]:
+        # Предел времени на один сайт.
+        #
+        # Двенадцать страниц по десять секунд ожидания — это две минуты
+        # на одну компанию, и живой, но медленный сайт в одиночку держал
+        # всю очередь. Лучше взять с него что успели: контакты лежат на
+        # первых двух страницах, а не на двенадцатой.
+        if time.time() - started > budget and seen_html:
+            break
         url = urljoin(base + "/", path.lstrip("/")) if path else base
         r, err = fetch(url)
         if r is None:

@@ -546,6 +546,7 @@ async function loadStats() {
 let only = "";
 function setFilter(value) {
   only = value || "";
+  shownRows = PAGE_ROWS;
   document.querySelectorAll(".chip").forEach(
     (c) => c.classList.toggle("is-active", c.dataset.only === only));
   loadCompanies();
@@ -952,10 +953,28 @@ async function saveExport(fmt) {
 $("exp-xlsx").onclick = () => saveExport("xlsx");
 $("exp-csv").onclick = () => saveExport("csv");
 
-async function loadCompanies() {
-  const d = await get("/api/companies?" + new URLSearchParams({q: $("q").value, only}));
+// Сколько строк рисуем за раз.
+//
+// Не ограничение выборки, а ограничение отрисовки: пятьсот строк со
+// всеми контактами — это десятки тысяч узлов, и собирает их браузер
+// внутри окна программы, в том же потоке, который окно рисует. На
+// четырёхстах компаниях окно переставало отвечать — не Python был
+// виноват, а вот это.
+const PAGE_ROWS = 100;
+let shownRows = PAGE_ROWS;
+let lastSignature = "";
+
+async function loadCompanies(force) {
+  const d = await get("/api/companies?" + new URLSearchParams(
+    {q: $("q").value, only, limit: shownRows}));
   if (!d) return;
   fixExport();
+  // Если список не изменился, перерисовывать его незачем. Во время
+  // работы задачи это главный источник тормозов: данные те же, а
+  // браузер собирает таблицу заново.
+  const sig = d.rows.map((r) => r.id + ":" + r.score + ":" + r.stage).join(",");
+  if (!force && sig === lastSignature && $("tbody").children.length) return;
+  lastSignature = sig;
   document.querySelectorAll("th[data-sort]").forEach((th) => {
     th.classList.toggle("is-sorted", th.dataset.sort === sortBy);
     th.dataset.dir = sortDir > 0 ? "up" : "down";
@@ -975,7 +994,8 @@ async function loadCompanies() {
     tb.innerHTML = `<tr><td colspan="7" class="empty">${empty}</td></tr>`;
     return;
   }
-  tb.innerHTML = sortRows(d.rows).map((r) => {
+  const rows = sortRows(d.rows).slice(0, shownRows);
+  tb.innerHTML = rows.map((r) => {
     const cls = r.score >= 60 ? "score hi" : r.score >= 35 ? "score mid" : "score";
     const host = r.site ? r.site.replace(/^https?:\/\//, "") : "";
     const meta = [r.inn ? `<span>${esc(r.inn)}</span>` : "",
@@ -1025,6 +1045,18 @@ async function loadCompanies() {
     };
   });
 
+  // Кнопка «показать ещё». Пятьсот компаний разом не читают, а рисовать
+  // их браузер устаёт.
+  const more = $("more-rows");
+  const left = (d.shown || rows.length) - rows.length;
+  if (left > 0) {
+    more.hidden = false;
+    more.textContent = `Показать ещё ${Math.min(PAGE_ROWS, left)} `
+      + `(осталось ${left})`;
+  } else {
+    more.hidden = true;
+  }
+
   // Восстановить открытую карточку после перерисовки.
   if (openId) {
     const tr = tb.querySelector(`tr.row[data-id="${openId}"]`);
@@ -1033,8 +1065,18 @@ async function loadCompanies() {
   }
 }
 
+$("more-rows").onclick = () => {
+  shownRows += PAGE_ROWS;
+  loadCompanies(true);
+};
+
 let timer;
-$("q").oninput = () => { clearTimeout(timer); timer = setTimeout(loadCompanies, 280); };
+$("q").oninput = () => {
+  clearTimeout(timer);
+  // Новый запрос — снова с первой сотни.
+  shownRows = PAGE_ROWS;
+  timer = setTimeout(() => loadCompanies(true), 280);
+};
 
 
 

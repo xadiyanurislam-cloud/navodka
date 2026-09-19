@@ -1089,6 +1089,45 @@ class HugePages(unittest.TestCase):
         self.assertEqual(res["socials"].get("vk"), ["small"])
 
 
+class SlowSite(unittest.TestCase):
+    def test_one_slow_site_cannot_hold_the_queue(self):
+        """Двенадцать страниц по десять секунд ожидания — две минуты на
+        одну компанию, и очередь стоит за ней."""
+        import time as _t
+        from app.sources import site
+
+        class Resp:
+            status_code = 200
+            encoding = "utf-8"
+            headers = {"Content-Type": "text/html"}
+            def iter_content(self, n): yield b"<html>a@b.ru</html>"
+            def close(self): pass
+
+        class Slow:
+            headers = {}
+            def get(self, url, **kw):
+                _t.sleep(0.3)
+                return Resp()
+
+        t0 = _t.time()
+        res = site.crawl("https://slow.ru", session=Slow(), pause=0, budget=0.8)
+        spent = _t.time() - t0
+        self.assertLess(spent, 2.0, "обход не уложился в предел: %.1f с" % spent)
+        self.assertTrue(res["pages"], "ничего не успели взять")
+
+    def test_rows_are_rendered_in_pages(self):
+        """Пятьсот строк со всеми контактами собирает тот же поток,
+        который рисует окно. На четырёхстах компаниях оно переставало
+        отвечать."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        js = io.open(os.path.join(root, "app/static/app.js"),
+                     encoding="utf-8").read()
+        self.assertIn("PAGE_ROWS", js)
+        self.assertIn("more-rows", js)
+        # И повторная отрисовка при неизменных данных не делается.
+        self.assertIn("lastSignature", js)
+
+
 class RunLimit(unittest.TestCase):
     def test_run_stops_at_the_limit(self):
         """«Магазин» по десяти городам выгребает десятки тысяч записей.
