@@ -580,6 +580,22 @@ def diagnose(cfg=None, timeout=8):
     return out
 
 
+def model_missing(text):
+    """Сервер отказал именно из-за имени модели.
+
+    Отличать это от прочих отказов стоит потому, что лечится оно одним
+    движением: список моделей посредник отдаёт сам, и спрашивать его у
+    человека незачем — программа спросит.
+    """
+    t = (text or "").lower()
+    about_model = "модель" in t or "model" in t
+    denied = any(m in t for m in (
+        "недоступна", "не доступна", "not found", "not_found",
+        "does not exist", "unknown", "unsupported", "invalid model",
+        "нет такой", "не поддерживается"))
+    return about_model and denied
+
+
 def check(cfg=None):
     """Проверка связи — чтобы ключ не выяснялся посреди обхода тысячи компаний."""
     cfg = cfg or config()

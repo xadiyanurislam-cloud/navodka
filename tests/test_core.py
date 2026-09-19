@@ -2333,5 +2333,60 @@ class ProxyMustNotBlockUpdates(unittest.TestCase):
         self.assertIn("Сохранить", err)
 
 
+class ModelNotAvailable(unittest.TestCase):
+    """Посредник отказал из-за имени модели и сам написал, где взять
+    список. То, что программа умеет сделать сама, она и делает."""
+
+    def setUp(self):
+        db.init()
+        self.app = web.create_app().test_client()
+
+    def test_model_refusal_is_told_apart(self):
+        self.assertTrue(ai.model_missing(
+            'HTTP 404: {"error":{"message":"Модель claude-sonnet-4-5 '
+            'недоступна. Получите список доступных моделей через GET '
+            '/v1/models"}}'))
+        self.assertTrue(ai.model_missing("HTTP 400: model_not_found"))
+        self.assertTrue(ai.model_missing("unknown model: foo"))
+
+    def test_other_refusals_are_not_confused_with_it(self):
+        self.assertFalse(ai.model_missing("HTTP 401: invalid api key"))
+        self.assertFalse(ai.model_missing("связь разорвана по дороге"))
+        self.assertFalse(ai.model_missing("HTTP 429: too many requests"))
+
+    def test_list_is_fetched_and_shown(self):
+        real_check, real_models = ai.check, ai.models
+        ai.check = lambda cfg=None: (False, "HTTP 404: модель недоступна")
+        ai.models = lambda cfg=None, **k: (["alpha", "beta"], "")
+        try:
+            d = self.app.post("/api/ai/check", json={}).get_json()
+        finally:
+            ai.check, ai.models = real_check, real_models
+        self.assertEqual(d["models"], ["alpha", "beta"])
+        self.assertIn("Доступные модели: alpha, beta", d["note"])
+
+    def test_list_is_not_fetched_for_other_errors(self):
+        real_check, real_models = ai.check, ai.models
+        asked = []
+        ai.check = lambda cfg=None: (False, "HTTP 401: invalid api key")
+        ai.models = lambda cfg=None, **k: (asked.append(1), ([], ""))[1]
+        try:
+            d = self.app.post("/api/ai/check", json={}).get_json()
+        finally:
+            ai.check, ai.models = real_check, real_models
+        self.assertEqual(asked, [])
+        self.assertEqual(d["models"], [])
+
+    def test_long_list_is_cut_but_counted(self):
+        real_check, real_models = ai.check, ai.models
+        ai.check = lambda cfg=None: (False, "модель недоступна")
+        ai.models = lambda cfg=None, **k: (["m%d" % i for i in range(20)], "")
+        try:
+            note = self.app.post("/api/ai/check", json={}).get_json()["note"]
+        finally:
+            ai.check, ai.models = real_check, real_models
+        self.assertIn("и ещё 8", note)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

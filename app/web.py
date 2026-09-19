@@ -271,10 +271,23 @@ def create_app():
     def api_ai_check():
         cfg = ai.config()
         ok, note = ai.check(cfg)
+        # Если отказали из-за имени модели — сразу берём список и
+        # показываем его. Посредник в этом же отказе пишет «получите
+        # список моделей»; заставлять человека жать вторую кнопку ради
+        # того, что программа умеет сделать сама, — лишний ход.
+        names = []
+        if not ok and ai.model_missing(note):
+            names, _err = ai.models(cfg)
+            if names:
+                note += "\n\nДоступные модели: %s%s\nВыберите одну в поле " \
+                        "«Модель» — список уже подставлен в подсказку." % (
+                            ", ".join(names[:12]),
+                            " и ещё %d" % (len(names) - 12) if len(names) > 12
+                            else "")
         # Формат называем всегда: половина неудач здесь — не тот формат,
         # а по сообщению «HTTP 404» этого не понять.
         return jsonify(ok=ok, note=note, model=cfg["model"],
-                       kind=cfg["kind"])
+                       kind=cfg["kind"], models=names)
 
     @app.get("/api/ai/models")
     def api_ai_models():

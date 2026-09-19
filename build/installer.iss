@@ -12,7 +12,7 @@
 ; успел разойтись с app/settings.py — из-за этого обновление считало
 ; свежую сборку старой.
 #ifndef AppVersion
-  #define AppVersion "0.14.5"
+  #define AppVersion "0.14.6"
 #endif
 
 [Setup]

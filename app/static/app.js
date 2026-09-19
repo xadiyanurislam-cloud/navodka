@@ -745,6 +745,14 @@ $("btn-ai-check2").onclick = async () => {
     ai_url: $("s-ai-url").value, ai_kind: $("s-ai-kind").value,
     ai_model: $("s-ai-model").value, proxy_url: $("s-proxy").value});
   const d = await post("/api/ai/check", {});
+  if (d && d.models && d.models.length) {
+    $("ai-models").innerHTML = d.models.map(
+      (m) => `<option value="${esc(m)}">`).join("");
+    // Поле пустое — подставляем первую из списка: человек модели не
+    // выбирал, выбираем всё равно мы, так пусть это будет та, которая
+    // у посредника есть.
+    if (!$("s-ai-model").value.trim()) $("s-ai-model").value = d.models[0];
+  }
   note.innerHTML = d.ok
     ? `<span class="good">${esc(d.model)} (${esc(d.kind)}) — ${esc(d.note)}</span>`
     : `<span class="bad">${esc(d.note)}</span>`;
