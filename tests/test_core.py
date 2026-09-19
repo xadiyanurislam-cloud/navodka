@@ -463,6 +463,15 @@ class FindByTrade(unittest.TestCase):
         spb = [c for c in geo.cities() if c["name"] == "Санкт-Петербург"][0]
         self.assertEqual(spb["hh"], "2")
 
+    def test_every_city_has_map_coordinates(self):
+        """Яндекс ищет по прямоугольнику на карте, а не по номеру региона.
+        Город без координат молча выпадет из поиска."""
+        for c in geo.cities():
+            if c["name"] == "Россия целиком":
+                continue
+            self.assertTrue(c["ll"], "нет координат: %s" % c["name"])
+            self.assertEqual(len(c["ll"].split(",")), 2)
+
     def test_whole_country_is_skipped_by_gis(self):
         """У 2ГИС нет «России целиком» — поиск там всегда по городу."""
         ru = [c for c in geo.cities() if c["name"] == "Россия целиком"][0]
@@ -641,6 +650,92 @@ class UpdateDownload(unittest.TestCase):
                 self.assertIn("https://github.com/rel/Setup.exe", msg)
         finally:
             update._routes, settings.frozen = was_routes, was_frozen
+
+
+class DirectorInSocials(unittest.TestCase):
+    """Выход на живого руководителя. Здесь ошибиться дороже всего:
+    неверный профиль — это письмо чужому человеку от имени компании."""
+
+    def test_company_name_is_stripped_before_searching(self):
+        from app.sources import vk
+        self.assertEqual(vk._clean_name('ООО "Стоматология Улыбка"'),
+                         "Стоматология Улыбка")
+        self.assertEqual(vk._clean_name("АО «Ромашка»"), "Ромашка")
+
+    def test_unrelated_group_with_same_word_is_refused(self):
+        from app.sources import vk
+        self.assertTrue(vk._looks_same("Ромашка", "Ромашка | Цветы Москва"))
+        self.assertFalse(vk._looks_same("Ромашка", "Котики и мемы"))
+
+    def test_post_tells_a_boss_from_a_sales_manager(self):
+        from app.sources import vk
+        self.assertTrue(vk._is_boss("Генеральный директор"))
+        self.assertTrue(vk._is_boss("Владелец"))
+        self.assertFalse(vk._is_boss("Менеджер по продажам"))
+        self.assertFalse(vk._is_boss(""))
+
+    def test_same_person_needs_surname_and_name(self):
+        """Одной фамилии мало: Иванов Иван и Иванов Пётр — разные люди, и
+        звонить второму вместо первого хуже, чем не звонить."""
+        self.assertTrue(enrich.same_person("Иванов Иван Иванович", "Иван Иванов"))
+        self.assertTrue(enrich.same_person("Петрова Анна Сергеевна", "Анна Петрова"))
+        self.assertFalse(enrich.same_person("Иванов Иван Иванович", "Иванов Пётр"))
+        self.assertFalse(enrich.same_person("Иванов Иван", "И. Иванов"))
+        self.assertFalse(enrich.same_person("", "Иван Иванов"))
+
+    def test_team_page_gives_person_with_post(self):
+        from app.sources import site
+        pages = [["Наша команда", "Иванов Иван Иванович", "Генеральный директор"],
+                 ["Руководство", "Генеральный директор — Петрова Анна Сергеевна"]]
+        got = {p["fio"] for p in site.people(pages)}
+        self.assertIn("Иванов Иван Иванович", got)
+        self.assertIn("Петрова Анна Сергеевна", got)
+
+    def test_name_in_a_news_item_is_not_an_employee(self):
+        """Упоминание в новости — не сотрудник. Без этого в руководители
+        попадёт любой, о ком компания написала заметку."""
+        from app.sources import site
+        pages = [["Новости", "Вчера Сидоров Пётр выступил на конференции"]]
+        self.assertEqual(site.people(pages), [])
+
+    def test_post_written_in_capitals_is_not_a_name(self):
+        from app.sources import site
+        pages = [["Руководство", "Генеральный Директор"]]
+        self.assertEqual([p["fio"] for p in site.people(pages)], [])
+
+    def test_link_network_is_recognised_by_domain(self):
+        self.assertEqual(social.which("https://vk.com/dentalux"), "ВКонтакте")
+        self.assertEqual(social.which("https://t.me/dentalux"), "Telegram")
+        self.assertEqual(social.which("https://dentalux.ru"), "")
+        # Кнопка «поделиться» — не профиль компании.
+        self.assertEqual(social.which("https://vk.com/share.php?url=x"), "")
+
+
+class KeyLinks(unittest.TestCase):
+    def test_every_key_field_says_where_to_get_it(self):
+        """Поле «вставьте ключ» без ссылки, где его взять, — это задание
+        на поиск, а не настройка."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "app/templates/index.html"),
+                  encoding="utf-8") as f:
+            html = f.read()
+        for field, host in (("s-dadata", "dadata.ru"),
+                            ("s-gis", "dev.2gis.ru"),
+                            ("s-yandex", "developer.tech.yandex.ru"),
+                            ("s-vk", "vk.com/apps"),
+                            ("s-hh-token", "dev.hh.ru")):
+            i = html.index('id="%s"' % field)
+            block = html[i:i + 900]
+            self.assertIn(host, block, "нет ссылки на ключ у поля %s" % field)
+
+    def test_external_links_go_to_the_browser(self):
+        """Внутри окна программы нет ни адресной строки, ни кнопки
+        «назад»: открытая в нём чужая страница — тупик."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "app/static/app.js"), encoding="utf-8") as f:
+            js = f.read()
+        self.assertIn('a[href^="http"]', js)
+        self.assertIn('post("/api/open"', js)
 
 
 class SavedSearches(unittest.TestCase):

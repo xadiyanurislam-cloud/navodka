@@ -22,8 +22,21 @@ from .. import settings
 # контактных разделов в русском вебе.
 PATHS = ["", "/contacts", "/contacts/", "/kontakty", "/kontakty/", "/contact",
          "/about", "/about/", "/o-kompanii", "/o-nas", "/company",
+         # Страницы про людей. Здесь ФИО стоит рядом с должностью, а часто
+         # и с личной почтой — то, чего нет ни в ЕГРЮЛ, ни на «Контактах»,
+         # где лежит общий ящик приёмной.
+         "/team", "/team/", "/komanda", "/nasha-komanda", "/rukovodstvo",
+         "/management", "/administraciya", "/sotrudniki", "/vrachi",
+         "/specialists", "/staff",
          "/rekvizity", "/requisites", "/vacancy", "/vacancies", "/karera",
          "/privacy", "/policy"]
+
+# Должности первых лиц. По ним страница «Команда» превращается из списка
+# имён в ответ на вопрос «кто тут главный».
+BOSS_POSTS = ("генеральный директор", "директор", "руководитель",
+              "владелец", "собственник", "основатель", "учредитель",
+              "управляющий", "президент", "главный врач", "заведующий",
+              "председатель")
 
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 PHONE_RE = re.compile(r"(?:\+7|8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
@@ -327,6 +340,47 @@ def crawl(site, timeout=10, pause=0.7, max_pages=10, session=None):
     result["telegram"] = sorted(tg)
     result["tech"] = {k: sorted(v) for k, v in result["tech"].items()}
     return result
+
+
+# ФИО в русском написании: три слова с заглавных или два. Отчество
+# необязательно — на сайтах его опускают чаще, чем пишут.
+FIO_RE = re.compile(
+    r"\b([А-ЯЁ][а-яё\-]{2,})\s+([А-ЯЁ][а-яё\-]{2,})(?:\s+([А-ЯЁ][а-яё\-]{3,}(?:вич|вна|ична)))?\b")
+
+
+def people(pages_text, window=3):
+    """Люди с должностями, найденные на страницах сайта.
+
+    Возвращает [{fio, post, boss}]. Ищем не «где-то есть фамилия», а пару
+    «должность и имя рядом»: на странице «Команда» они всегда стоят
+    вместе, а разрозненное имя в тексте новости — это не сотрудник.
+
+    Порядок в паре любой: и «Иванов Иван, генеральный директор», и
+    «Генеральный директор — Иванов Иван» встречаются одинаково часто.
+    """
+    out, seen = [], set()
+    for lines in pages_text:
+        for i, line in enumerate(lines):
+            low = line.lower()
+            post = next((p for p in BOSS_POSTS if p in low), "")
+            if not post:
+                continue
+            lo, hi = max(0, i - window), min(len(lines), i + window + 1)
+            for near in lines[lo:hi]:
+                for m in FIO_RE.finditer(near):
+                    a, b, c = m.group(1), m.group(2), m.group(3) or ""
+                    fio = " ".join(x for x in (a, b, c) if x)
+                    # Должность, набранная с заглавных, сама попадает под
+                    # выражение для ФИО: «Генеральный Директор» — не имя.
+                    if any(w in fio.lower() for w in BOSS_POSTS):
+                        continue
+                    key = fio.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append({"fio": fio, "post": post,
+                                "boss": post in BOSS_POSTS[:8]})
+    return out[:12]
 
 
 def guess_owner(addr):

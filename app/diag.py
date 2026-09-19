@@ -234,6 +234,45 @@ def run():
                         "организаций в пробном поиске: %d" % len(items),
                         hint="" if items else "Ключ не принят или исчерпан лимит."))
 
+    # 5.5. Яндекс.Организации и ВКонтакте — оба по ключу.
+    ykey = db.get_setting("yandex_key", "")
+    if not ykey:
+        out.append(_row("Яндекс.Организации", None, "ключ не задан", hint=(
+            "Второй справочник рядом с 2ГИС: у них разные пробелы, вместе "
+            "покрытие шире. Ключ Геопоиска бесплатный, без модерации.")))
+    else:
+        r, ms, err = _get(s, "https://search-maps.yandex.ru/v1/",
+                          {"apikey": ykey, "text": "стоматология", "lang": "ru_RU",
+                           "type": "biz", "results": 1,
+                           "ll": "37.6173,55.7558", "spn": "0.5,0.4"})
+        if err:
+            out.append(_row("Яндекс.Организации", False, err, hint=abroad))
+        else:
+            try:
+                n = len((r.json() or {}).get("features") or [])
+            except Exception:
+                n = 0
+            out.append(_row("Яндекс.Организации", r.status_code == 200 and n > 0,
+                            "ответ %s, найдено %d" % (r.status_code, n), ms,
+                            hint="" if r.status_code == 200 else
+                                 "403 — неверный ключ или кончился дневной "
+                                 "лимит (бесплатно 500 запросов в сутки)."))
+
+    vk_token = db.get_setting("vk_token", "")
+    if not vk_token:
+        out.append(_row("ВКонтакте", None, "ключ не задан", hint=(
+            "Нужен для выхода на руководителя: контактные лица группы "
+            "компании. Сервисный ключ берётся на vk.com/apps?act=manage.")))
+    else:
+        from .sources import vk as vk_src
+        t0 = time.time()
+        resp, verr = vk_src._call("groups.getById",
+                                  {"group_id": "1", "fields": "contacts"},
+                                  vk_token, s)
+        ms = int((time.time() - t0) * 1000)
+        out.append(_row("ВКонтакте", not verr,
+                        "ключ принят" if not verr else verr, ms))
+
     # 6. Госзакупки — по HTML, поэтому проверяем отдельно.
     r, ms, err = _get(s, "https://zakupki.gov.ru/epz/organization/search/results.html",
                       {"searchString": "7707083893", "pageNumber": 1}, timeout=20)

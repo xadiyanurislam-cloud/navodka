@@ -65,6 +65,20 @@ def _clean(net, slug):
     return slug
 
 
+def which(url):
+    """Какой это сети адрес. Пустая строка — ни одной из известных.
+
+    Нужна для чужих списков ссылок: карточка Яндекса отдаёт вперемешку
+    сайт компании, её прайс в PDF и страницу ВКонтакте, и разобрать, что
+    есть что, можно только по домену.
+    """
+    for net, title, rx in NETS:
+        m = rx.search(url or "")
+        if m and _clean(net, m.group(1)):
+            return title
+    return ""
+
+
 def from_text(text):
     """Все профили соцсетей в куске HTML или текста."""
     found = {}

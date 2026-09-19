@@ -1,0 +1,173 @@
+# -*- coding: utf-8 -*-
+"""ВКонтакте — контактные лица, которые компания указала сама.
+
+Почему именно этот путь, а не поиск людей по ФИО. Искать «Иванова Ивана»
+перебором профилей бессмысленно: однофамильцев в любом городе сотни,
+проверить некому, и на выходе получается список «возможно, это он» —
+хуже пустой клетки. Плюс ФИО рядом с личным профилем — уже персональные
+данные, и собирать их наугад нельзя.
+
+Здесь всё наоборот. У группы компании есть раздел «Контакты», куда
+владелец сам ставит профили живых людей с подписью «Директор»,
+«Владелец», «Руководитель». Это не догадка и не находка поисковика — это
+рабочий контакт, опубликованный самой компанией для того, чтобы по нему
+писали. Остаётся сверить фамилию с ЕГРЮЛ и сказать, совпало или нет.
+
+Нужен сервисный ключ: vk.com/apps?act=manage → создать приложение →
+«Сервисный ключ доступа». Выдаётся сразу, без модерации.
+"""
+import re
+import time
+
+import requests
+
+from .. import settings
+
+API = "https://api.vk.com/method/"
+VERSION = "5.199"
+
+# Подписи, по которым контакт группы читается как первое лицо, а не как
+# менеджер по работе с клиентами.
+BOSS_WORDS = ("директор", "руководител", "владел", "собственник", "основател",
+              "управляющ", "president", "ceo", "founder", "главный врач",
+              "заведующ")
+
+
+def _call(method, params, token, session=None, timeout=15):
+    """Вызов метода. Возвращает (ответ, ошибка)."""
+    s = session or requests.Session()
+    body = dict(params, access_token=token, v=VERSION, lang="ru")
+    try:
+        r = s.post(API + method, data=body, timeout=timeout,
+                   headers={"User-Agent": settings.USER_AGENT})
+    except Exception as e:
+        return None, "ВК недоступен: %s" % str(e)[:140]
+    try:
+        d = r.json() or {}
+    except Exception:
+        return None, "ВК вернул не JSON"
+    if "error" in d:
+        err = d["error"]
+        code = err.get("error_code")
+        msg = err.get("error_msg") or ""
+        if code == 5:
+            return None, "ключ ВК не подошёл — проверьте сервисный ключ в «Настройках»"
+        if code == 6:
+            return None, "слишком часто"        # обрабатывается повтором
+        if code == 29:
+            return None, "у ключа ВК кончился дневной лимит"
+        return None, "ВК ответил ошибкой %s: %s" % (code, msg[:120])
+    return d.get("response"), ""
+
+
+def find_group(name, token, city_id=None, session=None, on_log=None):
+    """Группа компании по названию. Возвращает лучшую из найденных.
+
+    Берём именно первую: выдача ВК отсортирована по релевантности, а
+    дальше идут однофамильцы бизнеса — «Ромашка» цветочная, «Ромашка»
+    детский сад и «Ромашка» паблик с картинками.
+    """
+    clean = _clean_name(name)
+    if not clean or not token:
+        return {}
+    params = {"q": clean, "type": "page,group", "count": 5, "sort": 0}
+    if city_id:
+        params["city_id"] = city_id
+    resp, err = _call("groups.search", params, token, session)
+    if err == "слишком часто":
+        time.sleep(0.4)
+        resp, err = _call("groups.search", params, token, session)
+    if err:
+        if on_log:
+            on_log("ВК: %s" % err, "warn")
+        return {}
+    items = (resp or {}).get("items") or []
+    for it in items:
+        # Отсекаем заведомо не то: закрытые и удалённые сообщества.
+        if it.get("is_closed") == 2 or it.get("deactivated"):
+            continue
+        if not _looks_same(clean, it.get("name") or ""):
+            continue
+        return {"id": it.get("id"), "name": it.get("name") or "",
+                "url": "https://vk.com/" + (it.get("screen_name") or
+                                            ("club%s" % it.get("id")))}
+    return {}
+
+
+def group_contacts(group_id, token, session=None, on_log=None):
+    """Контактные лица группы: имя, ссылка на профиль, подпись.
+
+    Возвращает список словарей. Пустой список — нормальный исход:
+    контакты заполняет далеко не каждая компания.
+    """
+    if not group_id or not token:
+        return [], {}
+    resp, err = _call("groups.getById",
+                      {"group_id": group_id,
+                       "fields": "contacts,description,site,members_count,city"},
+                      token, session)
+    if err:
+        if on_log:
+            on_log("ВК: %s" % err, "warn")
+        return [], {}
+    groups = (resp or {}).get("groups") or (resp if isinstance(resp, list) else [])
+    if not groups:
+        return [], {}
+    g = groups[0]
+    about = {"site": g.get("site") or "", "members": g.get("members_count") or 0,
+             "description": (g.get("description") or "")[:600]}
+
+    raw = g.get("contacts") or []
+    user_ids = [str(c["user_id"]) for c in raw if c.get("user_id")]
+    people = {}
+    if user_ids:
+        resp2, err2 = _call("users.get",
+                            {"user_ids": ",".join(user_ids[:20]),
+                             "fields": "domain,city"}, token, session)
+        if not err2:
+            for u in (resp2 or []):
+                people[u.get("id")] = u
+
+    out = []
+    for c in raw:
+        uid = c.get("user_id")
+        u = people.get(uid) or {}
+        fio = " ".join(x for x in [u.get("last_name"), u.get("first_name")] if x)
+        out.append({
+            "user_id": uid,
+            "name": fio,
+            "url": ("https://vk.com/" + (u.get("domain") or "id%s" % uid)) if uid else "",
+            "post": (c.get("desc") or "").strip(),
+            "email": (c.get("email") or "").strip(),
+            "phone": (c.get("phone") or "").strip(),
+            "boss": _is_boss(c.get("desc") or ""),
+        })
+    return out, about
+
+
+def _is_boss(desc):
+    low = (desc or "").lower()
+    return any(w in low for w in BOSS_WORDS)
+
+
+def _clean_name(name):
+    """Название компании без организационной шелухи.
+
+    Искать группу по «ООО "Стоматология Улыбка"» бесполезно: в ВК она
+    называется «Стоматология Улыбка», а кавычки и ООО только сбивают
+    поиск.
+    """
+    s = (name or "").strip()
+    s = re.sub(r'^(ООО|ОАО|ЗАО|ПАО|АО|ИП|НКО|АНО|НАО)\s+', "", s, flags=re.I)
+    s = s.replace("«", " ").replace("»", " ").replace('"', " ")
+    return re.sub(r"\s+", " ", s).strip()[:60]
+
+
+def _looks_same(want, got):
+    """Похожи ли названия. Нужно, чтобы «Ромашка» не приводила паблик с
+    котиками, который просто называется «Ромашка»."""
+    a = re.sub(r"[^\w]+", "", (want or "").lower())
+    b = re.sub(r"[^\w]+", "", (got or "").lower())
+    if not a or not b:
+        return False
+    return a in b or b in a

@@ -105,6 +105,7 @@ function findForm() {
     cities: [...$("q-cities").selectedOptions].map((o) => o.value),
     pages: $("q-pages").value,
     gis: $("q-gis").checked,
+    yandex: $("q-yandex").checked,
     dadata: $("q-dadata").checked,
     hh: $("q-hh").checked,
     then_enrich: $("q-then").checked,
@@ -123,6 +124,7 @@ function fillFindForm(p) {
   if (p.pages) $("q-pages").value = String(p.pages);
   const src = p.sources || {};
   $("q-gis").checked = src.gis !== false;
+  $("q-yandex").checked = src.yandex !== false;
   $("q-dadata").checked = src.dadata !== false;
   $("q-hh").checked = src.hh !== false;
   $("q-then").checked = !!p.then_enrich;
@@ -133,20 +135,22 @@ function fillFindForm(p) {
 // Сколько источников реально готово — видно до нажатия, а не после.
 function findReady() {
   const f = findForm();
-  const on = [f.gis && "2ГИС", f.dadata && "ЕГРЮЛ", f.hh && "hh.ru"].filter(Boolean);
+  const on = [f.gis && "2ГИС", f.yandex && "Яндекс", f.dadata && "ЕГРЮЛ",
+              f.hh && "hh.ru"].filter(Boolean);
   const box = $("find-ready");
   box.textContent = on.length
     ? `ищем в: ${on.join(", ")}`
     : "ни один источник не выбран";
   box.classList.toggle("bad", !on.length);
 }
-["q-gis", "q-dadata", "q-hh"].forEach((id) => { $(id).onchange = findReady; });
+["q-gis", "q-yandex", "q-dadata", "q-hh"].forEach((id) => { $(id).onchange = findReady; });
 findReady();
 
 $("btn-find").onclick = async () => {
   const f = findForm();
   if (!f.query) { $("q-text").focus(); toast("Впишите, кого ищем"); return; }
-  if (!f.gis && !f.dadata && !f.hh) { toast("Выберите хотя бы один источник"); return; }
+  if (!f.gis && !f.yandex && !f.dadata && !f.hh) {
+    toast("Выберите хотя бы один источник"); return; }
   const d = await post("/api/find", f);
   if (!d.ok) { toast(d.error || "не вышло"); return; }
   toast(`Ищу «${f.query}» — ${f.cities.length || 1} город(ов)`);
@@ -255,6 +259,7 @@ $("btn-import").onclick = () => {
 $("btn-enrich").onclick = () => run("/api/enrich", {
   limit: $("e-limit").value, verify: $("e-verify").checked,
   fns: $("e-fns").checked, zakupki: $("e-zakupki").checked,
+  vk: $("e-vk").checked,
   only_lpr: $("e-only-lpr").checked}, "Обогащение");
 
 $("btn-ai").onclick = () => run("/api/ai", {
@@ -335,6 +340,7 @@ $("s-save").onclick = async () => {
     dadata_token: $("s-dadata").value, gis_key: $("s-gis").value,
     ai_key: $("s-ai-key").value, ai_url: $("s-ai-url").value,
     ai_model: $("s-ai-model").value, hh_token: $("s-hh-token").value,
+    yandex_key: $("s-yandex").value, vk_token: $("s-vk").value,
     update_repo: $("s-upd-repo").value, update_token: $("s-upd-token").value});
   $("modal").hidden = true;
   markKeys();
@@ -1006,6 +1012,16 @@ document.addEventListener("keydown", (e) => {
 // Ctrl+Enter из поля запросов запускает поиск: руки уже на клавиатуре.
 $("f-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("btn-search").click();
+});
+
+// Любая внешняя ссылка уходит в системный браузер. Внутри окна
+// программы нет ни адресной строки, ни кнопки «назад»: открытый в нём
+// чужой сайт — это тупик, из которого выход один — закрыть программу.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest('a[href^="http"]');
+  if (!a) return;
+  e.preventDefault();
+  post("/api/open", {url: a.href});
 });
 
 loadStats();

@@ -63,6 +63,10 @@ def create_app():
             # самая обидная из возможных причин.
             has_gis=bool(db.get_setting("gis_key", "")),
             has_dadata=bool(db.get_setting("dadata_token", "")),
+            has_yandex=bool(db.get_setting("yandex_key", "")),
+            has_vk=bool(db.get_setting("vk_token", "")),
+            yandex_key=db.get_setting("yandex_key", ""),
+            vk_token=db.get_setting("vk_token", ""),
         )
 
     # ── Задачи ───────────────────────────────────────────
@@ -79,6 +83,7 @@ def create_app():
             "pages": max(1, min(10, int(d.get("pages") or 3))),
             "sources": {
                 "gis": bool(d.get("gis", True)),
+                "yandex": bool(d.get("yandex", True)),
                 "dadata": bool(d.get("dadata", True)),
                 "hh": bool(d.get("hh", True)),
             },
@@ -167,6 +172,7 @@ def create_app():
             "limit": max(1, min(500, int(d.get("limit") or 50))),
             "verify": bool(d.get("verify")),
             "fns": d.get("fns", True),
+            "vk": d.get("vk", True),
             "only_lpr": bool(d.get("only_lpr")),
             "zakupki": bool(d.get("zakupki")),
         })
@@ -234,6 +240,25 @@ def create_app():
         if ok and restart:
             _exit_soon()
         return jsonify(ok=ok, message=msg, restart=bool(ok and restart))
+
+    @app.post("/api/open")
+    def api_open():
+        """Открыть ссылку в браузере, а не внутри окна программы.
+
+        Окно программы — это webview без адресной строки и без кнопки
+        «назад». Ссылка, открытая в нём, уводит человека на чужой сайт без
+        дороги обратно: остаётся закрывать программу целиком. Поэтому все
+        внешние ссылки уходят сюда, а отсюда — в системный браузер.
+        """
+        import webbrowser
+        url = (request.get_json(silent=True) or {}).get("url") or ""
+        if not url.startswith(("http://", "https://")):
+            return jsonify(ok=False, error="ссылка не похожа на адрес")
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)[:160])
+        return jsonify(ok=True)
 
     @app.post("/api/stop")
     def api_stop():
@@ -378,7 +403,8 @@ def create_app():
         d = request.get_json(silent=True) or {}
         for key in ("dadata_token", "gis_key", "ai_key", "ai_url",
                     "ai_model", "hh_ua", "hh_token",
-                    "update_repo", "update_token", "update_url"):
+                    "update_repo", "update_token", "update_url",
+                    "yandex_key", "vk_token"):
             if key in d:
                 db.set_setting(key, (d[key] or "").strip())
         return jsonify(ok=True)

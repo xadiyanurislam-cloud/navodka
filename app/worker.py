@@ -16,7 +16,8 @@ import time
 import requests
 
 from . import ai, db, enrich, geo, profile, score, settings, social, verify
-from .sources import dadata, fns, gis2, hh, importer, site as site_src, zakupki
+from .sources import (dadata, fns, gis2, hh, importer, site as site_src,
+                      vk, yandex, zakupki)
 
 _thread = None
 _stop = threading.Event()
@@ -339,6 +340,32 @@ def task_enrich(task_id, params):
                     log("   рядом с ФИО на странице: почт %d, телефонов %d"
                         % (len(near["emails"]), len(near["phones"])))
 
+            # Кто указан на страницах «Команда» и «Руководство». Это
+            # полезно и когда ФИО из ЕГРЮЛ уже есть (подтверждает, что
+            # человек действующий), и особенно когда его нет: у ИП и у
+            # филиалов в ЕГРЮЛ руководителя не найти, а на сайте он
+            # представлен.
+            crew = site_src.people(res.get("text") or [])
+            bosses = [p for p in crew if p["boss"]]
+            if bosses:
+                db.add_signal(cid, "site_people", "; ".join(
+                    "%s — %s" % (p["fio"], p["post"]) for p in bosses[:4]))
+                known_fio = (row["director"] or "").strip()
+                if not known_fio:
+                    top = bosses[0]
+                    db.update_company_fields(cid, {"director": top["fio"],
+                                                   "director_post": top["post"]})
+                    row = db.conn().execute("SELECT * FROM companies WHERE id=?",
+                                            (cid,)).fetchone()
+                    log("   руководитель со страницы сайта: %s — %s"
+                        % (top["fio"], top["post"]))
+                else:
+                    same = [p for p in bosses
+                            if enrich.same_person(known_fio, p["fio"])]
+                    if same:
+                        db.add_signal(cid, "director_on_site", "да")
+                        log("   ФИО из ЕГРЮЛ подтверждено на сайте")
+
         # 3. Профиль: чем занимается и есть ли телефонные продажи.
         #    Второй вопрос важнее: компания, которая не продаёт по телефону,
         #    не купит ничего про звонки, сколько бы у неё ни было выручки.
@@ -430,6 +457,14 @@ def task_enrich(task_id, params):
                     % (fin.get("year") or "—", fin["revenue"] / 1e6,
                        fns.size_band(fin["revenue"]),
                        (", " + label) if label else ""))
+
+        # 5.5. ВКонтакте: контактные лица, которые компания указала сама.
+        #      Это единственный честный способ выйти на личный профиль
+        #      руководителя: не поиск по ФИО среди однофамильцев, а
+        #      контакт, опубликованный самой компанией для связи.
+        vk_token = db.get_setting("vk_token", "")
+        if vk_token and params.get("vk", True):
+            found_lpr = _vk_contacts(cid, row, vk_token, http, log) or found_lpr
 
         # 6. Госзакупки: контактное лицо с прямым телефоном и почтой. Это
         #    не общий ящик с сайта, а живой контакт конкретного человека.
@@ -650,6 +685,60 @@ def task_ai(task_id, params):
     log("Разобрано компаний: %d" % done)
 
 
+def _vk_contacts(cid, row, token, http, log):
+    """Группа компании во ВКонтакте и её контактные лица.
+
+    Возвращает True, если нашёлся контакт первого лица. Молчит, когда не
+    нашлось: у большинства компаний группы либо нет, либо контакты в ней
+    не заполнены, и писать об этом в журнал по каждой строке — значит
+    засыпать его пустотой.
+    """
+    g = vk.find_group(row["name"], token, session=http, on_log=log)
+    if not g:
+        return False
+    db.add_signal(cid, "vk_group", g["url"])
+    db.add_contact(cid, "social", g["url"], "general", 80, "unchecked",
+                   "группа ВКонтакте")
+
+    contacts, about = vk.group_contacts(g["id"], token, session=http, on_log=log)
+    if about.get("members"):
+        db.add_signal(cid, "vk_members", about["members"])
+    if not contacts:
+        return False
+
+    director = (row["director"] or "").strip()
+    got_lpr = False
+    for c in contacts:
+        # Совпало с ЕГРЮЛ — это руководитель, и сомнений нет.
+        # Подпись «директор» без совпадения ФИО — тоже первое лицо, но
+        # уверенность ниже: в ЕГРЮЛ может стоять другой человек.
+        same = director and c["name"] and enrich.same_person(director, c["name"])
+        who = "director" if (same or c["boss"]) else "unknown"
+        conf = 95 if same else (85 if c["boss"] else 70)
+        note = ("ВК: контакт группы, ФИО совпало с ЕГРЮЛ" if same else
+                "ВК: контакт группы%s" % ((" — " + c["post"]) if c["post"] else ""))
+        if c["url"]:
+            db.add_contact(cid, "social", c["url"], who, conf, "unchecked", note)
+        if c["email"]:
+            db.add_contact(cid, "email", c["email"], who, conf, "unchecked", note)
+        if c["phone"]:
+            db.add_contact(cid, "phone", c["phone"], who, conf, "unchecked", note)
+        if same or c["boss"]:
+            got_lpr = True
+            log("   ВК: %s%s — %s"
+                % (c["name"] or "контакт группы",
+                   (" (" + c["post"] + ")") if c["post"] else "",
+                   "ФИО совпало с ЕГРЮЛ" if same else "по подписи"))
+        # Руководителя из ЕГРЮЛ нет, а в контактах группы человек с
+        # должностью первого лица — берём его: у ИП и филиалов иначе
+        # руководителя не узнать вовсе.
+        if not director and c["boss"] and c["name"]:
+            db.update_company_fields(cid, {"director": c["name"],
+                                           "director_post": c["post"] or "руководитель"})
+            director = c["name"]
+    return got_lpr
+
+
 def _rescore(company_id):
     c = db.conn()
     row = c.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
@@ -690,16 +779,20 @@ def task_find(task_id, params):
 
     gis_key = db.get_setting("gis_key", "")
     dadata_token = db.get_setting("dadata_token", "")
+    yandex_key = db.get_setting("yandex_key", "")
     want_gis = use.get("gis", True) and bool(gis_key)
+    want_yandex = use.get("yandex", True) and bool(yandex_key)
     want_egrul = use.get("dadata", True) and bool(dadata_token)
     want_hh = use.get("hh", True)
 
     if use.get("gis", True) and not gis_key:
-        log("2ГИС пропущен: не задан ключ Places API. Это главный источник "
-            "для такого поиска — ключ берётся бесплатно на dev.2gis.ru.", "warn")
+        log("2ГИС пропущен: не задан ключ Places API. Ключ берётся "
+            "бесплатно на dev.2gis.ru.", "warn")
+    if use.get("yandex", True) and not yandex_key:
+        log("Яндекс пропущен: не задан ключ Геопоиска.", "warn")
     if use.get("dadata", True) and not dadata_token:
         log("ЕГРЮЛ пропущен: не задан токен DaData.", "warn")
-    if not (want_gis or want_egrul or want_hh):
+    if not (want_gis or want_yandex or want_egrul or want_hh):
         raise RuntimeError("не включён ни один источник — задайте ключи в «Настройках»")
 
     log("Ищу «%s» по городам: %s"
@@ -738,6 +831,16 @@ def task_find(task_id, params):
                      "address": it["address"], "okved_name": it["rubric"],
                      "region": city["name"], "phones": it["phones"],
                      "emails": it["emails"]}, "2ГИС")
+
+        if want_yandex and city.get("ll"):
+            log("Яндекс · %s" % city["name"])
+            for it in yandex.search(query, city, yandex_key, pages=min(pages, 4),
+                                    session=http, on_log=log,
+                                    should_stop=_should_stop):
+                add({"name": it["name"], "site": it["site"],
+                     "address": it["address"], "okved_name": it["rubric"],
+                     "region": city["name"], "phones": it["phones"],
+                     "emails": [], "links": it["links"]}, "Яндекс")
 
         if want_egrul:
             log("ЕГРЮЛ · %s" % city["name"])
@@ -797,6 +900,7 @@ def task_find(task_id, params):
             continue
         phones = row.pop("phones", []) or []
         emails = row.pop("emails", []) or []
+        links = row.pop("links", []) or []
         about = row.pop("about", "")
         open_vac = row.pop("open_vacancies", 0)
         cid, is_new = db.upsert_company(row)
@@ -807,6 +911,13 @@ def task_find(task_id, params):
         for addr in emails[:3]:
             db.add_contact(cid, "email", addr, site_src.guess_owner(addr), 85,
                            "unchecked", "2ГИС")
+        # Ссылки, которые компания указала в карточке Яндекса: среди них
+        # её страницы в соцсетях. Сама компания их и опубликовала.
+        for url in links[:6]:
+            net_name = social.which(url)
+            if net_name:
+                db.add_contact(cid, "social", url, "general", 82, "unchecked",
+                               "Яндекс: %s" % net_name)
         # По какому слову компания попала в список. Через неделю это
         # единственный способ вспомнить, зачем она здесь.
         db.add_signal(cid, "found_by", query)

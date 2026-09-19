@@ -108,10 +108,13 @@
               <span class="lbl">Где искать</span>
               <label class="opt"><input id="q-gis" type="checkbox" checked>
                 <span>Справочник 2ГИС
-                  <em>{% if has_gis %}ключ есть. Главный источник: вывески, телефоны и сайты{% else %}нужен ключ Places API, иначе будет пропущен — берётся бесплатно на dev.2gis.ru{% endif %}</em></span></label>
+                  <em>{% if has_gis %}ключ есть. Главный источник: вывески, телефоны и сайты{% else %}нужен ключ Places API, иначе будет пропущен — <a href="https://dev.2gis.ru/">взять бесплатно</a>{% endif %}</em></span></label>
+              <label class="opt"><input id="q-yandex" type="checkbox" checked>
+                <span>Яндекс.Организации
+                  <em>{% if has_yandex %}ключ есть. Второй справочник: у него и 2ГИС разные пробелы, вместе покрытие шире{% else %}нужен ключ «Поиск по организациям», иначе будет пропущен — <a href="https://developer.tech.yandex.ru/services/">взять бесплатно</a>{% endif %}</em></span></label>
               <label class="opt"><input id="q-dadata" type="checkbox" checked>
                 <span>ЕГРЮЛ
-                  <em>{% if has_dadata %}токен есть. Сразу отдаёт ИНН и ФИО руководителя{% else %}нужен токен DaData, иначе будет пропущен{% endif %}</em></span></label>
+                  <em>{% if has_dadata %}токен есть. Сразу отдаёт ИНН и ФИО руководителя{% else %}нужен токен DaData, иначе будет пропущен — <a href="https://dadata.ru/api/suggest/party/">взять бесплатно</a>{% endif %}</em></span></label>
               <label class="opt"><input id="q-hh" type="checkbox" checked>
                 <span>Работодатели hh.ru
                   <em>без ключа. Ищет по названию и отрасли, вакансии не нужны</em></span></label>
@@ -297,6 +300,8 @@
             <span>Сначала те, у кого известен ГД<em>без ФИО из ЕГРЮЛ его контакт искать нечем</em></span></label>
           <label class="opt"><input id="e-fns" type="checkbox" checked>
             <span>Выручка из ФНС<em>отсекает микробизнес и корпорации</em></span></label>
+          <label class="opt"><input id="e-vk" type="checkbox" checked>
+            <span>Искать контакты во ВКонтакте<em>группа компании → её контактные лица → сверка ФИО с ЕГРЮЛ{% if not has_vk %}. Нужен сервисный ключ — <a href="https://vk.com/apps?act=manage">взять бесплатно</a>{% endif %}</em></span></label>
           <label class="opt"><input id="e-zakupki" type="checkbox">
             <span>Контакты из госзакупок<em>прямой телефон ответственного, но медленно</em></span></label>
           <label class="opt"><input id="e-verify" type="checkbox">
@@ -364,26 +369,44 @@
     <label>DaData
       <input id="s-dadata" type="text" value="{{ dadata_token }}" placeholder="токен">
       <em>Без него ФИО руководителей взять неоткуда. Бесплатного тарифа
-          хватает на тысячи запросов в сутки.</em>
+          хватает на тысячи запросов в сутки.
+          <a href="https://dadata.ru/api/suggest/party/">где взять ключ</a></em>
     </label>
     <label>2ГИС Places API
       <input id="s-gis" type="text" value="{{ gis_key }}" placeholder="ключ">
-      <em>Нужен только для поиска по справочнику. Остальные источники
-          работают без ключей.</em>
+      <em>Справочник организаций: вывески, телефоны, сайты. Ключ нужен
+          типа <b>Places API</b> — не перепутайте с картами и маршрутами.
+          <a href="https://dev.2gis.ru/">где взять ключ</a></em>
+    </label>
+    <label>Ключ Яндекс.Карт (Геопоиск)
+      <input id="s-yandex" type="text" value="{{ yandex_key }}" placeholder="ключ">
+      <em>Второй справочник организаций рядом с 2ГИС. Отдаёт ещё и
+          ссылки, которые компания сама указала в карточке, — включая
+          её страницы в соцсетях. Нужен сервис <b>«Поиск по организациям»</b>.
+          <a href="https://developer.tech.yandex.ru/services/">где взять ключ</a></em>
+    </label>
+    <label>Сервисный ключ ВКонтакте
+      <input id="s-vk" type="password" value="{{ vk_token }}" placeholder="сервисный ключ">
+      <em>Для выхода на руководителя: у группы компании есть раздел
+          «Контакты», куда владелец сам ставит профили живых людей с
+          должностями. Программа сверяет их ФИО с ЕГРЮЛ. Создать
+          приложение и скопировать <b>«Сервисный ключ доступа»</b>.
+          <a href="https://vk.com/apps?act=manage">где взять ключ</a></em>
     </label>
     <label>Токен hh.ru
       <input id="s-hh-token" type="password" value="{{ hh_token }}"
              placeholder="нужен, только если hh отвечает 403">
       <em>Обычно не требуется: программа сама подбирает способ связи. Если
-          hh отклонил все — зарегистрируйте приложение на dev.hh.ru и
-          вставьте сюда его токен. Это официальный путь, и он надёжнее
-          любого подбора.</em>
+          hh отклонил все — зарегистрируйте приложение и вставьте сюда его
+          токен. Это официальный путь, и он надёжнее любого подбора.
+          <a href="https://dev.hh.ru/admin">кабинет разработчика hh</a></em>
     </label>
     <label>Ключ ИИ
       <input id="s-ai-key" type="password" value="{{ ai_key }}" placeholder="sk-…">
       <em>Подойдёт любой сервис, совместимый с OpenAI. Ключ хранится
           только на этом компьютере и никуда не отправляется, кроме
-          адреса ниже.</em>
+          адреса ниже.
+          <a href="https://platform.openai.com/api-keys">ключи OpenAI</a></em>
     </label>
     <div class="row2">
       <label>Адрес API
