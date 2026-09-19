@@ -109,6 +109,9 @@ def rubric_ru(tags):
     return ""
 
 
+# Признаки того, что объект — организация, а не дом и не улица.
+BIZ_KEYS = ("shop", "office", "amenity", "craft", "healthcare", "company")
+
 # Теги со ссылками на соцсети. Ради contact:vk всё и затевалось.
 LINK_TAGS = ("contact:vk", "contact:telegram", "contact:instagram",
              "contact:facebook", "contact:youtube", "contact:ok")
@@ -160,7 +163,15 @@ def build_query(query, city, limit=400):
             break
     name = stem(query)
     if name:
-        parts.append('nwr["name"~"%s",i](%s);' % (name, box))
+        # Поиск по названию — только среди организаций.
+        #
+        # Голое ["name"~"дизайн"] заставляет сервер просмотреть все
+        # объекты города: дома, улицы, остановки. Он отвечает на такое
+        # отказом 504, а если отвечает — приносит переулок Дизайнеров
+        # вместо студии. Пара «название + признак организации» ищется по
+        # указателю и стоит дёшево.
+        for key in BIZ_KEYS:
+            parts.append('nwr["name"~"%s",i]["%s"](%s);' % (name, key, box))
     if not parts:
         return ""
     return ("[out:json][timeout:50];(%s);out center tags %d;"
@@ -206,10 +217,31 @@ def search(query, city, pages=1, session=None, on_log=None, should_stop=None,
         except Exception:
             continue
 
+    if data is None and not (should_stop and should_stop()):
+        # Зеркала бесплатные и перегружаются пачками, но отпускает их
+        # быстро. Один повтор через полминуты спасает большую часть
+        # прогонов; без него город просто выпадал из поиска.
+        if on_log:
+            on_log("OSM: все зеркала заняты, жду полминуты и пробую ещё раз",
+                   "warn")
+        time.sleep(30)
+        for url in MIRRORS:
+            if should_stop and should_stop():
+                break
+            try:
+                r = s.post(url, data={"data": q}, timeout=70,
+                           headers={"User-Agent": settings.USER_AGENT})
+                if r.status_code == 200:
+                    data = r.json()
+                    break
+            except Exception:
+                continue
+
     if data is None:
         if on_log:
-            on_log("OSM: ни одно зеркало не ответило. Это бывает при "
-                   "перегрузке — попробуйте через несколько минут.", "warn")
+            on_log("OSM: ни одно зеркало не ответило и со второго раза. "
+                   "Это проходит само — попробуйте через несколько минут.",
+                   "warn")
         return []
 
     out, seen = [], set()

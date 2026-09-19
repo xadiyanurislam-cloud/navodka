@@ -835,6 +835,16 @@ class OpenStreetMap(unittest.TestCase):
         self.assertIn('"amenity"="dentist"', q)
         self.assertIn('["name"~"стоматолог",i]', q)
 
+    def test_name_search_is_limited_to_businesses(self):
+        """Голое ["name"~"дизайн"] заставляет сервер просмотреть всю
+        карту города: он отвечает 504, а если отвечает — приносит
+        переулок Дизайнеров вместо студии."""
+        from app.sources import osm
+        q = osm.build_query("дизайн", self._city())
+        self.assertNotIn('nwr["name"~"дизайн",i](', q)
+        for key in ("shop", "office", "amenity"):
+            self.assertIn('["name"~"дизайн",i]["%s"]' % key, q)
+
     def test_unknown_trade_still_searches_by_name(self):
         """Тегов на всё не напасёшься: «натяжные потолки» ищутся по
         названию."""
@@ -872,6 +882,30 @@ class OpenStreetMap(unittest.TestCase):
         self.assertIn("https://vk.com/dentalux", rows[0]["links"])
         self.assertEqual(rows[0]["phones"], ["+7 495 123-45-67"])
         self.assertEqual(rows[0]["address"], "Москва, Тверская")
+
+    def test_all_mirrors_busy_means_one_more_round(self):
+        """Зеркала перегружаются пачками, но отпускает их быстро. Без
+        повтора город просто выпадал из поиска."""
+        from app.sources import osm
+        calls = []
+
+        class Resp:
+            def __init__(self, code): self.status_code = code
+            def json(self): return {"elements": []}
+
+        class Sess:
+            def post(self, url, data=None, timeout=None, headers=None):
+                calls.append(url)
+                # Все три зеркала заняты, со второго круга отвечает первое.
+                return Resp(200 if len(calls) > 3 else 504)
+
+        was_sleep = osm.time.sleep
+        try:
+            osm.time.sleep = lambda s: None
+            osm.search("аптека", self._city(), session=Sess())
+        finally:
+            osm.time.sleep = was_sleep
+        self.assertGreater(len(calls), 3, "второго круга по зеркалам не было")
 
     def test_busy_mirror_is_not_a_broken_source(self):
         """Зеркала бесплатные и бывают заняты. Это повод взять следующее,
