@@ -2855,5 +2855,62 @@ class DesignAndArchitecture(unittest.TestCase):
             self.assertRegex(osm.RUBRIC_RU[tag], "[А-Яа-я]")
 
 
+class DecisionMakerFlag(unittest.TestCase):
+    """Признак «контакт первого лица найден» читают четверо: счётчик в
+    шапке, фильтр, выгрузка и сама оценка — там на нём четверть веса.
+    Записывать его при этом было некому."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().execute("DELETE FROM signals")
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    def test_signal_is_written_by_enrichment(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        self.assertIn('db.add_signal(cid, "lpr_contact", "найден")', src)
+        self.assertIn('db.add_signal(cid, "lpr_contact", "выведен")', src)
+
+    def test_found_outweighs_guessed(self):
+        """По найденному можно звонить, по выведенному — только пробовать
+        написать, и весить одинаково они не должны."""
+        row = {"director": "Иванов", "site": "x.ru"}
+        found, _ = score.compute(row, {"lpr_contact": "найден"}, [])
+        guessed, _ = score.compute(row, {"lpr_contact": "выведен"}, [])
+        none_, _ = score.compute(row, {}, [])
+        self.assertGreater(found, guessed)
+        self.assertGreater(guessed, none_)
+
+    def test_counter_sees_the_signal(self):
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
+        self.assertEqual(self.app.get("/api/stats").get_json()["lpr_found"], 0)
+        db.add_signal(cid, "lpr_contact", "найден")
+        self.assertEqual(self.app.get("/api/stats").get_json()["lpr_found"], 1)
+
+    def test_filter_sees_the_signal(self):
+        cid, _ = db.upsert_company({"name": "С контактом", "source": "тест"})
+        db.upsert_company({"name": "Без контакта", "source": "тест"})
+        db.add_signal(cid, "lpr_contact", "найден")
+        d = self.app.get("/api/companies?only=lpr_found").get_json()
+        self.assertEqual([r["name"] for r in d["rows"]], ["С контактом"])
+
+    def test_guessed_does_not_count_as_found(self):
+        """Выведенный по схеме адрес — догадка, и в счётчик найденных
+        она попадать не должна."""
+        cid, _ = db.upsert_company({"name": "Догадка", "source": "тест"})
+        db.add_signal(cid, "lpr_contact", "выведен")
+        self.assertEqual(self.app.get("/api/stats").get_json()["lpr_found"], 0)
+        d = self.app.get("/api/companies?only=lpr_found").get_json()
+        self.assertEqual(d["rows"], [])
+
+    def test_status_reaches_the_export(self):
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
+        db.add_signal(cid, "lpr_contact", "найден")
+        rows = export.rows_for_export(db.conn())
+        self.assertEqual(rows[0]["lpr_status"], "найден")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -318,6 +318,7 @@ def task_enrich(task_id, params):
         cid = row["id"]
         crawls.fill(i - 1)
         found_lpr = False        # контакт первого лица найден, а не выведен
+        guessed_lpr = False      # выведен по схеме домена — это догадка
         log("[%d/%d] %s" % (i, len(rows), row["name"]))
 
         # 1. ЕГРЮЛ: ФИО руководителя, ИНН, ОКВЭД, адрес.
@@ -485,8 +486,10 @@ def task_enrich(task_id, params):
                 # не опровергнут. Хранить его как найденный — самообман.
                 if v == "bad":
                     continue
-                db.add_contact(cid, "email", addr, "director",
-                               conf if v != "ok" else 95, v, "выведен по схеме домена")
+                if db.add_contact(cid, "email", addr, "director",
+                                  conf if v != "ok" else 95, v,
+                                  "выведен по схеме домена"):
+                    guessed_lpr = True
             log("   кандидатов в почту руководителя: %d" % len(cands))
 
         # 5. ФНС: выручка и размер. Отсеивает и микробизнес без бюджета,
@@ -553,6 +556,19 @@ def task_enrich(task_id, params):
                     db.add_signal(cid, "zakupki_person", z["person"])
                 db.add_signal(cid, "zakupki_url", z.get("url", ""))
                 log("   в закупках: %s" % (z.get("person") or "контакт найден"))
+
+        # Чем кончился поиск первого лица.
+        #
+        # Признак читают четверо: счётчик в шапке, фильтр «Контакт ГД
+        # найден», выгрузка и сама оценка — там на нём висит четверть
+        # веса. До сих пор его никто не записывал: переменная считалась
+        # по всему обогащению и молча пропадала в конце. Счётчик стоял на
+        # нуле при любом числе находок, фильтр не показывал ничего, а
+        # двадцать пять баллов в оценке были недостижимы.
+        if found_lpr:
+            db.add_signal(cid, "lpr_contact", "найден")
+        elif guessed_lpr:
+            db.add_signal(cid, "lpr_contact", "выведен")
 
         db.add_signal(cid, "enriched", int(time.time()))
         _rescore(cid)
