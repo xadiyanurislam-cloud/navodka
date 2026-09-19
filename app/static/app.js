@@ -49,24 +49,213 @@ const STAGES = [["new", "новая"], ["в работе", "в работе"],
 
 // ── Экраны ───────────────────────────────────────────────
 const VIEWS = {
-  sources: ["Источники", "Откуда брать компании"],
+  today: ["Сегодня", "Кому звонить и что нового"],
   base: ["База", "Найденное и обогащённое"],
+  board: ["Воронка", "Компании по стадиям работы"],
+  sources: ["Поиск", "Откуда брать компании"],
   settings: ["Настройки", "Ключи, обновления и папка с данными"],
 };
-document.querySelectorAll(".rail-btn[data-view]").forEach((b) => {
+document.querySelectorAll("[data-view]").forEach((b) => {
   b.onclick = () => showView(b.dataset.view);
 });
+document.addEventListener("click", (e) => {
+  const go = e.target.closest && e.target.closest("[data-go]");
+  if (go) showView(go.dataset.go);
+});
+
+// Программа открывается на «Сегодня», а не на поиске. Утром человек
+// приходит не искать новые компании, а звонить тем, с кем договорился
+// вчера; поиск нужен раз в неделю, звонки — каждый день.
+let view = "today";
 function showView(name) {
-  document.querySelectorAll(".rail-btn[data-view]").forEach(
+  view = name;
+  document.querySelectorAll(".nav-btn[data-view]").forEach(
     (b) => b.classList.toggle("is-active", b.dataset.view === name));
-  $("view-sources").hidden = name !== "sources";
-  $("view-base").hidden = name !== "base";
-  $("view-settings").hidden = name !== "settings";
+  for (const key of Object.keys(VIEWS)) {
+    const el = $("view-" + key);
+    if (el) el.hidden = key !== name;
+  }
   $("view-title").textContent = VIEWS[name][0];
   $("view-sub").textContent = VIEWS[name][1];
   // Выгрузка относится к базе: на других экранах кнопки только мешают.
   $("bar-export").hidden = name !== "base";
-  if (name === "base") loadCompanies();
+  $("stats").hidden = name === "today";
+  if (name === "base") loadCompanies(true);
+  if (name === "today") loadToday();
+  if (name === "board") loadBoard();
+}
+
+// ── Сегодня ──────────────────────────────────────────────
+// Первый экран отвечает на единственный вопрос, с которым сюда
+// приходят утром: кому звонить. Не «сколько всего компаний», а «кому
+// звонить сегодня» — цифры без этого списка не помогают начать работу.
+const STAGE_RU = {"new": "новые", "в работе": "в работе",
+                  "написали": "написали", "созвон": "созвон", "отказ": "отказ"};
+
+function scoreBadge(n) {
+  const v = Number(n) || 0;
+  const cls = v >= 60 ? "hot" : v >= 35 ? "warm" : "cold";
+  return `<span class="badge ${cls}">${v}</span>`;
+}
+
+async function loadToday() {
+  const d = await get("/api/today");
+  if (!d || !d.ok) return;
+
+  const st = d.stages || {};
+  const total = Object.values(st).reduce((a, b) => a + b, 0);
+  const tiles = [
+    ["Всего компаний", total, "base", ""],
+    ["На сегодня", d.due.length, "today", d.due.length ? "hot" : ""],
+    ["В работе", st["в работе"] || 0, "board", ""],
+    ["Новые", st["new"] || 0, "board", ""],
+  ];
+  $("tiles").innerHTML = tiles.map(([name, val, go, tone]) => `
+    <button class="tile ${tone}" data-go="${go}">
+      <b>${val}</b><span>${name}</span>
+    </button>`).join("");
+
+  const nav = $("n-today");
+  nav.hidden = !d.due.length;
+  nav.textContent = d.due.length;
+
+  $("due-note").textContent = d.due.length
+    ? "просроченное тоже здесь" : "";
+  $("due-list").innerHTML = d.due.length ? d.due.map((r) => `
+    <div class="due" data-open="${r.id}">
+      ${scoreBadge(r.score)}
+      <span class="due-main">
+        <b>${esc(r.name)}</b>
+        <i>${esc(r.next_step || "без пояснения")}</i>
+      </span>
+      <span class="due-when ${r.next_date < today() ? "late" : ""}">
+        ${r.next_date < today() ? "просрочено · " : ""}${ruDate(r.next_date)}</span>
+      <button class="btn sm" data-done="${r.id}">Сделано</button>
+    </div>`).join("")
+    : `<div class="blank">
+         <p><b>На сегодня ничего не назначено.</b></p>
+         <p>Откройте компанию в базе и впишите в «Что дальше», когда к ней
+            вернуться — она появится здесь в нужный день.</p>
+       </div>`;
+
+  $("due-list").querySelectorAll("[data-done]").forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      await post("/api/company/" + b.dataset.done, {next_date: "", next_step: ""});
+      loadToday();
+      toast("Снято с сегодня");
+    };
+  });
+  $("due-list").querySelectorAll("[data-open]").forEach((el) => {
+    el.onclick = () => { openFromOtherView(Number(el.dataset.open)); };
+  });
+
+  $("fresh-list").innerHTML = d.fresh.length ? d.fresh.map((r) => `
+    <div class="due" data-open="${r.id}">
+      ${scoreBadge(r.score)}
+      <span class="due-main">
+        <b>${esc(r.name)}</b>
+        <i>${esc(r.activity || r.region || "")}</i>
+      </span>
+    </div>`).join("")
+    : `<div class="blank">
+         <p><b>База пуста.</b></p>
+         <p>Начните с раздела «Поиск»: OpenStreetMap работает без ключей.</p>
+         <p><button class="btn primary sm" data-go="sources">К поиску</button></p>
+       </div>`;
+  $("fresh-list").querySelectorAll("[data-open]").forEach((el) => {
+    el.onclick = () => { openFromOtherView(Number(el.dataset.open)); };
+  });
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+// Открыть компанию из другого экрана: переходим в базу, находим строку и
+// раскрываем её. Иначе «Сегодня» — список, из которого некуда нажать.
+async function openFromOtherView(id) {
+  showView("base");
+  $("q").value = "";
+  await loadCompanies(true);
+  const tr = document.querySelector(`tr.row[data-id="${id}"]`);
+  if (tr) {
+    tr.scrollIntoView({block: "center", behavior: "smooth"});
+    toggleCard(tr, id);
+  } else {
+    toast("Компания ниже по списку — найдите её поиском");
+  }
+}
+
+// ── Воронка ──────────────────────────────────────────────
+// Стадия есть у каждой компании, но в таблице она спрятана в выпадающем
+// списке последней колонки. На доске видно всю работу разом: сколько
+// новых, сколько в работе, где затык.
+async function loadBoard() {
+  const d = await get("/api/board");
+  if (!d || !d.ok) return;
+  $("board").innerHTML = d.stages.map((st) => {
+    const col = d.board[st] || {cards: [], total: 0};
+    return `<section class="col" data-stage="${esc(st)}">
+      <header class="col-head">
+        <b>${esc(STAGE_RU[st] || st)}</b>
+        <span>${col.total}</span>
+      </header>
+      <div class="col-body">
+        ${col.cards.map(boardCard).join("") ||
+          `<p class="col-blank">пусто</p>`}
+        ${col.total > col.cards.length
+          ? `<p class="col-blank">и ещё ${col.total - col.cards.length}</p>` : ""}
+      </div>
+    </section>`;
+  }).join("");
+  bindBoard();
+}
+
+function boardCard(r) {
+  return `<article class="bcard" draggable="true" data-id="${r.id}">
+    <div class="bcard-top">
+      ${scoreBadge(r.score)}
+      <b>${esc(r.name)}</b>
+    </div>
+    ${r.director ? `<p class="bcard-sub">${esc(r.director)}</p>` : ""}
+    ${r.contact ? `<p class="bcard-contact">${esc(r.contact)}</p>` : ""}
+    ${r.next_step ? `<p class="bcard-next">${esc(r.next_step)}${
+      r.next_date ? ` · ${ruDate(r.next_date)}` : ""}</p>` : ""}
+  </article>`;
+}
+
+function bindBoard() {
+  let dragged = null;
+  $("board").querySelectorAll(".bcard").forEach((card) => {
+    card.ondragstart = (e) => {
+      dragged = card;
+      card.classList.add("is-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", card.dataset.id);
+    };
+    card.ondragend = () => {
+      card.classList.remove("is-dragging");
+      dragged = null;
+    };
+    card.ondblclick = () => openFromOtherView(Number(card.dataset.id));
+  });
+  $("board").querySelectorAll(".col").forEach((col) => {
+    col.ondragover = (e) => { e.preventDefault(); col.classList.add("is-over"); };
+    col.ondragleave = () => col.classList.remove("is-over");
+    col.ondrop = async (e) => {
+      e.preventDefault();
+      col.classList.remove("is-over");
+      const id = e.dataTransfer.getData("text/plain");
+      if (!id) return;
+      const stage = col.dataset.stage;
+      // Переносим сразу, не дожидаясь ответа: карточка должна лечь под
+      // курсор в тот же миг, иначе перетаскивание ощущается сломанным.
+      const card = $("board").querySelector(`.bcard[data-id="${id}"]`);
+      if (card) col.querySelector(".col-body").prepend(card);
+      await post("/api/company/" + id, {stage});
+      loadBoard(); loadStats();
+      toast(`Стадия: ${STAGE_RU[stage] || stage}`);
+    };
+  });
 }
 
 // ── Запуск задач ─────────────────────────────────────────
@@ -1127,7 +1316,9 @@ async function loadCompanies(force) {
   }
   const rows = sortRows(d.rows).slice(0, shownRows);
   tb.innerHTML = rows.map((r) => {
-    const cls = r.score >= 60 ? "score hi" : r.score >= 35 ? "score mid" : "score";
+    // Балл — тот же значок, что в воронке и на «Сегодня». Одинаковая
+    // вещь должна выглядеть одинаково везде, иначе её каждый раз
+    // приходится узнавать заново.
     const host = r.site ? r.site.replace(/^https?:\/\//, "") : "";
     const meta = [r.inn ? `<span>${esc(r.inn)}</span>` : "",
                   host ? `<a href="${esc(r.site)}" target="_blank">${esc(host)}</a>` : "",
@@ -1149,7 +1340,7 @@ async function loadCompanies(force) {
     return `<tr class="row" data-id="${r.id}">
       <td class="c-pick"><input type="checkbox" class="pick-one" data-id="${r.id}"
         ${picked.has(String(r.id)) ? "checked" : ""}></td>
-      <td><div class="${cls}"><b>${r.score}</b><i><s style="width:${r.score}%"></s></i></div></td>
+      <td>${scoreBadge(r.score)}</td>
       <td><div class="co">${esc(r.name)}</div><div class="co-meta">${meta}</div></td>
       <td>${r.director ? esc(r.director) : `<span class="nobody">—</span>`}
           <div class="co-meta">${esc(r.director_post || "")}</div></td>
@@ -1248,5 +1439,8 @@ document.addEventListener("click", async (e) => {
 });
 
 loadStats();
+// Через showView, а не напрямую: он же прячет то, что на этом экране
+// лишнее. Иначе цифры в шапке дублируют плитки под ней.
+showView("today");
 poll();
 setInterval(poll, 1500);

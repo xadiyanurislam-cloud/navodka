@@ -20,7 +20,8 @@ from app import settings                                    # noqa: E402
 settings.data_dir = lambda: _TMP
 settings.db_path = lambda: os.path.join(_TMP, "test.sqlite3")
 
-from app import ai, db, diag, enrich, export, geo, profile, score, social, update  # noqa: E402
+from app import (ai, db, diag, enrich, export, geo, profile, score,  # noqa: E402
+                 social, update, web)
 from app.sources import dadata, fns, gis2, hh, importer, site, zakupki  # noqa: E402
 
 
@@ -1362,6 +1363,55 @@ class Appearance(unittest.TestCase):
         css = io.open(os.path.join(root, "app/static/app.css"),
                       encoding="utf-8").read()
         self.assertIn("U+0400-045F", css)
+
+
+class NewScreens(unittest.TestCase):
+    """Сегодня и воронка. Раньше стадия была спрятана в выпадающем
+    списке последней колонки, а «что делать сегодня» не было вовсе."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    def test_board_groups_by_stage(self):
+        a, _ = db.upsert_company({"name": "Новая", "source": "тест"})
+        b, _ = db.upsert_company({"name": "В работе", "source": "тест"})
+        db.update_company_fields(b, {"stage": "в работе"})
+        d = self.app.get("/api/board").get_json()
+        self.assertEqual(d["board"]["new"]["total"], 1)
+        self.assertEqual(d["board"]["в работе"]["total"], 1)
+        self.assertEqual(d["board"]["в работе"]["cards"][0]["name"], "В работе")
+
+    def test_board_card_carries_one_contact(self):
+        """На доске нужен один контакт, а не все: колонка с пятью
+        телефонами на карточку перестаёт быть доской."""
+        cid, _ = db.upsert_company({"name": "С телефоном", "source": "тест"})
+        db.add_contact(cid, "phone", "+74951234567", "general", 90,
+                       "unchecked", "тест")
+        db.add_contact(cid, "email", "a@b.ru", "general", 50, "unchecked", "тест")
+        card = self.app.get("/api/board").get_json()["board"]["new"]["cards"][0]
+        self.assertEqual(card["contact"], "+74951234567")
+
+    def test_today_shows_overdue_too(self):
+        """Вчерашний несделанный звонок не стал менее нужным."""
+        old_, _ = db.upsert_company({"name": "Просрочено", "source": "тест"})
+        db.update_company_fields(old_, {"next_date": "2020-01-01",
+                                        "next_step": "позвонить"})
+        far, _ = db.upsert_company({"name": "Потом", "source": "тест"})
+        db.update_company_fields(far, {"next_date": "2099-01-01",
+                                       "next_step": "позвонить"})
+        d = self.app.get("/api/today").get_json()
+        names = [r["name"] for r in d["due"]]
+        self.assertIn("Просрочено", names)
+        self.assertNotIn("Потом", names)
+
+    def test_today_counts_stages(self):
+        cid, _ = db.upsert_company({"name": "Одна", "source": "тест"})
+        db.update_company_fields(cid, {"stage": "созвон"})
+        d = self.app.get("/api/today").get_json()
+        self.assertEqual(d["stages"].get("созвон"), 1)
 
 
 class SavedSearches(unittest.TestCase):

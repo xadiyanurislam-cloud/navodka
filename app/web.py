@@ -481,6 +481,59 @@ def create_app():
                        search=[{"title": t, "url": u} for t, u in
                                social.search_links(row["director"], row["name"])])
 
+    STAGES = ["new", "в работе", "написали", "созвон", "отказ"]
+
+    @app.get("/api/board")
+    def api_board():
+        """Компании по стадиям — для воронки.
+
+        Отдаём коротко: на доске видно имя, балл, один контакт и
+        следующий шаг. Всё остальное открывается в карточке, и тащить
+        его в каждую колонку значит везти мегабайты ради эскизов.
+        """
+        c = db.conn()
+        per = max(5, min(200, int(request.args.get("per") or 20)))
+        out = {}
+        for stage in STAGES:
+            rows = c.execute(
+                "SELECT id, name, score, director, next_step, next_date, region "
+                "FROM companies WHERE COALESCE(stage,'new')=? "
+                "ORDER BY score DESC, id LIMIT ?", (stage, per)).fetchall()
+            total = c.execute("SELECT COUNT(*) n FROM companies "
+                              "WHERE COALESCE(stage,'new')=?", (stage,)).fetchone()["n"]
+            ids = [r["id"] for r in rows]
+            first = {}
+            if ids:
+                marks = ",".join("?" * len(ids))
+                for r in c.execute(
+                        "SELECT company_id, kind, value FROM contacts "
+                        "WHERE company_id IN (%s) ORDER BY confidence DESC" % marks,
+                        ids):
+                    first.setdefault(r["company_id"], (r["kind"], r["value"]))
+            out[stage] = {
+                "total": total,
+                "cards": [dict(r, contact=first.get(r["id"], ("", ""))[1],
+                               contact_kind=first.get(r["id"], ("", ""))[0])
+                          for r in rows],
+            }
+        return jsonify(ok=True, stages=STAGES, board=out)
+
+    @app.get("/api/today")
+    def api_today():
+        """Что делать сегодня и что происходит с базой."""
+        c = db.conn()
+        due = [dict(r) for r in c.execute(
+            "SELECT id, name, score, next_step, next_date, director "
+            "FROM companies WHERE next_date <> '' AND next_date IS NOT NULL "
+            "AND next_date <= date('now','localtime') "
+            "ORDER BY next_date, score DESC LIMIT 50")]
+        fresh = [dict(r) for r in c.execute(
+            "SELECT id, name, score, region, activity FROM companies "
+            "ORDER BY id DESC LIMIT 8")]
+        по_стадиям = {r["s"]: r["n"] for r in c.execute(
+            "SELECT COALESCE(stage,'new') s, COUNT(*) n FROM companies GROUP BY 1")}
+        return jsonify(ok=True, due=due, fresh=fresh, stages=по_стадиям)
+
     @app.get("/api/stats")
     def api_stats():
         c = db.conn()
