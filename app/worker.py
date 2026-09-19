@@ -13,6 +13,7 @@ import json
 import re
 import threading
 import time
+from concurrent import futures
 
 import requests
 
@@ -795,53 +796,98 @@ def task_ai(task_id, params):
         return
 
     db.update_task(task_id, total=len(rows))
-    http = requests.Session()
-    done = 0
-    for i, row in enumerate(rows, 1):
-        if _should_stop():
-            log("Остановлено пользователем.", "warn")
-            break
+
+    # Разбор идёт в несколько потоков.
+    #
+    # Запрос к модели — это ожидание чужого сервера: секунд двадцать, из
+    # которых программа не делает ничего. По одному тридцать компаний
+    # занимали тринадцать минут, и всё это время человек сидел и смотрел
+    # на счётчик. Обход сайтов ходит в три потока давно, а разбор почему-то
+    # нет.
+    #
+    # Потоков по умолчанию четыре: посредники держат лимит на запросы в
+    # минуту, и десяток параллельных обращений упрётся в него раньше, чем
+    # в скорость. Число настраивается — у каждого посредника лимит свой.
+    threads = max(1, min(8, int(params.get("threads")
+                               or db.get_setting("ai_threads", "") or 4)))
+    # Сессию на поток свою: одна на всех в requests не потокобезопасна, а
+    # новая на каждый запрос заново делает рукопожатие TLS — через прокси
+    # это дороже самого ответа.
+    _local = threading.local()
+
+    def one(row):
+        """Разбор одной компании. Выполняется в рабочем потоке."""
+        if not hasattr(_local, "http"):
+            _local.http = requests.Session()
+        return ai.analyze(row["brief"], icp=icp, offer=offer, cfg=cfg,
+                          session=_local.http)
+
+    todo = []
+    for row in rows:
         cid = row["id"]
         sig = {r["key"]: r["value"] for r in
                c.execute("SELECT key, value FROM signals WHERE company_id=?", (cid,))}
         cts = c.execute("SELECT kind FROM contacts WHERE company_id=?", (cid,)).fetchall()
-        brief = ai.company_brief(row, sig, cts)
+        item = dict(row)
+        item["brief"] = ai.company_brief(row, sig, cts)
+        todo.append(item)
 
-        data, err = ai.analyze(brief, icp=icp, offer=offer, cfg=cfg, session=http)
-        if err:
-            log("[%d/%d] %s — %s" % (i, len(rows), row["name"], err), "warn")
-            # Лимиты и перегрузка провайдера лечатся паузой, а не
-            # прекращением обхода: следующая компания обычно проходит.
-            time.sleep(2.0)
-            db.update_task(task_id, done=i)
-            continue
-
-        patch = {}
-        if data.get("summary"):
-            patch["ai_summary"] = str(data["summary"])[:400]
-        if data.get("segment"):
-            patch["ai_segment"] = str(data["segment"])[:40]
-        if icp and data.get("fit") is not None:
+    log("Разбираю в %d поток%s" % (threads,
+                                   "" if threads == 1 else
+                                   "а" if threads < 5 else "ов"))
+    done = 0
+    i = 0
+    pool = futures.ThreadPoolExecutor(max_workers=threads)
+    try:
+        pending = {pool.submit(one, item): item for item in todo}
+        for fut in futures.as_completed(pending):
+            row = pending[fut]
+            i += 1
+            if _should_stop():
+                for f in pending:
+                    f.cancel()
+                log("Остановлено пользователем.", "warn")
+                break
+            cid = row["id"]
             try:
-                patch["ai_fit"] = max(0, min(100, int(data["fit"])))
-            except Exception:
-                pass
-        if data.get("fit_why"):
-            patch["ai_why"] = str(data["fit_why"])[:400]
-        if data.get("hook"):
-            patch["ai_hook"] = str(data["hook"])[:400]
-        if data.get("opener"):
-            patch["ai_opener"] = str(data["opener"])[:800]
-        if data.get("signals"):
-            db.add_signal(cid, "ai_signals", "; ".join(
-                str(x)[:120] for x in list(data["signals"])[:4]))
-        if patch:
-            db.update_company_fields(cid, patch)
-            done += 1
-        log("[%d/%d] %s%s" % (i, len(rows), row["name"],
-                              (" — %s" % patch.get("ai_fit", "")) if icp else ""))
-        db.update_task(task_id, done=i)
-        time.sleep(0.2)
+                data, err = fut.result()
+            except Exception as e:
+                data, err = {}, str(e)[:160]
+            if err:
+                log("[%d/%d] %s — %s" % (i, len(rows), row["name"], err), "warn")
+                db.update_task(task_id, done=i)
+                continue
+
+            patch = {}
+            if data.get("summary"):
+                patch["ai_summary"] = str(data["summary"])[:400]
+            if data.get("segment"):
+                patch["ai_segment"] = str(data["segment"])[:40]
+            if icp and data.get("fit") is not None:
+                try:
+                    patch["ai_fit"] = max(0, min(100, int(data["fit"])))
+                except Exception:
+                    pass
+            if data.get("fit_why"):
+                patch["ai_why"] = str(data["fit_why"])[:400]
+            if data.get("hook"):
+                patch["ai_hook"] = str(data["hook"])[:400]
+            if data.get("opener"):
+                patch["ai_opener"] = str(data["opener"])[:800]
+            # Запись в базу — только здесь, в одном потоке. SQLite держит
+            # соединение на поток, и писать из четырёх разом значит
+            # получить «database is locked» на ровном месте.
+            if data.get("signals"):
+                db.add_signal(cid, "ai_signals", "; ".join(
+                    str(x)[:120] for x in list(data["signals"])[:4]))
+            if patch:
+                db.update_company_fields(cid, patch)
+                done += 1
+            log("[%d/%d] %s%s" % (i, len(rows), row["name"],
+                                  (" — %s" % patch.get("ai_fit", "")) if icp else ""))
+            db.update_task(task_id, done=i)
+    finally:
+        pool.shutdown(wait=False)
 
     log("Разобрано компаний: %d" % done)
 

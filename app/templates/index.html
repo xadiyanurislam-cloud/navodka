@@ -390,6 +390,13 @@
           <label>Сколько компаний
             <input id="a-limit" type="number" min="1" max="300" value="30">
           </label>
+          <label>Потоков
+            <input id="a-threads" type="number" min="1" max="8"
+                   value="{{ ai_threads }}">
+            <em class="fld-hint">Запрос к модели — это ожидание чужого
+               сервера. Четыре разом идут вчетверо быстрее; больше упрётся
+               в лимит посредника на запросы в минуту</em>
+          </label>
           <label class="opt"><input id="a-redo" type="checkbox">
             <span>Пересчитать уже разобранные<em>иначе берутся только новые</em></span></label>
         </div>

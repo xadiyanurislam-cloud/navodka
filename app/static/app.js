@@ -517,7 +517,7 @@ $("btn-enrich").onclick = () => run("/api/enrich", {
 
 $("btn-ai").onclick = () => run("/api/ai", {
   icp: $("a-icp").value, offer: $("a-offer").value,
-  terms: $("a-terms").value,
+  terms: $("a-terms").value, threads: $("a-threads").value,
   limit: $("a-limit").value, redo: $("a-redo").checked}, "ИИ-анализ");
 
 $("btn-ai-check").onclick = async () => {

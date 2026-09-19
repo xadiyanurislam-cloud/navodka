@@ -2912,5 +2912,105 @@ class DecisionMakerFlag(unittest.TestCase):
         self.assertEqual(rows[0]["lpr_status"], "найден")
 
 
+class ParallelAI(unittest.TestCase):
+    """Запрос к модели — это ожидание чужого сервера: секунд двадцать, из
+    которых программа не делает ничего."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().execute("DELETE FROM signals")
+        db.conn().commit()
+        db.set_setting("ai_key", "тест")
+        db.set_setting("ai_icp", "")
+        self.cids = []
+        for n in range(6):
+            cid, _ = db.upsert_company({"name": "ООО №%d" % n, "source": "тест"})
+            db.add_signal(cid, "enriched", 1)
+            self.cids.append(cid)
+
+    def tearDown(self):
+        db.set_setting("ai_key", "")
+        db.set_setting("ai_threads", "")
+
+    def _run(self, threads, delay=0.12):
+        import threading as th
+        live = {"now": 0, "peak": 0}
+        lock = th.Lock()
+
+        def fake_analyze(brief, icp="", offer="", cfg=None, session=None):
+            with lock:
+                live["now"] += 1
+                live["peak"] = max(live["peak"], live["now"])
+            time.sleep(delay)
+            with lock:
+                live["now"] -= 1
+            return {"summary": "разобрано", "segment": "B2B"}, ""
+
+        real_an, real_check = ai.analyze, ai.check
+        ai.analyze = fake_analyze
+        ai.check = lambda cfg=None: (True, "ок")
+        tid = db.create_task("ai", {})
+        t0 = time.time()
+        try:
+            worker.task_ai(tid, {"limit": 6, "threads": threads})
+        finally:
+            ai.analyze, ai.check = real_an, real_check
+        return live["peak"], time.time() - t0
+
+    def test_requests_really_go_in_parallel(self):
+        peak, _ = self._run(4)
+        self.assertGreaterEqual(peak, 2, "запросы идут по одному")
+        self.assertLessEqual(peak, 4, "потоков больше, чем заказано")
+
+    def test_one_thread_keeps_the_old_behaviour(self):
+        peak, _ = self._run(1)
+        self.assertEqual(peak, 1)
+
+    def test_parallel_is_actually_faster(self):
+        _p1, slow = self._run(1, delay=0.1)
+        _p4, fast = self._run(4, delay=0.1)
+        self.assertLess(fast, slow * 0.8,
+                        "в четыре потока не быстрее: %.2f против %.2f"
+                        % (fast, slow))
+
+    def test_every_company_is_written(self):
+        self._run(4)
+        n = db.conn().execute(
+            "SELECT COUNT(*) n FROM companies WHERE ai_summary='разобрано'"
+        ).fetchone()["n"]
+        self.assertEqual(n, 6, "часть разборов потерялась")
+
+    def test_thread_count_is_clamped(self):
+        db.init()
+        app = web.create_app().test_client()
+        app.post("/api/ai", json={"threads": 99})
+        self.assertEqual(db.get_setting("ai_threads", ""), "8")
+        app.post("/api/ai", json={"threads": 0})
+        self.assertEqual(db.get_setting("ai_threads", ""), "4")
+
+    def test_failure_of_one_does_not_stop_the_rest(self):
+        """Лимит провайдера на одной компании — не повод бросать обход."""
+        calls = {"n": 0}
+
+        def flaky(brief, icp="", offer="", cfg=None, session=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                return {}, "HTTP 429: слишком часто"
+            return {"summary": "разобрано"}, ""
+
+        real_an, real_check = ai.analyze, ai.check
+        ai.analyze = flaky
+        ai.check = lambda cfg=None: (True, "ок")
+        try:
+            worker.task_ai(db.create_task("ai", {}), {"limit": 6, "threads": 3})
+        finally:
+            ai.analyze, ai.check = real_an, real_check
+        n = db.conn().execute(
+            "SELECT COUNT(*) n FROM companies WHERE ai_summary='разобрано'"
+        ).fetchone()["n"]
+        self.assertEqual(n, 5)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -127,6 +127,7 @@ def create_app():
             ai_icp=db.get_setting("ai_icp", ""),
             ai_offer=db.get_setting("ai_offer", ""),
             ai_terms=db.get_setting("ai_terms", ""),
+            ai_threads=db.get_setting("ai_threads", "") or 4,
             # В скрипт страницы это попадает как есть, поэтому «<»
             # экранируем: запрос человек пишет сам, и «</script>» в нём
             # сломал бы страницу целиком.
@@ -264,10 +265,12 @@ def create_app():
         db.set_setting("ai_icp", (d.get("icp") or "").strip())
         db.set_setting("ai_offer", (d.get("offer") or "").strip())
         db.set_setting("ai_terms", (d.get("terms") or "").strip())
+        threads = max(1, min(8, int(d.get("threads") or 4)))
+        db.set_setting("ai_threads", str(threads))
         task_id = db.create_task("ai", {
             "limit": max(1, min(300, int(d.get("limit") or 30))),
             "icp": d.get("icp") or "", "offer": d.get("offer") or "",
-            "redo": bool(d.get("redo")),
+            "redo": bool(d.get("redo")), "threads": threads,
         })
         return jsonify(ok=True, task_id=task_id)
 
