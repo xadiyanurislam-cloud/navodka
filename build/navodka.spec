@@ -32,7 +32,7 @@ a = Analysis(
     datas=[("../app/templates", "app/templates"),
            ("../app/static", "app/static"),
            ("icon.ico", ".")] + _curl_datas,
-    hiddenimports=["dns.resolver", "openpyxl", "curl_cffi"] + _curl_hidden,
+    hiddenimports=["dns.resolver", "openpyxl", "curl_cffi", "socks"] + _curl_hidden,
     hookspath=[],
     runtime_hooks=[],
     # Тянуть эти пакеты незачем: PyInstaller подхватывает их следом за

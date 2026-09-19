@@ -125,8 +125,28 @@ def _is_reset(err):
         RESET_NOTE))
 
 
+def _no_socks(err):
+    """requests без PySocks не умеет socks5 и говорит об этом по-английски."""
+    return "socks" in str(err).lower() and "depend" in str(err).lower()
+
+
+def _proxy_failed(err):
+    t = str(err).lower()
+    # curl о прокси говорит своими номерами: 5 — не разрешается имя
+    # прокси, 7 — не соединиться с ним, 97 — отказ прокси.
+    return "proxy" in t or "curl: (5)" in t or "curl: (97)" in t
+
+
 def _explain(err):
     """Ошибку связи — словами, а не текстом исключения Python."""
+    if _proxy_failed(err) and not _no_socks(err):
+        return ("прокси %s не отвечает или не пускает. Проверьте адрес, "
+                "порт, логин и пароль — до самого сервера дело не дошло."
+                % (net.proxy_label() or "указанный"))
+    if _no_socks(err):
+        return ("прокси socks5 не поддерживается этой сборкой. Обновите "
+                "программу; если уже последняя — впишите прокси как "
+                "http://… вместо socks5://.")
     if not _is_reset(err):
         return str(err)[:200]
     tail = "" if net.HAVE_CURL else (
@@ -160,18 +180,38 @@ def _transports(session=None):
 
 def _send(method, url, headers, timeout, body=None, session=None):
     """Запрос с запасным путём. Возвращает (ответ, ошибка)."""
-    last = None
+    errs = []
     for s in _transports(session):
         try:
             if method == "GET":
                 return s.get(url, headers=headers, timeout=timeout), ""
             return s.post(url, headers=headers, json=body, timeout=timeout), ""
         except Exception as e:
-            last = e
+            errs.append(e)
             # Отказ по существу повторять незачем: ответ будет тот же.
-            if not _is_reset(e):
+            # А вот нехватка поддержки socks — не отказ сервера, а наша
+            # беда, и у следующего способа её может не быть.
+            if not (_is_reset(e) or _no_socks(e) or _proxy_failed(e)):
                 break
-    return None, _explain(last)
+    return None, _explain(_worth_telling(errs))
+
+
+def _worth_telling(errs):
+    """Какую из ошибок показать.
+
+    Способов связи несколько, и последний по счёту не значит самый
+    внятный: curl сообщает о той же беде номером своей ошибки, а
+    requests — словами. Ищем ту, из которой понятно, что делать.
+    """
+    if not errs:
+        return None
+    for e in errs:
+        if _proxy_failed(e) and not _no_socks(e):
+            return e
+    for e in errs:
+        if _is_reset(e):
+            return e
+    return errs[-1]
 
 
 def ask(messages, cfg=None, timeout=90, max_tokens=700, session=None):

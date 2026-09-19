@@ -2179,5 +2179,80 @@ class Proxy(unittest.TestCase):
         self.assertEqual(db.get_setting("proxy_url", ""), "http://прокси:3128")
 
 
+class SocksProxy(unittest.TestCase):
+    """Прокси в России чаще всего дают socks5, а requests без PySocks
+    отвечает на него «Missing dependencies for SOCKS support»."""
+
+    def setUp(self):
+        db.init()
+        db.set_setting("proxy_url", "")
+
+    def tearDown(self):
+        db.set_setting("proxy_url", "")
+
+    def test_pysocks_is_in_requirements(self):
+        req = io.open(os.path.join(os.path.dirname(__file__), "..",
+                                   "requirements.txt"), encoding="utf-8").read()
+        self.assertIn("PySocks", req)
+
+    def test_socks_is_bundled_into_the_exe(self):
+        spec = io.open(os.path.join(os.path.dirname(__file__), "..", "build",
+                                    "navodka.spec"), encoding="utf-8").read()
+        self.assertIn('"socks"', spec)
+
+    def test_missing_socks_is_not_a_server_refusal(self):
+        e = Exception("Missing dependencies for SOCKS support.")
+        self.assertTrue(ai._no_socks(e))
+        self.assertIn("socks5", ai._explain(e))
+
+    def test_missing_socks_lets_the_next_way_try(self):
+        """curl умеет socks сам, и его очередь наступить должна."""
+        tried = []
+
+        class NoSocks(object):
+            def post(self_inner, *a, **k):
+                tried.append("requests")
+                raise Exception("Missing dependencies for SOCKS support.")
+
+        class Works(object):
+            def post(self_inner, *a, **k):
+                tried.append("curl")
+
+                class R:
+                    status_code = 200
+                    text = "{}"
+
+                    def json(self_r):
+                        return {"content": [{"type": "text", "text": "да"}]}
+                return R()
+
+        real = ai._transports
+        ai._transports = lambda session=None: [NoSocks(), Works()]
+        try:
+            text, err = ai.ask([{"role": "user", "content": "?"}],
+                               cfg={"key": "k", "url": "https://router.cheap",
+                                    "model": "m", "kind": "anthropic"})
+        finally:
+            ai._transports = real
+        self.assertEqual((text, err), ("да", ""))
+        self.assertEqual(tried, ["requests", "curl"])
+
+    def test_password_never_reaches_the_error_text(self):
+        """Ошибку пересылают в переписку не глядя."""
+        db.set_setting("proxy_url", "socks5://вася:секрет@1.2.3.4:8000")
+        self.assertEqual(net.proxy_label(), "socks5://1.2.3.4:8000")
+        note = ai._explain(Exception("ProxyError('Unable to connect to proxy')"))
+        self.assertIn("1.2.3.4:8000", note)
+        self.assertNotIn("секрет", note)
+        self.assertNotIn("вася", note)
+
+    def test_clearest_error_wins_over_the_last_one(self):
+        """curl говорит номером ошибки, requests — словами."""
+        proxy = Exception("ProxyError('Unable to connect to proxy')")
+        curl = Exception("Failed to perform, curl: (28) Connection timed out")
+        self.assertIs(ai._worth_telling([proxy, curl]), proxy)
+        self.assertIs(ai._worth_telling([curl]), curl)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -95,6 +95,26 @@ def proxies():
     return {"http": url, "https": url}
 
 
+def proxy_label():
+    """Прокси в виде, который можно показать на экране.
+
+    Логин и пароль вырезаны намеренно: они уходят в сообщения об
+    ошибках, а те человек пересылает в переписку не глядя.
+    """
+    px = proxies()
+    if not px:
+        return ""
+    url = px.get("https") or ""
+    try:
+        from urllib.parse import urlparse
+    except ImportError:                                  # pragma: no cover
+        from urlparse import urlparse
+    u = urlparse(url)
+    host = u.hostname or "?"
+    port = (":%s" % u.port) if u.port else ""
+    return "%s://%s%s" % (u.scheme or "http", host, port)
+
+
 def apply_proxy(session):
     """Повесить прокси на готовую сессию, если он задан."""
     px = proxies()
