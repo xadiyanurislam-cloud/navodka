@@ -172,11 +172,17 @@ def hh_transports():
     return out
 
 
-def plain(browser=False):
-    """Обычная сессия для источников без защиты."""
+def plain(browser=False, proxy=True):
+    """Обычная сессия для источников без защиты.
+
+    proxy=False — намеренный обход настройки. Нужен обновлению: если
+    прокси задан с ошибкой, через него не пройдёт и проверка новой
+    версии, а вместе с ней и та починка, которая бы всё исправила.
+    Выход из такой ловушки должен оставаться всегда.
+    """
     s = requests.Session()
     s.headers.update(BROWSER_HEADERS if browser else APP_HEADERS)
-    return apply_proxy(s)
+    return apply_proxy(s) if proxy else s
 
 
 def missing_note():

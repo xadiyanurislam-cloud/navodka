@@ -59,9 +59,9 @@ def source():
     }
 
 
-def _session():
+def _session(proxy=True):
     from . import net
-    s = net.plain()
+    s = net.plain(proxy=proxy)
     cfg = source()
     if cfg["token"]:
         s.headers["Authorization"] = "Bearer " + cfg["token"]
@@ -71,13 +71,25 @@ def _session():
 
 def check():
     """Что там с новой версией. Возвращает (сведения, ошибка)."""
+    from . import net
     cfg = source()
-    s = _session()
     url = cfg["url"] or ("https://api.github.com/repos/%s/releases/latest" % cfg["repo"])
-    try:
-        r = s.get(url, timeout=20)
-    except Exception as e:
-        return {}, "не удалось связаться с источником: %s" % str(e)[:160]
+    r = None
+    fail = ""
+    # Сначала как настроено, потом мимо прокси. Ошибка в настройке
+    # прокси не должна отрезать путь к новой версии: именно в ней и
+    # лежит починка этой ошибки.
+    for use_proxy in ((True, False) if net.proxies() else (True,)):
+        try:
+            r = _session(proxy=use_proxy).get(url, timeout=20)
+            fail = ""
+            break
+        except Exception as e:
+            fail = str(e)[:160]
+    if r is None:
+        return {}, ("не удалось связаться с источником: %s. Если задан "
+                    "прокси — очистите поле «Прокси» и нажмите «Сохранить»."
+                    % fail)
     if r.status_code == 404:
         return {}, ("источник отвечает 404. Либо репозиторий приватный и "
                     "нужен токен, либо релизов в нём ещё нет.")
@@ -305,6 +317,11 @@ def _routes(api=False):
     s = net.plain()
     s.headers.update(head)
     out.append(("обычный", lambda u: s.get(u, timeout=600, allow_redirects=True)))
+    if net.proxies():
+        d = net.plain(proxy=False)
+        d.headers.update(head)
+        out.append(("мимо прокси",
+                    lambda u: d.get(u, timeout=600, allow_redirects=True)))
     if net.HAVE_CURL:
         try:
             from curl_cffi import requests as curl_requests

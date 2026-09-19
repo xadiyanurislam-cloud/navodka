@@ -2254,5 +2254,84 @@ class SocksProxy(unittest.TestCase):
         self.assertIs(ai._worth_telling([curl]), curl)
 
 
+class ProxyMustNotBlockUpdates(unittest.TestCase):
+    """Ловушка: прокси задан с ошибкой, через него не проходит проверка
+    новой версии — а починка этой ошибки лежит как раз в новой версии."""
+
+    def setUp(self):
+        db.init()
+        db.set_setting("proxy_url", "")
+
+    def tearDown(self):
+        db.set_setting("proxy_url", "")
+
+    def test_direct_session_ignores_the_proxy(self):
+        db.set_setting("proxy_url", "socks5://1.2.3.4:8000")
+        self.assertTrue(net.plain().proxies)
+        self.assertFalse(net.plain(proxy=False).proxies)
+
+    def test_check_retries_without_the_proxy(self):
+        db.set_setting("proxy_url", "socks5://1.2.3.4:8000")
+        seen = []
+
+        class R(object):
+            status_code = 200
+            text = "{}"
+
+            def json(self_inner):
+                return {"tag_name": "v9.9.9"}
+
+        def fake_session(proxy=True):
+            seen.append(proxy)
+
+            class S(object):
+                def get(self_inner, url, timeout=None):
+                    if proxy:
+                        raise Exception("Missing dependencies for SOCKS support.")
+                    return R()
+            return S()
+
+        real = update._session
+        update._session = fake_session
+        try:
+            d, err = update.check()
+        finally:
+            update._session = real
+        self.assertEqual(err, "")
+        self.assertEqual(d["latest"], "9.9.9")
+        self.assertEqual(seen, [True, False], "прокси не обошли")
+
+    def test_without_proxy_there_is_only_one_try(self):
+        seen = []
+
+        def fake_session(proxy=True):
+            seen.append(proxy)
+            raise Exception("сеть лежит")
+
+        real = update._session
+        update._session = fake_session
+        try:
+            d, err = update.check()
+        finally:
+            update._session = real
+        self.assertEqual(seen, [True])
+        self.assertIn("не удалось связаться", err)
+
+    def test_failure_tells_how_to_get_out(self):
+        db.set_setting("proxy_url", "socks5://1.2.3.4:8000")
+
+        def fake_session(proxy=True):
+            raise Exception("прокси молчит")
+
+        real = update._session
+        update._session = fake_session
+        try:
+            _, err = update.check()
+        finally:
+            update._session = real
+        self.assertIn("Прокси", err)
+        self.assertIn("Сохранить", err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
