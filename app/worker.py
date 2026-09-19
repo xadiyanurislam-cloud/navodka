@@ -16,8 +16,8 @@ import time
 import requests
 
 from . import ai, db, enrich, geo, profile, score, settings, social, verify
-from .sources import (dadata, fns, gis2, hh, importer, site as site_src,
-                      vk, yandex, zakupki)
+from .sources import (dadata, fns, gis2, hh, importer, osm,
+                      site as site_src, vk, yandex, zakupki)
 
 _thread = None
 _stop = threading.Event()
@@ -824,19 +824,19 @@ def task_find(task_id, params):
     gis_key = db.get_setting("gis_key", "")
     dadata_token = db.get_setting("dadata_token", "")
     yandex_key = db.get_setting("yandex_key", "")
+    want_osm = use.get("osm", True)
     want_gis = use.get("gis", True) and bool(gis_key)
     want_yandex = use.get("yandex", True) and bool(yandex_key)
     want_egrul = use.get("dadata", True) and bool(dadata_token)
     want_hh = use.get("hh", True)
 
     if use.get("gis", True) and not gis_key:
-        log("2ГИС пропущен: не задан ключ Places API. Ключ берётся "
-            "бесплатно на dev.2gis.ru.", "warn")
+        log("2ГИС пропущен: не задан ключ Places API.", "warn")
     if use.get("yandex", True) and not yandex_key:
         log("Яндекс пропущен: не задан ключ Геопоиска.", "warn")
     if use.get("dadata", True) and not dadata_token:
         log("ЕГРЮЛ пропущен: не задан токен DaData.", "warn")
-    if not (want_gis or want_yandex or want_egrul or want_hh):
+    if not (want_osm or want_gis or want_yandex or want_egrul or want_hh):
         raise RuntimeError("не включён ни один источник — задайте ключи в «Настройках»")
 
     log("Ищу «%s» по городам: %s"
@@ -865,6 +865,16 @@ def task_find(task_id, params):
     for city in cities:
         if _should_stop():
             break
+
+        if want_osm and city.get("ll"):
+            log("OpenStreetMap · %s" % city["name"])
+            for it in osm.search(query, city, session=http, on_log=log,
+                                 should_stop=_should_stop):
+                add({"name": it["name"], "site": it["site"],
+                     "address": it["address"], "okved_name": it["rubric"],
+                     "region": city["name"], "phones": it["phones"],
+                     "emails": it["emails"], "links": it["links"]},
+                    "OpenStreetMap")
 
         if want_gis and city["gis"]:
             log("2ГИС · %s" % city["name"])
@@ -961,7 +971,8 @@ def task_find(task_id, params):
             net_name = social.which(url)
             if net_name:
                 db.add_contact(cid, "social", url, "general", 82, "unchecked",
-                               "Яндекс: %s" % net_name)
+                               "%s: %s" % (row.get("source") or "справочник",
+                                           net_name))
         # По какому слову компания попала в список. Через неделю это
         # единственный способ вспомнить, зачем она здесь.
         db.add_signal(cid, "found_by", query)

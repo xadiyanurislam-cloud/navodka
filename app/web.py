@@ -134,6 +134,7 @@ def create_app():
             "cities": [str(c) for c in (d.get("cities") or [])][:14],
             "pages": max(1, min(10, int(d.get("pages") or 3))),
             "sources": {
+                "osm": bool(d.get("osm", True)),
                 "gis": bool(d.get("gis", True)),
                 "yandex": bool(d.get("yandex", True)),
                 "dadata": bool(d.get("dadata", True)),

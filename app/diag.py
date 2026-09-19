@@ -234,6 +234,21 @@ def run():
                         "организаций в пробном поиске: %d" % len(items),
                         hint="" if items else "Ключ не принят или исчерпан лимит."))
 
+    # 5.4. OpenStreetMap — единственный справочник без ключа.
+    t0 = time.time()
+    try:
+        from .sources import osm as osm_src
+        msk = {"name": "Москва", "ll": "37.6173,55.7558", "spn": "0.2,0.15"}
+        rows = osm_src.search("аптека", msk, session=s, limit=5)
+        ms = int((time.time() - t0) * 1000)
+        out.append(_row("OpenStreetMap", bool(rows),
+                        "найдено %d" % len(rows), ms,
+                        hint="" if rows else
+                             "Зеркала Overpass бывают перегружены — это "
+                             "проходит само за несколько минут. Ключ не нужен."))
+    except Exception as e:
+        out.append(_row("OpenStreetMap", False, str(e)[:160], hint=abroad))
+
     # 5.5. Яндекс.Организации и ВКонтакте — оба по ключу.
     ykey = db.get_setting("yandex_key", "")
     if not ykey:

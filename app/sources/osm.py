@@ -1,0 +1,225 @@
+# -*- coding: utf-8 -*-
+"""OpenStreetMap — справочник организаций без ключей и без денег.
+
+Зачем понадобился. 2ГИС и Яндекс отдают больше и точнее, но оба требуют
+регистрации с ИНН и реквизитами, а у Яндекса поиск по организациям стоит
+двадцать тысяч в месяц. Для программы, которой человек хочет
+воспользоваться сегодня вечером, это стена.
+
+OSM — открытая карта, которую ведут люди. Ключей нет, регистрации нет,
+лимитов по деньгам нет. Данные беднее: где-то не указан телефон, где-то
+сайт, названия бывают написаны как попало. Зато их можно взять прямо
+сейчас, и по крупным городам их много.
+
+Отдельная ценность: в OSM есть тег contact:vk — ссылка на сообщество
+ВКонтакте. Это ровно то, по чему программа потом выходит на контактных
+лиц компании, то есть на живого руководителя.
+
+Запросы идут к Overpass API — открытому поисковику по данным OSM.
+Зеркал несколько: они бесплатные, иногда перегружены, и при отказе
+одного пробуем следующее.
+"""
+import re
+import time
+
+import requests
+
+from .. import settings
+
+# Зеркала Overpass. Порядок случайным не является: первое обычно самое
+# быстрое, остальные — на случай, когда оно занято чужими запросами.
+MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+
+# Вид деятельности словами — в теги OSM.
+#
+# Список намеренно короткий: он покрывает то, что ищут чаще всего, а всё
+# остальное всё равно находится поиском по названию. Гнаться за полнотой
+# здесь бессмысленно — теги OSM исчисляются тысячами, а бизнес называет
+# себя как хочет.
+TAGS = {
+    "стоматолог": ['["amenity"="dentist"]', '["healthcare"="dentist"]'],
+    "клиник": ['["amenity"="clinic"]', '["amenity"="doctors"]'],
+    "медицин": ['["amenity"="clinic"]', '["amenity"="doctors"]'],
+    "автосервис": ['["shop"="car_repair"]'],
+    "автосалон": ['["shop"="car"]'],
+    "шиномонтаж": ['["shop"="tyres"]'],
+    "парикмахер": ['["shop"="hairdresser"]'],
+    "салон красоты": ['["shop"="beauty"]'],
+    "фитнес": ['["leisure"="fitness_centre"]'],
+    "юрид": ['["office"="lawyer"]'],
+    "страхов": ['["office"="insurance"]'],
+    "турист": ['["shop"="travel_agency"]'],
+    "недвижимост": ['["office"="estate_agent"]'],
+    "ветеринар": ['["amenity"="veterinary"]'],
+    "аптек": ['["amenity"="pharmacy"]'],
+    "типограф": ['["shop"="copyshop"]', '["craft"="printer"]'],
+    "мебел": ['["shop"="furniture"]'],
+    "кафе": ['["amenity"="cafe"]'],
+    "ресторан": ['["amenity"="restaurant"]'],
+    "гостиниц": ['["tourism"="hotel"]'],
+    "отел": ['["tourism"="hotel"]'],
+    "банк": ['["amenity"="bank"]'],
+    "логист": ['["office"="logistics"]'],
+    "школ": ['["amenity"="school"]', '["amenity"="language_school"]'],
+    "детский сад": ['["amenity"="kindergarten"]'],
+}
+
+# Теги со ссылками на соцсети. Ради contact:vk всё и затевалось.
+LINK_TAGS = ("contact:vk", "contact:telegram", "contact:instagram",
+             "contact:facebook", "contact:youtube", "contact:ok")
+
+
+def stem(query):
+    """Основа слова для поиска по названию.
+
+    «Стоматология» должна находить и «стоматологическую клинику», и
+    «стоматологию», поэтому ищем по основе, а не по слову целиком.
+    Отрезаем два последних знака у слов длиннее шести — грубо, но для
+    русских окончаний работает, а перемудрить здесь опаснее: слишком
+    короткая основа притащит всё подряд.
+    """
+    q = (query or "").strip().lower()
+    if len(q) > 6 and " " not in q:
+        q = q[:-2]
+    return re.sub(r'["\\\\\\[\\]()|]', "", q)
+
+
+def bbox(city):
+    """Прямоугольник города в порядке, который ждёт Overpass."""
+    try:
+        lon, lat = [float(x) for x in (city.get("ll") or "").split(",")]
+        dlon, dlat = [float(x) for x in (city.get("spn") or "0.5,0.4").split(",")]
+    except Exception:
+        return ""
+    return "%.4f,%.4f,%.4f,%.4f" % (lat - dlat / 2, lon - dlon / 2,
+                                    lat + dlat / 2, lon + dlon / 2)
+
+
+def build_query(query, city, limit=400):
+    """Запрос на языке Overpass.
+
+    Ищем двумя способами сразу: по тегам вида деятельности, если он нам
+    знаком, и по названию всегда. Первое находит организации, которые
+    никак не назвали себя в названии («Дента-Люкс» — стоматология),
+    второе — те, у кого тег не проставлен, а в названии всё написано.
+    """
+    box = bbox(city)
+    if not box:
+        return ""
+    low = (query or "").lower()
+    parts = []
+    for word, tags in TAGS.items():
+        if word in low:
+            for t in tags:
+                parts.append('nwr%s(%s);' % (t, box))
+            break
+    name = stem(query)
+    if name:
+        parts.append('nwr["name"~"%s",i](%s);' % (name, box))
+    if not parts:
+        return ""
+    return ("[out:json][timeout:90];(%s);out center tags %d;"
+            % ("".join(parts), int(limit)))
+
+
+def search(query, city, pages=1, session=None, on_log=None, should_stop=None,
+           limit=400):
+    """Организации по виду деятельности в городе. Ключ не нужен."""
+    q = build_query(query, city, limit=limit)
+    if not q:
+        if on_log:
+            on_log("OSM: для «%s» нет координат — пропускаю"
+                   % (city or {}).get("name", "?"), "warn")
+        return []
+
+    s = session or requests.Session()
+    data = None
+    for url in MIRRORS:
+        if should_stop and should_stop():
+            return []
+        try:
+            r = s.post(url, data={"data": q}, timeout=120,
+                       headers={"User-Agent": settings.USER_AGENT})
+        except Exception as e:
+            if on_log:
+                on_log("OSM: %s не ответил (%s)" % (_host(url), str(e)[:90]), "warn")
+            continue
+        if r.status_code == 429 or r.status_code == 504:
+            # Зеркало занято чужими запросами — это нормально, идём к
+            # следующему, а не объявляем источник сломанным.
+            if on_log:
+                on_log("OSM: %s занят (%s), пробую другое зеркало"
+                       % (_host(url), r.status_code), "warn")
+            continue
+        if r.status_code != 200:
+            if on_log:
+                on_log("OSM: %s ответил %s" % (_host(url), r.status_code), "warn")
+            continue
+        try:
+            data = r.json()
+            break
+        except Exception:
+            continue
+
+    if data is None:
+        if on_log:
+            on_log("OSM: ни одно зеркало не ответило. Это бывает при "
+                   "перегрузке — попробуйте через несколько минут.", "warn")
+        return []
+
+    out, seen = [], set()
+    for el in (data.get("elements") or []):
+        t = el.get("tags") or {}
+        name = (t.get("name") or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        phones = []
+        for key in ("phone", "contact:phone", "contact:mobile"):
+            for p in (t.get(key) or "").split(";"):
+                p = p.strip()
+                if p and p not in phones:
+                    phones.append(p)
+        site = (t.get("website") or t.get("contact:website") or "").strip()
+        links = [t[k].strip() for k in LINK_TAGS if (t.get(k) or "").strip()]
+        out.append({
+            "name": name,
+            "address": _address(t),
+            "site": site,
+            "phones": phones[:4],
+            "links": [_full(l) for l in links][:6],
+            "rubric": t.get("amenity") or t.get("shop") or t.get("office")
+                      or t.get("healthcare") or "",
+            "emails": [e.strip() for e in (t.get("email") or
+                                           t.get("contact:email") or "").split(";")
+                       if e.strip()][:2],
+        })
+    if on_log:
+        on_log("OSM: найдено организаций %d" % len(out))
+    return out
+
+
+def _address(t):
+    parts = [t.get("addr:city"), t.get("addr:street"), t.get("addr:housenumber")]
+    return ", ".join(p for p in parts if p)
+
+
+def _full(link):
+    """В OSM ссылки пишут и полностью, и просто именем сообщества."""
+    link = link.strip()
+    if link.startswith("http"):
+        return link
+    if link.startswith("@"):
+        return "https://t.me/" + link[1:]
+    return "https://vk.com/" + link
+
+
+def _host(url):
+    try:
+        return url.split("//", 1)[1].split("/", 1)[0]
+    except Exception:
+        return url

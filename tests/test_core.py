@@ -810,6 +810,88 @@ class KeyLinks(unittest.TestCase):
         self.assertIn('post("/api/open"', js)
 
 
+class OpenStreetMap(unittest.TestCase):
+    """Справочник без ключей. Единственный источник, который работает
+    сразу после установки, — поэтому ломаться ему нельзя."""
+
+    def _city(self):
+        return {"name": "Москва", "ll": "37.6173,55.7558", "spn": "0.6,0.4"}
+
+    def test_stem_finds_longer_words(self):
+        """«Стоматология» должна находить и «стоматологическую клинику»."""
+        from app.sources import osm
+        self.assertEqual(osm.stem("стоматология"), "стоматолог")
+        self.assertEqual(osm.stem("АТИ"), "ати")
+
+    def test_dangerous_characters_cannot_break_the_query(self):
+        """Кавычки и скобки в запросе — это синтаксис Overpass."""
+        from app.sources import osm
+        self.assertNotIn('"', osm.stem('стома"логия'))
+        self.assertNotIn("[", osm.stem("стома[логия]"))
+
+    def test_query_searches_by_tag_and_by_name(self):
+        from app.sources import osm
+        q = osm.build_query("стоматология", self._city())
+        self.assertIn('"amenity"="dentist"', q)
+        self.assertIn('["name"~"стоматолог",i]', q)
+
+    def test_unknown_trade_still_searches_by_name(self):
+        """Тегов на всё не напасёшься: «натяжные потолки» ищутся по
+        названию."""
+        from app.sources import osm
+        q = osm.build_query("натяжные потолки", self._city())
+        self.assertIn('["name"~', q)
+
+    def test_no_coordinates_means_no_query(self):
+        from app.sources import osm
+        self.assertEqual(osm.build_query("стоматология",
+                                         {"name": "Россия целиком", "ll": ""}), "")
+
+    def test_vk_link_is_taken_from_the_map(self):
+        """Ради contact:vk всё и затевалось: по этой ссылке программа
+        выходит на контактных лиц компании."""
+        from app.sources import osm
+
+        class Resp:
+            status_code = 200
+            def json(self):
+                return {"elements": [{"tags": {
+                    "name": "Стоматология Улыбка",
+                    "contact:vk": "dentalux",
+                    "phone": "+7 495 123-45-67",
+                    "website": "https://dentalux.ru",
+                    "addr:city": "Москва", "addr:street": "Тверская",
+                    "amenity": "dentist"}}]}
+
+        class Sess:
+            def post(self, url, data=None, timeout=None, headers=None):
+                return Resp()
+
+        rows = osm.search("стоматология", self._city(), session=Sess())
+        self.assertEqual(len(rows), 1)
+        self.assertIn("https://vk.com/dentalux", rows[0]["links"])
+        self.assertEqual(rows[0]["phones"], ["+7 495 123-45-67"])
+        self.assertEqual(rows[0]["address"], "Москва, Тверская")
+
+    def test_busy_mirror_is_not_a_broken_source(self):
+        """Зеркала бесплатные и бывают заняты. Это повод взять следующее,
+        а не объявить источник сломанным."""
+        from app.sources import osm
+        calls = []
+
+        class Resp:
+            def __init__(self, code): self.status_code = code
+            def json(self): return {"elements": []}
+
+        class Sess:
+            def post(self, url, data=None, timeout=None, headers=None):
+                calls.append(url)
+                return Resp(429 if len(calls) == 1 else 200)
+
+        osm.search("аптека", self._city(), session=Sess())
+        self.assertEqual(len(calls), 2, "второе зеркало не попробовали")
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()

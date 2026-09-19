@@ -108,6 +108,7 @@ function findForm() {
     query: $("q-text").value.trim(),
     cities: [...$("q-cities").selectedOptions].map((o) => o.value),
     pages: $("q-pages").value,
+    osm: $("q-osm").checked,
     gis: $("q-gis").checked,
     yandex: $("q-yandex").checked,
     dadata: $("q-dadata").checked,
@@ -127,6 +128,7 @@ function fillFindForm(p) {
   }
   if (p.pages) $("q-pages").value = String(p.pages);
   const src = p.sources || {};
+  $("q-osm").checked = src.osm !== false;
   $("q-gis").checked = src.gis !== false;
   $("q-yandex").checked = src.yandex !== false;
   $("q-dadata").checked = src.dadata !== false;
@@ -139,21 +141,21 @@ function fillFindForm(p) {
 // Сколько источников реально готово — видно до нажатия, а не после.
 function findReady() {
   const f = findForm();
-  const on = [f.gis && "2ГИС", f.yandex && "Яндекс", f.dadata && "ЕГРЮЛ",
-              f.hh && "hh.ru"].filter(Boolean);
+  const on = [f.osm && "OSM", f.gis && "2ГИС", f.yandex && "Яндекс",
+              f.dadata && "ЕГРЮЛ", f.hh && "hh.ru"].filter(Boolean);
   const box = $("find-ready");
   box.textContent = on.length
     ? `ищем в: ${on.join(", ")}`
     : "ни один источник не выбран";
   box.classList.toggle("bad", !on.length);
 }
-["q-gis", "q-yandex", "q-dadata", "q-hh"].forEach((id) => { $(id).onchange = findReady; });
+["q-osm", "q-gis", "q-yandex", "q-dadata", "q-hh"].forEach((id) => { $(id).onchange = findReady; });
 findReady();
 
 $("btn-find").onclick = async () => {
   const f = findForm();
   if (!f.query) { $("q-text").focus(); toast("Впишите, кого ищем"); return; }
-  if (!f.gis && !f.yandex && !f.dadata && !f.hh) {
+  if (!f.osm && !f.gis && !f.yandex && !f.dadata && !f.hh) {
     toast("Выберите хотя бы один источник"); return; }
   const d = await post("/api/find", f);
   if (!d.ok) { toast(d.error || "не вышло"); return; }
