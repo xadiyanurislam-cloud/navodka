@@ -133,6 +133,7 @@ def create_app():
             "query": query[:120],
             "cities": [str(c) for c in (d.get("cities") or [])][:14],
             "pages": max(1, min(10, int(d.get("pages") or 3))),
+            "limit": max(10, min(5000, int(d.get("limit") or 200))),
             "sources": {
                 "osm": bool(d.get("osm", True)),
                 "gis": bool(d.get("gis", True)),

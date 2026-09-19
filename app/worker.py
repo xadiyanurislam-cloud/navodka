@@ -919,6 +919,11 @@ def task_find(task_id, params):
     cities = geo.pick(params.get("cities") or [])
     use = params.get("sources") or {}
     pages = max(1, min(10, int(params.get("pages") or 3)))
+    # Предел на прогон. Без него запрос вроде «магазин» по десяти городам
+    # выгребает десятки тысяч записей, обход которых идёт сутки, а руки
+    # доходят до первой сотни. Лучше набрать двести и посмотреть, те ли
+    # это компании, чем ждать до вечера и выяснить, что запрос был не тот.
+    limit = max(10, min(5000, int(params.get("limit") or 200)))
 
     def log(msg, level="info"):
         db.log(task_id, msg, level)
@@ -974,9 +979,16 @@ def task_find(task_id, params):
             out.append("имя:" + name)
         return out
 
+    def full():
+        return len(rows) >= limit
+
     def add(row, source):
         ks = keys_of(row)
         if not ks:
+            return False
+        # Уже набранной компании дополнение не мешает: предел считается
+        # по числу компаний, а не по числу ответов источников.
+        if full() and not any(k in by_key for k in ks):
             return False
         old = next((by_key[k] for k in ks if k in by_key), None)
         if old is not None:
@@ -1013,6 +1025,11 @@ def task_find(task_id, params):
     for city in cities:
         if _should_stop():
             break
+        if full():
+            log("Набрано %d компаний — это предел на один прогон. Остальные "
+                "города пропускаю: поднимите предел или сузьте запрос." % limit,
+                "warn")
+            break
 
         if not city.get("ll") and (want_osm or want_gis or want_yandex):
             # Ловушка, в которую попадают первым делом: «Россия целиком»
@@ -1023,7 +1040,7 @@ def task_find(task_id, params):
                 "только ЕГРЮЛ и hh — без телефонов и сайтов. Выберите "
                 "города, чтобы получить контакты." % city["name"], "warn")
 
-        if want_osm and city.get("ll"):
+        if want_osm and city.get("ll") and not full():
             _say(task_id, log, "OpenStreetMap · %s" % city["name"])
             for it in osm.search(query, city, session=http, on_log=log,
                                  should_stop=_should_stop):
@@ -1033,7 +1050,7 @@ def task_find(task_id, params):
                      "emails": it["emails"], "links": it["links"]},
                     "OpenStreetMap")
 
-        if want_gis and city["gis"]:
+        if want_gis and city["gis"] and not full():
             _say(task_id, log, "2ГИС · %s" % city["name"])
             for it in gis2.search(query, city["gis"], gis_key, pages=pages,
                                   session=http, on_log=log,
@@ -1043,7 +1060,7 @@ def task_find(task_id, params):
                      "region": city["name"], "phones": it["phones"],
                      "emails": it["emails"]}, "2ГИС")
 
-        if want_yandex and city.get("ll"):
+        if want_yandex and city.get("ll") and not full():
             _say(task_id, log, "Яндекс · %s" % city["name"])
             for it in yandex.search(query, city, yandex_key, pages=min(pages, 4),
                                     session=http, on_log=log,
@@ -1053,14 +1070,14 @@ def task_find(task_id, params):
                      "region": city["name"], "phones": it["phones"],
                      "emails": [], "links": it["links"]}, "Яндекс")
 
-        if want_egrul:
+        if want_egrul and not full():
             _say(task_id, log, "ЕГРЮЛ · %s" % city["name"])
             region = "" if city["name"] == "Россия целиком" else city["name"]
             for it in dadata.search_by_name(query, dadata_token, region=region,
                                             session=http, on_log=log):
                 add(dict(it, phones=[], emails=[]), "ЕГРЮЛ")
 
-        if want_hh and city["hh"]:
+        if want_hh and city["hh"] and not full():
             _say(task_id, log, "hh.ru · %s" % city["name"])
             before = len(errors)
             part = hh.search_employers_by_text(query, area=city["hh"],
@@ -1097,7 +1114,8 @@ def task_find(task_id, params):
             "что задан ключ 2ГИС — без него ищут только ЕГРЮЛ и hh.")
 
     db.update_task(task_id, total=len(rows), message="")
-    log("Найдено записей: %d. Раскладываю по базе." % len(rows))
+    log("Найдено записей: %d%s. Раскладываю по базе."
+        % (len(rows), " (упёрлось в предел)" if full() else ""))
 
     skip_empty = params.get("skip_empty", True)
     added = known = skipped = empty = 0

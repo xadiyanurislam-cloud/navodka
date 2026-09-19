@@ -108,6 +108,7 @@ function findForm() {
     query: $("q-text").value.trim(),
     cities: [...$("q-cities").selectedOptions].map((o) => o.value),
     pages: $("q-pages").value,
+    limit: $("q-limit").value,
     osm: $("q-osm").checked,
     gis: $("q-gis").checked,
     yandex: $("q-yandex").checked,
@@ -128,6 +129,7 @@ function fillFindForm(p) {
     [...$("q-cities").options].forEach((o) => { o.selected = want.includes(o.value); });
   }
   if (p.pages) $("q-pages").value = String(p.pages);
+  if (p.limit) $("q-limit").value = String(p.limit);
   const src = p.sources || {};
   $("q-osm").checked = src.osm !== false;
   $("q-gis").checked = src.gis !== false;

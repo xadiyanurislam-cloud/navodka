@@ -1027,6 +1027,39 @@ class Speed(unittest.TestCase):
         self.assertIn("/rukovodstvo", head)
 
 
+class RunLimit(unittest.TestCase):
+    def test_run_stops_at_the_limit(self):
+        """«Магазин» по десяти городам выгребает десятки тысяч записей.
+        Обход идёт сутки, а руки доходят до первой сотни."""
+        from app import worker
+        from app.sources import osm
+        was = osm.search
+        try:
+            osm.search = lambda q, city, **kw: [
+                {"name": "Фирма %s-%d" % (city["name"], i),
+                 "site": "https://f%s%d.ru" % (city["name"][:2], i),
+                 "address": "", "phones": ["+7 900 000-00-00"],
+                 "links": [], "rubric": "", "emails": []}
+                for i in range(60)]
+            db.init()
+            db.conn().execute("DELETE FROM companies")
+            db.conn().commit()
+            tid = db.create_task("find", {})
+            worker.task_find(tid, {
+                "query": "магазин", "cities": ["Москва", "Казань", "Уфа"],
+                "limit": 100,
+                "sources": {"osm": True, "gis": False, "yandex": False,
+                            "dadata": False, "hh": False}})
+            n = db.conn().execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
+            self.assertEqual(n, 100)
+            said = [r["text"] for r in db.conn().execute(
+                "SELECT text FROM logs WHERE task_id=?", (tid,))]
+            self.assertTrue(any("предел" in t for t in said),
+                            "про предел не сказано — прогон выглядит оборванным")
+        finally:
+            osm.search = was
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()
