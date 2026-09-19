@@ -21,7 +21,7 @@ from app import settings                                    # noqa: E402
 settings.data_dir = lambda: _TMP
 settings.db_path = lambda: os.path.join(_TMP, "test.sqlite3")
 
-from app import (ai, db, diag, enrich, export, geo, profile, score,  # noqa: E402
+from app import (ai, db, diag, enrich, export, geo, net, profile, score,  # noqa: E402
                  social, update, web)
 from app.sources import dadata, fns, gis2, hh, importer, site, zakupki  # noqa: E402
 
@@ -2082,6 +2082,101 @@ class BrokenConnection(unittest.TestCase):
         self.assertEqual(
             ai.endpoint({"url": "https://api.openai.com/v1", "kind": "openai"}),
             "https://api.openai.com/v1/chat/completions")
+
+
+class ModelFromAnotherFormat(unittest.TestCase):
+    """В поле остаётся имя от прежних настроек: человек однажды сохранил
+    gpt-4o-mini, потом переключился на посредника Claude."""
+
+    def test_foreign_name_is_dropped(self):
+        self.assertEqual(ai.model("gpt-4o-mini", "anthropic"),
+                         ai.DEFAULT_ANTHROPIC_MODEL)
+        self.assertEqual(ai.model("claude-sonnet-4-5", "openai"),
+                         ai.DEFAULT_MODEL)
+
+    def test_own_name_is_kept(self):
+        """У посредников имена свои, и отбрасывать всё незнакомое нельзя."""
+        self.assertEqual(ai.model("claude-3-7-sonnet", "anthropic"),
+                         "claude-3-7-sonnet")
+        self.assertEqual(ai.model("anthropic/claude-opus", "anthropic"),
+                         "anthropic/claude-opus")
+        self.assertEqual(ai.model("deepseek-chat", "openai"), "deepseek-chat")
+
+    def test_warning_is_shown_before_sending(self):
+        js = io.open(os.path.join(os.path.dirname(__file__), "..",
+                                  "app", "static", "app.js"),
+                     encoding="utf-8").read()
+        self.assertIn("посреднику Claude", js)
+        self.assertIn('$("s-ai-model").onchange', js)
+
+
+class WhereItBreaks(unittest.TestCase):
+    """Обрыв соединения выглядит одинаково, что бы его ни вызвало, а
+    причины разные и лечатся по-разному."""
+
+    def test_unresolvable_name_is_named_as_such(self):
+        lines = ai.diagnose({"url": "https://такого-имени-нет.invalid",
+                             "kind": "anthropic"}, timeout=3)
+        self.assertTrue(any("не разрешается" in x for x in lines), lines)
+
+    def test_steps_are_reported_in_order(self):
+        lines = ai.diagnose({"url": "https://api.github.com", "kind": "openai"},
+                            timeout=8)
+        self.assertIn("разрешается", lines[0])
+        self.assertTrue(any("443" in x for x in lines), lines)
+
+    def test_bad_address_does_not_crash(self):
+        self.assertTrue(ai.diagnose({"url": "", "kind": "openai"}))
+
+    def test_reset_check_appends_the_steps(self):
+        real = ai._transports
+
+        class Dead(object):
+            def post(self_inner, *a, **k):
+                raise Exception("ConnectionResetError(10054, 'разорвал')")
+
+        ai._transports = lambda session=None: [Dead()]
+        try:
+            ok, note = ai.check({"key": "k", "url": "https://api.github.com",
+                                 "model": "m", "kind": "openai"})
+        finally:
+            ai._transports = real
+        self.assertFalse(ok)
+        self.assertIn("По шагам:", note)
+
+
+class Proxy(unittest.TestCase):
+    """Когда рвут до самого сервера, маскировка рукопожатия не помогает:
+    фильтр срабатывает раньше, чем программа успевает представиться."""
+
+    def setUp(self):
+        db.init()
+        db.set_setting("proxy_url", "")
+
+    def tearDown(self):
+        db.set_setting("proxy_url", "")
+
+    def test_empty_means_direct(self):
+        self.assertIsNone(net.proxies())
+
+    def test_scheme_is_added_when_missing(self):
+        db.set_setting("proxy_url", "127.0.0.1:8080")
+        self.assertEqual(net.proxies()["https"], "http://127.0.0.1:8080")
+
+    def test_socks_is_kept_as_written(self):
+        db.set_setting("proxy_url", "socks5://127.0.0.1:1080")
+        self.assertEqual(net.proxies()["https"], "socks5://127.0.0.1:1080")
+
+    def test_ai_requests_go_through_it(self):
+        db.set_setting("proxy_url", "http://127.0.0.1:9")
+        got = ai._transports()
+        self.assertTrue(got)
+        self.assertEqual(got[0].proxies.get("https"), "http://127.0.0.1:9")
+
+    def test_it_is_saveable_from_settings(self):
+        app = web.create_app().test_client()
+        app.post("/api/settings", json={"proxy_url": "http://прокси:3128"})
+        self.assertEqual(db.get_setting("proxy_url", ""), "http://прокси:3128")
 
 
 if __name__ == "__main__":

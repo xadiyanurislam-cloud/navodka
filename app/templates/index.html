@@ -554,6 +554,13 @@
         <input id="s-ai-model" type="text" value="{{ ai_model }}" list="ai-models">
         <datalist id="ai-models"></datalist>
       </label>
+      <label class="wide">Прокси — если провайдер рвёт соединение
+        <input id="s-proxy" type="text" value="{{ proxy_url }}"
+               placeholder="http://логин:пароль@адрес:порт">
+        <em class="fld-hint">Пусто — ходим напрямую. Годится и
+           <b>socks5://</b>. Через него пойдут все запросы программы, не
+           только к модели</em>
+      </label>
     </div>
     <div class="ai-cfg-foot">
       <button class="btn sm" id="btn-ai-models">Показать доступные модели</button>

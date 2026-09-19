@@ -117,6 +117,7 @@ def create_app():
             ai_url=db.get_setting("ai_url", "") or ai.DEFAULT_URL,
             ai_model=db.get_setting("ai_model", "") or ai.DEFAULT_MODEL,
             ai_kind=ai.config()["kind"],
+            proxy_url=db.get_setting("proxy_url", ""),
             hh_ua=db.get_setting("hh_ua", ""),
             hh_token=db.get_setting("hh_token", ""),
             update_repo=db.get_setting("update_repo", "") or update.DEFAULT_REPO,
@@ -617,7 +618,7 @@ def create_app():
         for key in ("dadata_token", "gis_key", "ai_key", "ai_url",
                     "ai_model", "hh_ua", "hh_token",
                     "update_repo", "update_token", "update_url",
-                    "yandex_key", "vk_token", "ai_kind"):
+                    "yandex_key", "vk_token", "ai_kind", "proxy_url"):
             if key in d:
                 db.set_setting(key, (d[key] or "").strip())
         return jsonify(ok=True)

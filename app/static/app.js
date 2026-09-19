@@ -556,6 +556,7 @@ $("s-save").onclick = async () => {
     dadata_token: $("s-dadata").value, gis_key: $("s-gis").value,
     ai_key: $("s-ai-key").value, ai_url: $("s-ai-url").value,
     ai_model: $("s-ai-model").value, ai_kind: $("s-ai-kind").value,
+    proxy_url: $("s-proxy").value,
     hh_token: $("s-hh-token").value,
     yandex_key: $("s-yandex").value, vk_token: $("s-vk").value,
     update_repo: $("s-upd-repo").value, update_token: $("s-upd-token").value});
@@ -655,15 +656,28 @@ function aiKindNote() {
   if (!u) { note.textContent = ""; return; }
   const looksAnthropic = /\/v1\/messages|anthropic|claude|router\.cheap/.test(u);
   const looksOpenAI = /openai\.com|deepseek|openrouter/.test(u);
+  const m = $("s-ai-model").value.trim().toLowerCase();
+  const say = [];
   if (k === "anthropic" && looksOpenAI) {
-    note.innerHTML = `<span class="bad">Формат Anthropic, а адрес ведёт на
-      OpenAI — запрос не пройдёт. Впишите адрес от посредника Claude.</span>`;
+    say.push("Формат Anthropic, а адрес ведёт на OpenAI — запрос не пройдёт."
+      + " Впишите адрес от посредника Claude.");
   } else if (k === "openai" && looksAnthropic) {
-    note.innerHTML = `<span class="bad">Адрес похож на посредника Claude —
-      выберите формат «Anthropic (Claude)».</span>`;
-  } else {
-    note.textContent = "";
+    say.push("Адрес похож на посредника Claude — выберите формат"
+      + " «Anthropic (Claude)».");
   }
+  // Имя модели остаётся в поле от прежних настроек, и человек видит одно,
+  // а уходит другое. Сказать про это надо до отправки, а не в ошибке.
+  if (k === "anthropic" && /^(gpt-|o1-|o3-|text-|davinci)/.test(m)) {
+    say.push("Модель «" + $("s-ai-model").value.trim() + "» посреднику Claude"
+      + " не известна — программа возьмёт claude-…. Выберите свою кнопкой"
+      + " «Показать доступные модели».");
+  }
+  if (k === "openai" && /^claude-/.test(m)) {
+    say.push("Модель «" + $("s-ai-model").value.trim() + "» не из формата"
+      + " OpenAI — программа возьмёт свою по умолчанию.");
+  }
+  note.innerHTML = say.length
+    ? `<span class="bad">${esc(say.join(" "))}</span>` : "";
 }
 
 $("s-ai-url").onchange = () => {
@@ -677,6 +691,7 @@ $("s-ai-url").onchange = () => {
 // Смена формата чистит чужой адрес и чужую модель. Оставлять
 // gpt-4o-mini при формате Anthropic незачем: такой модели у посредника
 // Claude нет, и первый же запрос вернёт ошибку про неизвестную модель.
+$("s-ai-model").onchange = aiKindNote;
 $("s-ai-kind").onchange = () => {
   const k = $("s-ai-kind").value;
   const url = $("s-ai-url");
@@ -709,7 +724,8 @@ $("btn-ai-models").onclick = async () => {
   // Сначала сохраняем: спрашивать по старому адресу, когда в поле уже
   // новый, — верный способ запутать.
   await post("/api/settings", {ai_key: $("s-ai-key").value,
-    ai_url: $("s-ai-url").value, ai_kind: $("s-ai-kind").value});
+    ai_url: $("s-ai-url").value, ai_kind: $("s-ai-kind").value,
+    proxy_url: $("s-proxy").value});
   const d = await get("/api/ai/models");
   if (!d || !d.ok) {
     note.innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
@@ -727,7 +743,7 @@ $("btn-ai-check2").onclick = async () => {
   note.textContent = "проверяю…";
   await post("/api/settings", {ai_key: $("s-ai-key").value,
     ai_url: $("s-ai-url").value, ai_kind: $("s-ai-kind").value,
-    ai_model: $("s-ai-model").value});
+    ai_model: $("s-ai-model").value, proxy_url: $("s-proxy").value});
   const d = await post("/api/ai/check", {});
   note.innerHTML = d.ok
     ? `<span class="good">${esc(d.model)} (${esc(d.kind)}) — ${esc(d.note)}</span>`

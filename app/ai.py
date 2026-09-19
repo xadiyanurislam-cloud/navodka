@@ -63,11 +63,23 @@ def config():
 
 
 def model(saved, kind_):
-    """Имя модели — заданное или разумное по формату."""
+    """Имя модели — заданное или разумное по формату.
+
+    Имя из чужого формата отбрасываем молча. В базе оно остаётся от
+    прежних настроек — человек однажды сохранил gpt-4o-mini, потом
+    переключился на посредника Claude, а поле так и стоит. Отправить
+    такое значит получить отказ про неизвестную модель и искать вину в
+    ключе, которого этот отказ не касается.
+    """
     saved = (saved or "").strip()
-    if saved:
+    if kind_ == "anthropic":
+        if saved and not saved.lower().startswith(("gpt-", "o1-", "o3-",
+                                                   "text-", "davinci")):
+            return saved
+        return DEFAULT_ANTHROPIC_MODEL
+    if saved and not saved.lower().startswith("claude-"):
         return saved
-    return DEFAULT_ANTHROPIC_MODEL if kind_ == "anthropic" else DEFAULT_MODEL
+    return DEFAULT_MODEL
 
 
 def kind(saved, url):
@@ -92,6 +104,11 @@ def enabled():
     return bool(config()["key"])
 
 
+# Начало объяснения обрыва. Вынесено в имя, потому что по нему же
+# ошибку потом и узнают: дальше по пути она ходит словами.
+RESET_NOTE = "связь разорвана по дороге"
+
+
 def _is_reset(err):
     """Соединение оборвали, а не отказали.
 
@@ -102,7 +119,10 @@ def _is_reset(err):
     return any(m in t for m in (
         "10054", "connection aborted", "connection reset", "connectionreset",
         "remotedisconnected", "eof occurred", "connection broken",
-        "recv failure", "ssl", "handshake"))
+        "recv failure", "ssl", "handshake",
+        # Наш же текст: проверять приходится и его, потому что дальше по
+        # пути ошибка ходит уже словами, а не исключением.
+        RESET_NOTE))
 
 
 def _explain(err):
@@ -112,7 +132,7 @@ def _explain(err):
     tail = "" if net.HAVE_CURL else (
         " Ещё: не установлена библиотека curl_cffi — без неё программа не "
         "умеет менять отпечаток рукопожатия. Переустановите программу.")
-    return ("связь разорвана по дороге. Это не отказ сервера: он не успел "
+    return (RESET_NOTE + ". Это не отказ сервера: он не успел "
             "ответить. Так ведёт себя фильтр между вами и провайдером. "
             "Проверьте адрес, попробуйте включить VPN или спросите у "
             "продавца запасной адрес." + tail)
@@ -135,7 +155,7 @@ def _transports(session=None):
             out.append(net.curl_requests.Session(impersonate=net.IMPERSONATE))
         except Exception:
             pass
-    return out
+    return [net.apply_proxy(s) for s in out]
 
 
 def _send(method, url, headers, timeout, body=None, session=None):
@@ -462,6 +482,64 @@ def letter(company, signals, contacts, offer="", icp="", cfg=None, session=None)
             "body": (d.get("body") or "").strip()[:4000]}, ""
 
 
+def diagnose(cfg=None, timeout=8):
+    """Где именно рвётся связь: имя, соединение, рукопожатие или ответ.
+
+    Обрыв соединения выглядит одинаково, что бы его ни вызвало, а
+    причины разные и лечатся по-разному: имя не разрешается — вопрос к
+    DNS; не открывается порт — адрес или сеть; рвётся рукопожатие —
+    фильтр по дороге; отвечает ошибкой — уже разговор по существу.
+    Пока это не разделено, любое «не работает» остаётся гаданием.
+    """
+    import socket
+    import ssl
+    try:
+        from urllib.parse import urlparse
+    except ImportError:                                  # pragma: no cover
+        from urlparse import urlparse
+
+    cfg = cfg or config()
+    host = (urlparse(endpoint(cfg)).hostname or "").strip()
+    if not host:
+        return ["Адрес не разобран — проверьте поле «Адрес API»."]
+
+    out = []
+    if net.proxies():
+        out.append("Задан прокси — проверка ниже идёт мимо него, напрямую")
+    try:
+        addrs = sorted({a[4][0] for a in socket.getaddrinfo(host, 443)})
+    except Exception as e:
+        out.append("Имя %s не разрешается (%s). Вопрос к DNS или к "
+                   "написанию адреса." % (host, str(e)[:80]))
+        return out
+    out.append("Имя %s разрешается: %s" % (host, ", ".join(addrs[:3])))
+
+    sock = None
+    try:
+        sock = socket.create_connection((host, 443), timeout=timeout)
+        out.append("Порт 443 открыт")
+    except Exception as e:
+        out.append("Соединиться с %s:443 не удалось (%s). Сюда не пускают "
+                   "вовсе — это сеть, а не программа." % (host, str(e)[:80]))
+        return out
+
+    try:
+        ctx = ssl.create_default_context()
+        with ctx.wrap_socket(sock, server_hostname=host):
+            out.append("Рукопожатие прошло — значит рвут уже сам запрос")
+    except Exception as e:
+        out.append("Рукопожатие оборвано (%s). Так ведёт себя фильтр, "
+                   "который смотрит на имя сайта в открытой части "
+                   "рукопожатия: до самого сервера запрос не доходит. "
+                   "Помогает VPN или прокси в «Настройках»." % str(e)[:80])
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    return out
+
+
 def check(cfg=None):
     """Проверка связи — чтобы ключ не выяснялся посреди обхода тысячи компаний."""
     cfg = cfg or config()
@@ -471,6 +549,11 @@ def check(cfg=None):
     if err:
         # Адрес и модель в тексте ошибки — не украшение: ошибка в них
         # самая частая, а увидеть, куда именно ушёл запрос, иначе негде.
-        return False, "%s\nЗапрос уходил на %s, модель «%s»." % (
+        note = "%s\nЗапрос уходил на %s, модель «%s»." % (
             err, endpoint(cfg), cfg.get("model") or "—")
+        # Обрыв разбираем по шагам сразу: заставлять человека жать вторую
+        # кнопку ради ответа на вопрос «а почему» — лишний ход.
+        if _is_reset(err):
+            note += "\n\nПо шагам:\n· " + "\n· ".join(diagnose(cfg))
+        return False, note
     return True, "ответ за %.1f с" % (time.time() - t0)

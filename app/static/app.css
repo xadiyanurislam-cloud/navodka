@@ -967,3 +967,4 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
    и это две-три строки, а не полстроки. Без переносов они слипались в
    одну кашу. */
 #ai-cfg-note{white-space:pre-line;line-height:1.5;max-width:70ch}
+.ai-cfg .wide{grid-column:1/-1}

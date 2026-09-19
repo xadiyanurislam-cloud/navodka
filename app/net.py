@@ -75,6 +75,37 @@ class Transport(object):
         return self.session.get(url, params=params, timeout=timeout)
 
 
+def proxies():
+    """Прокси из настроек, в виде, который понимают обе библиотеки.
+
+    Нужен там, где до сервера не доходит сам запрос: соединение рвут по
+    дороге, и никакая маскировка рукопожатия этого не меняет — фильтр
+    срабатывает раньше, чем программа успевает представиться. Своего
+    прокси мы не предлагаем и не зашиваем: адрес задаёт человек.
+    """
+    try:
+        from . import db
+        url = (db.get_setting("proxy_url", "") or "").strip()
+    except Exception:
+        return None
+    if not url:
+        return None
+    if "://" not in url:
+        url = "http://" + url
+    return {"http": url, "https": url}
+
+
+def apply_proxy(session):
+    """Повесить прокси на готовую сессию, если он задан."""
+    px = proxies()
+    if px:
+        try:
+            session.proxies.update(px)
+        except Exception:
+            pass
+    return session
+
+
 def hh_token():
     try:
         from . import db
@@ -116,6 +147,8 @@ def hh_transports():
     out.append(Transport("requests (имя программы)", s, APP_HEADERS))
     s2 = requests.Session()
     out.append(Transport("requests (строка браузера)", s2, BROWSER_HEADERS))
+    for t in out:
+        apply_proxy(t.session)
     return out
 
 
@@ -123,7 +156,7 @@ def plain(browser=False):
     """Обычная сессия для источников без защиты."""
     s = requests.Session()
     s.headers.update(BROWSER_HEADERS if browser else APP_HEADERS)
-    return s
+    return apply_proxy(s)
 
 
 def missing_note():
