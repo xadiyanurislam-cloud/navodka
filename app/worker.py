@@ -360,6 +360,7 @@ def task_enrich(task_id, params):
     # можно и нужно, каждый из них видит ровно тот же одиночный обход,
     # что и раньше.
     crawls = _Prefetch(rows, log, should_stop=_should_stop)
+    lpr_now = lpr_guessed_now = 0
     for i, row in enumerate(rows, 1):
         if _should_stop():
             log("Остановлено пользователем.", "warn")
@@ -431,7 +432,7 @@ def task_enrich(task_id, params):
                 # телефон с почтой — по имени ящика такой не опознать.
                 # Профили, опубликованные рядом с ФИО в разделе
                 # «Руководство»: компания сама указала, как с ним связаться.
-                for net, title, url in social.as_links(
+                for _net, title, url in social.as_links(
                         social.near_person(res.get("text") or [], row["director"])):
                     db.add_contact(cid, "social", url, "director", 88,
                                    "unchecked", "рядом с ФИО: %s" % title)
@@ -522,11 +523,29 @@ def task_enrich(task_id, params):
             % (cc["label"], (" — " + ", ".join(cc["why"][:3])) if cc["why"] else ""))
 
         # 4. Кандидаты в адрес руководителя по схеме домена.
-        domain = ""
-        if emails_found:
-            domain = emails_found[0].split("@")[1]
-        elif (row["site"] or ""):
-            domain = row["site"].split("//")[-1].split("/")[0].replace("www.", "")
+        #
+        # Домен берём у сайта, а не у первой попавшейся почты. На сайте
+        # рядом с корпоративными адресами сплошь и рядом лежит почта на
+        # бесплатной службе — своя у бухгалтера, партнёрская, оставшаяся
+        # с прошлого подрядчика. Раньше схему строили по первой из
+        # найденных, и у компании с info@gmail.com «адресом руководителя»
+        # оказывался ivanov@gmail.com: ящик какого-то Иванова, которых
+        # там десятки тысяч.
+        site_host = ""
+        if (row["site"] or ""):
+            site_host = (row["site"].split("//")[-1].split("/")[0]
+                         .replace("www.", "").lower())
+        own = [e for e in emails_found
+               if site_host and e.lower().endswith("@" + site_host)]
+        if site_host:
+            domain = site_host
+        elif emails_found:
+            domain = emails_found[0].split("@")[1].lower()
+        else:
+            domain = ""
+        # Примеры для угадывания схемы — только с этого же домена: по
+        # чужим адресам видно чужие привычки именования.
+        emails_found = own or ([] if site_host else emails_found)
 
         cands = enrich.candidates(row["director"], domain, emails_found) if domain else []
         if cands:
@@ -620,8 +639,10 @@ def task_enrich(task_id, params):
         # двадцать пять баллов в оценке были недостижимы.
         if found_lpr:
             db.add_signal(cid, "lpr_contact", "найден")
+            lpr_now += 1
         elif guessed_lpr:
             db.add_signal(cid, "lpr_contact", "выведен")
+            lpr_guessed_now += 1
 
         db.add_signal(cid, "enriched", int(time.time()))
         _rescore(cid)
@@ -639,10 +660,18 @@ def task_enrich(task_id, params):
         log("За прогон программа переставала отвечать, худшая заминка "
             "%.0f с. Это Python, а не отрисовка." % _stall["worst"], "warn")
         _stall["worst"] = 0.0
-    got = db.conn().execute(
+    # Итог — по этому прогону, а не по всей базе. Раньше считалось
+    # запросом ко всей таблице, и на втором прогоне строка «найдено 40»
+    # означала сорок за всё время, включая вчерашние: цифра росла сама
+    # собой и ничего не говорила о том, что дал этот обход.
+    total_lpr = db.conn().execute(
         "SELECT COUNT(*) n FROM signals WHERE key='lpr_contact' AND value='найден'"
     ).fetchone()["n"]
-    log("Обогащение завершено. Компаний с найденным контактом ГД: %d" % got)
+    log("Обогащение завершено. Контакт ГД найден у %d из %d за этот прогон"
+        "%s. Всего таких в базе: %d."
+        % (lpr_now, i if rows else 0,
+           ", выведен по схеме ещё у %d" % lpr_guessed_now
+           if lpr_guessed_now else "", total_lpr))
 
     if params.get("then_ai"):
         if not db.get_setting("ai_key", ""):

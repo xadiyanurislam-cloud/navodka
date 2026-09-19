@@ -3395,5 +3395,110 @@ class UpdateIsChecked(unittest.TestCase):
         self.assertTrue(block.startswith("if setup_sha:"))
 
 
+class ClearLeftTails(unittest.TestCase):
+    """Очистка базы не трогала заметки, а номера компаний в SQLite
+    начинаются заново — старая заметка доставалась новой компании."""
+
+    def setUp(self):
+        db.init()
+        for t in ("companies", "notes", "contacts", "signals", "site_visits"):
+            db.conn().execute("DELETE FROM %s" % t)
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    def test_private_note_does_not_move_to_a_stranger(self):
+        old, _ = db.upsert_company({"name": "ООО Старая", "source": "тест"})
+        db.add_note(old, "отказались, больше не звонить")
+        self.app.post("/api/clear")
+        new, _ = db.upsert_company({"name": "ООО Другая", "source": "тест"})
+        self.assertEqual(new, old, "номер не переиспользован — проверка "
+                                   "потеряла смысл, перепишите её")
+        self.assertEqual(db.notes(new), [],
+                         "чужая заметка всплыла в новой карточке")
+
+    def test_visit_cache_is_cleared_too(self):
+        """Иначе новый поиск пропускает те же сайты, и карточки выходят
+        без телефонов и почт."""
+        db.mark_visited("https://x.ru", 5, ok=True)
+        self.assertTrue(db.visited_recently("https://x.ru"))
+        self.app.post("/api/clear")
+        self.assertFalse(db.visited_recently("https://x.ru"))
+
+    def test_blacklist_survives(self):
+        """Он про решения человека, а не про найденные данные."""
+        cid, _ = db.upsert_company({"name": "Отказавшая", "source": "тест",
+                                    "inn": "7701234567"})
+        db.blacklist_add(cid, "сказали нет")
+        self.app.post("/api/clear")
+        self.assertTrue(db.is_blacklisted({"inn": "7701234567"}))
+
+
+class GuessedDirectorMail(unittest.TestCase):
+    """Схему адреса строили по первой найденной на сайте почте. У
+    компании с info@gmail.com «адресом руководителя» выходил
+    ivanov@gmail.com — ящик какого-то Иванова, которых там тысячи."""
+
+    def test_free_mail_is_never_guessed(self):
+        for d in ("gmail.com", "MAIL.RU", "yandex.ru", "bk.ru",
+                  "outlook.com", "proton.me"):
+            self.assertEqual(enrich.candidates("Иванов Иван Иванович", d), [],
+                             "на %s всё ещё выводится адрес" % d)
+
+    def test_own_domain_still_works(self):
+        got = enrich.candidates("Иванов Иван Иванович", "romashka.ru")
+        self.assertTrue(got)
+        self.assertTrue(all(a.endswith("@romashka.ru") for a, _ in got))
+
+    def test_domain_comes_from_the_site_not_from_the_first_mail(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        block = src[src.index("# 4. Кандидаты в адрес руководителя"):]
+        block = block[:block.index("# 5. ФНС")]
+        self.assertIn("site_host", block)
+        self.assertLess(block.index("site_host"), block.index("emails_found[0]"),
+                        "домен по-прежнему берётся у первой почты")
+
+
+class HonestCounters(unittest.TestCase):
+    """Итог прогона считался запросом ко всей базе: на втором прогоне
+    цифра росла сама собой и ничего не говорила о том, что дал обход."""
+
+    def test_run_total_is_separate_from_the_base_total(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        self.assertIn("lpr_now", src)
+        self.assertIn("за этот прогон", src)
+        self.assertIn("Всего таких в базе", src)
+
+
+class NotesBelongToTheirCompany(unittest.TestCase):
+    def setUp(self):
+        db.init()
+        self.app = web.create_app().test_client()
+
+    def test_note_of_another_company_is_not_deleted(self):
+        a, _ = db.upsert_company({"name": "Первая", "source": "тест"})
+        b, _ = db.upsert_company({"name": "Вторая", "source": "тест"})
+        nid = db.add_note(b, "заметка второй компании")
+        self.app.post("/api/company/%d/note" % a, json={"delete": nid})
+        self.assertEqual(len(db.notes(b)), 1, "стёрли чужую заметку")
+
+    def test_own_note_is_deleted(self):
+        a, _ = db.upsert_company({"name": "Первая", "source": "тест"})
+        nid = db.add_note(a, "своя заметка")
+        self.app.post("/api/company/%d/note" % a, json={"delete": nid})
+        self.assertEqual(db.notes(a), [])
+
+    def test_junk_in_the_bulk_list_does_not_break_it(self):
+        a, _ = db.upsert_company({"name": "Первая", "source": "тест"})
+        r = self.app.post("/api/bulk", json={"ids": ["абв", a, None],
+                                             "action": "stage",
+                                             "stage": "созвон"})
+        self.assertLess(r.status_code, 500)
+        row = db.conn().execute("SELECT stage FROM companies WHERE id=?",
+                                (a,)).fetchone()
+        self.assertEqual(row["stage"], "созвон")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

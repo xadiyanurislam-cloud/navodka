@@ -89,10 +89,27 @@ _ORDER = ["last", "i.last", "ilast", "first.last", "last.i", "first",
           "lastfi", "firstlast"]
 
 
+# Бесплатные почты. Выводить на них адрес руководителя по схеме нельзя
+# ни при каких условиях: ivanov@mail.ru — это не «вероятно, его ящик», а
+# ящик какого-то Иванова, которых на mail.ru десятки тысяч. Письмо уйдёт
+# постороннему человеку, и это хуже, чем не написать никому.
+FREE_MAIL = {
+    "gmail.com", "mail.ru", "yandex.ru", "ya.ru", "yandex.com", "bk.ru",
+    "list.ru", "inbox.ru", "internet.ru", "rambler.ru", "lenta.ru",
+    "autorambler.ru", "myrambler.ru", "ro.ru", "outlook.com", "hotmail.com",
+    "live.com", "msn.com", "icloud.com", "me.com", "mac.me", "aol.com",
+    "proton.me", "protonmail.com", "pm.me", "gmx.com", "zoho.com",
+    "qq.com", "163.com", "126.com", "sina.com", "naver.com",
+}
+
+
 def candidates(fio, domain, known_emails=()):
     """Список кандидатов: [(адрес, уверенность 0..100), ...]."""
     fio_parts = split_fio(fio)
+    domain = (domain or "").strip().lower().lstrip("@")
     if not fio_parts or not domain:
+        return []
+    if domain in FREE_MAIL:
         return []
     known = set(e.lower() for e in known_emails)
     shapes = shapes_from(known)

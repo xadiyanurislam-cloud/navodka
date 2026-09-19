@@ -412,9 +412,13 @@ def notes(company_id, limit=20):
         (company_id, limit))]
 
 
-def delete_note(note_id):
+def delete_note(note_id, company_id=None):
     c = conn()
-    c.execute("DELETE FROM notes WHERE id=?", (note_id,))
+    if company_id:
+        c.execute("DELETE FROM notes WHERE id=? AND company_id=?",
+                  (note_id, company_id))
+    else:
+        c.execute("DELETE FROM notes WHERE id=?", (note_id,))
     c.commit()
 
 
