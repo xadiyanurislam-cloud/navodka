@@ -31,7 +31,7 @@
     <span>Обновить</span>
   </button>
   <span class="rail-ver" title="Версия программы">{{ version }}</span>
-  <button class="rail-btn bottom" id="btn-settings" title="Настройки">
+  <button class="rail-btn bottom" data-view="settings" id="btn-settings" title="Настройки">
     <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3.1" stroke="currentColor" stroke-width="1.6"/><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     <span>Настройки</span>
   </button>
@@ -44,7 +44,7 @@
       <p id="view-sub">Откуда брать компании</p>
     </div>
     <div class="bar-stats" id="stats"></div>
-    <div class="bar-actions">
+    <div class="bar-actions" id="bar-export">
       <!-- Кнопки, а не ссылки: окно программы не браузер и качать файлы
            не умеет. Файл пишется на диск, папка открывается. -->
       <button class="btn" id="exp-xlsx">Excel</button>
@@ -361,11 +361,20 @@
       </table>
     </div>
   </main>
-</div>
 
-<div class="sheet" id="modal" hidden>
-  <div class="sheet-box">
-    <h3>Ключи доступа</h3>
+  <main class="view" id="view-settings" hidden>
+    <div class="cards">
+
+      <article class="card span">
+        <header>
+          <h2>Ключи доступа</h2>
+          <span class="tag">хранятся на этом компьютере</span>
+        </header>
+        <p>Ключи лежат в локальной базе рядом с программой и никуда не
+           отправляются, кроме самих источников. Без ключей работают
+           только hh.ru и обход сайтов — остальное нужно подключить.</p>
+        <div class="fields keys">
+
     <label>DaData
       <input id="s-dadata" type="text" value="{{ dadata_token }}" placeholder="токен">
       <em>Без него ФИО руководителей взять неоткуда. Бесплатного тарифа
@@ -419,8 +428,20 @@
         <input id="s-ai-model" type="text" value="{{ ai_model }}">
       </label>
     </div>
-    <div class="sheet-sep">Обновления</div>
-    <div class="row2">
+        </div>
+      </article>
+
+      <article class="card">
+        <header>
+          <h2>Обновления</h2>
+          <span class="tag free">версия {{ version }}</span>
+        </header>
+        <p>Программа обновляет себя сама: скачивает новый установщик,
+           закрывается и открывается уже новой версией. База и настройки
+           лежат отдельно и не задеваются.</p>
+        <div class="fields">
+
+    <div class="row2 wide">
       <label>Репозиторий
         <input id="s-upd-repo" type="text" value="{{ update_repo }}"
                placeholder="владелец/название">
@@ -430,16 +451,34 @@
                placeholder="если репозиторий закрытый">
       </label>
     </div>
-    <div class="upd-line">
-      <button class="btn" id="s-upd-check">Проверить обновления</button>
-      <span class="upd-state" id="upd-state">версия {{ version }}</span>
-    </div>
+    
+        <footer class="upd-line">
+          <button class="btn" id="s-upd-check">Проверить обновления</button>
+          <span class="upd-state" id="upd-state">версия {{ version }} — {{ build }}</span>
+        </footer>
+      </article>
 
-    <div class="sheet-foot">
-      <button class="btn quiet" id="s-cancel">Отмена</button>
-      <button class="btn primary" id="s-save">Сохранить</button>
+      <article class="card">
+        <header><h2>Где что лежит</h2></header>
+        <p>База, выгрузки и настройки хранятся отдельно от программы —
+           поэтому переустановка и обновление их не задевают.</p>
+        <div class="fields">
+          <label class="wide">Папка с данными
+            <input type="text" value="{{ data_dir }}" readonly onclick="this.select()">
+            <em class="fld-hint">База, выгрузки и скачанные обновления. Нажмите, чтобы выделить</em>
+          </label>
+          <div class="wide">
+            <button class="btn" id="s-open-data">Открыть папку</button>
+          </div>
+        </div>
+      </article>
+
     </div>
-  </div>
+    <div class="save-bar">
+      <button class="btn primary" id="s-save">Сохранить</button>
+      <span class="hint" id="save-note"></span>
+    </div>
+  </main>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>

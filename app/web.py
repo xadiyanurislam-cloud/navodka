@@ -105,6 +105,8 @@ def create_app():
             # В скрипт страницы это попадает как есть, поэтому «<»
             # экранируем: запрос человек пишет сам, и «</script>» в нём
             # сломал бы страницу целиком.
+            build=settings.BUILD,
+            data_dir=settings.data_dir(),
             last_search=(db.get_setting("last_search", "") or "{}").replace("<", "\\u003c"),
             last_find=(db.get_setting("last_find", "") or "{}").replace("<", "\\u003c"),
             geo_cities=geo.cities(),
@@ -306,6 +308,12 @@ def create_app():
         ok, err = _open_outside(url)
         # Адрес возвращаем всегда: не открылось — человек хотя бы скопирует.
         return jsonify(ok=ok, error=err, url=url)
+
+    @app.post("/api/reveal")
+    def api_reveal():
+        """Открыть папку с данными. База и выгрузки лежат там же."""
+        ok, err = _open_outside(settings.data_dir(), is_path=True)
+        return jsonify(ok=ok, error=err, path=settings.data_dir())
 
     @app.post("/api/stop")
     def api_stop():

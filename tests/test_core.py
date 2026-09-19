@@ -787,6 +787,19 @@ class KeyLinks(unittest.TestCase):
         i = js.index('post("/api/open"')
         self.assertIn("copy(a.href)", js[i:i + 600])
 
+    def test_settings_are_a_screen_not_a_window_on_top(self):
+        """Окно поверх закрывало собой то, ради чего в него зашли:
+        проверить, что источник заработал, не отрываясь от ключа."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        html = io.open(os.path.join(root, "app/templates/index.html"),
+                       encoding="utf-8").read()
+        self.assertIn('id="view-settings"', html)
+        self.assertNotIn('class="sheet"', html)
+        self.assertIn('data-view="settings"', html)
+        js = io.open(os.path.join(root, "app/static/app.js"),
+                     encoding="utf-8").read()
+        self.assertNotIn('$("modal")', js)
+
     def test_external_links_go_to_the_browser(self):
         """Внутри окна программы нет ни адресной строки, ни кнопки
         «назад»: открытая в нём чужая страница — тупик."""

@@ -51,6 +51,7 @@ const STAGES = [["new", "новая"], ["в работе", "в работе"],
 const VIEWS = {
   sources: ["Источники", "Откуда брать компании"],
   base: ["База", "Найденное и обогащённое"],
+  settings: ["Настройки", "Ключи, обновления и папка с данными"],
 };
 document.querySelectorAll(".rail-btn[data-view]").forEach((b) => {
   b.onclick = () => showView(b.dataset.view);
@@ -60,8 +61,11 @@ function showView(name) {
     (b) => b.classList.toggle("is-active", b.dataset.view === name));
   $("view-sources").hidden = name !== "sources";
   $("view-base").hidden = name !== "base";
+  $("view-settings").hidden = name !== "settings";
   $("view-title").textContent = VIEWS[name][0];
   $("view-sub").textContent = VIEWS[name][1];
+  // Выгрузка относится к базе: на других экранах кнопки только мешают.
+  $("bar-export").hidden = name !== "base";
   if (name === "base") loadCompanies();
 }
 
@@ -333,8 +337,6 @@ $("btn-clear").onclick = async () => {
 };
 
 // ── Настройки ────────────────────────────────────────────
-$("btn-settings").onclick = () => { $("modal").hidden = false; $("s-dadata").focus(); };
-$("s-cancel").onclick = () => { $("modal").hidden = true; };
 $("s-save").onclick = async () => {
   await post("/api/settings", {
     dadata_token: $("s-dadata").value, gis_key: $("s-gis").value,
@@ -342,8 +344,11 @@ $("s-save").onclick = async () => {
     ai_model: $("s-ai-model").value, hh_token: $("s-hh-token").value,
     yandex_key: $("s-yandex").value, vk_token: $("s-vk").value,
     update_repo: $("s-upd-repo").value, update_token: $("s-upd-token").value});
-  $("modal").hidden = true;
   markKeys();
+  findReady();
+  const note = $("save-note");
+  note.textContent = "сохранено";
+  setTimeout(() => { note.textContent = ""; }, 2500);
   toast("Ключи сохранены");
 };
 function markKeys() {
@@ -422,16 +427,19 @@ async function updApply() {
   }
 }
 
+$("s-open-data").onclick = async () => {
+  const d = await post("/api/reveal", {});
+  if (!d || !d.ok) toast((d && d.error) || "папка не открылась");
+};
+
 $("s-upd-check").onclick = () => updCheck(false);
-$("rail-upd").onclick = () => { $("modal").hidden = false; updCheck(false); };
+$("rail-upd").onclick = () => { showView("settings"); updCheck(false); };
 // Тихая проверка при старте: значок в углу появится сам, но ничем не
 // помешает, если обновления нет.
 setTimeout(() => updCheck(true), 3000);
 
 document.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape") return;
-  if (!$("modal").hidden) { $("modal").hidden = true; return; }
-  closeCard();
+  if (e.key === "Escape") closeCard();
 });
 
 // ── Ход работы ───────────────────────────────────────────
@@ -1017,7 +1025,6 @@ $("q").oninput = () => { clearTimeout(timer); timer = setTimeout(loadCompanies, 
 // карточку. Мышью до крестика тянуться каждый раз — лишнее движение.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("modal").hidden) { $("modal").hidden = true; return; }
   if (openId) {
     const tr = document.querySelector(`tr.row[data-id="${openId}"]`);
     if (tr) toggleCard(tr, openId);

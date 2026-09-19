@@ -87,6 +87,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .stat b{display:block;font-size:16px;font-variant-numeric:tabular-nums;font-weight:600}
 .stat span{font-size:11px;color:var(--ink-3);letter-spacing:.01em}
 .bar-actions{display:flex;gap:7px}
+.bar-actions[hidden]{display:none}
 
 /* ── Кнопки и поля ──────────────────────────────────── */
 .btn{
@@ -236,15 +237,17 @@ select.stage{width:auto;min-width:104px;padding:5px 8px;font-size:12px;
 .empty b{display:block;color:var(--ink-2);font-weight:550;margin-bottom:4px;font-size:14px}
 
 /* ── Настройки ──────────────────────────────────────── */
-.sheet{position:fixed;inset:0;background:rgba(16,17,20,.42);display:flex;
-       align-items:center;justify-content:center;z-index:60;padding:20px;
-       backdrop-filter:blur(2px)}
-.sheet[hidden]{display:none}
-.sheet-box{background:var(--surface);border:1px solid var(--line);border-radius:16px;
-           padding:26px;width:min(480px,100%);display:flex;flex-direction:column;gap:20px}
-.sheet-box h3{font-size:15px}
-.sheet-box label em{font-style:normal;font-size:11.5px;color:var(--ink-3);line-height:1.5}
-.sheet-foot{display:flex;justify-content:flex-end;gap:8px}
+/* Настройки — такой же экран, как «Источники» и «База», а не окно
+   поверх. Окно поверх закрывало собой то, ради чего в него зашли:
+   проверить, что источник заработал, не поднимая глаз от ключа. */
+.keys{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
+.keys label em{font-style:normal;font-size:11.5px;color:var(--ink-3);line-height:1.55}
+#view-settings{padding-bottom:0}
+#view-settings .cards{margin-bottom:64px}
+.save-bar{position:sticky;bottom:0;display:flex;align-items:center;gap:10px;
+  padding:14px 0 4px;margin-top:18px;max-width:1180px;
+  background:linear-gradient(to top,var(--bg) 62%,transparent)}
+#save-note{font-size:12px;color:var(--ok)}
 
 @media (max-width:900px){
   .rail{width:60px;flex-basis:60px}
@@ -450,7 +453,7 @@ th.is-sorted[data-dir="up"]::after{content:"↑"}
 .rail-upd:hover{background:rgba(76,141,255,.26);color:#fff}
 .rail-upd + .rail-ver{margin-top:8px}
 
-.sheet-sep{font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+.fields-sep{font-size:11px;letter-spacing:.04em;text-transform:uppercase;
            color:var(--ink-3);border-top:1px solid var(--line-2);padding-top:16px}
 .upd-line{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .upd-state{font-size:12.5px;color:var(--ink-2);display:flex;align-items:center;gap:10px}
@@ -527,6 +530,11 @@ label.inline em.fld-hint{flex-basis:100%;margin:0}
 /* Ссылка «где взять ключ» внутри пояснения под полем. Подчёркивание
    пунктиром, чтобы она читалась как ссылка, но не спорила с самим
    пояснением за внимание. */
-.sheet-box label em a, label.opt em a{color:var(--accent);text-decoration:none;
+.keys label em a, label.opt em a{color:var(--accent);text-decoration:none;
   border-bottom:1px dashed currentColor;white-space:nowrap}
-.sheet-box label em a:hover, label.opt em a:hover{border-bottom-style:solid}
+.keys label em a:hover, label.opt em a:hover{border-bottom-style:solid}
+
+/* Карточка обновлений: строка с кнопкой и состоянием — в подвале, а не
+   среди полей, иначе она читается как ещё одна настройка. */
+.card .upd-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.card .upd-state{font-size:12px;color:var(--ink-2)}
