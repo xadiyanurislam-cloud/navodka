@@ -44,28 +44,84 @@ TAGS = {
     "стоматолог": ['["amenity"="dentist"]', '["healthcare"="dentist"]'],
     "клиник": ['["amenity"="clinic"]', '["amenity"="doctors"]'],
     "медицин": ['["amenity"="clinic"]', '["amenity"="doctors"]'],
-    "автосервис": ['["shop"="car_repair"]'],
+    "медцентр": ['["amenity"="clinic"]', '["amenity"="doctors"]'],
+    "лаборатор": ['["healthcare"="laboratory"]'],
+    "автосервис": ['["shop"="car_repair"]', '["shop"="car_parts"]'],
     "автосалон": ['["shop"="car"]'],
+    "автомойк": ['["amenity"="car_wash"]'],
+    "автошкол": ['["amenity"="driving_school"]'],
     "шиномонтаж": ['["shop"="tyres"]'],
+    "запчаст": ['["shop"="car_parts"]'],
+    "азс": ['["amenity"="fuel"]'],
     "парикмахер": ['["shop"="hairdresser"]'],
+    "барбершоп": ['["shop"="hairdresser"]'],
     "салон красоты": ['["shop"="beauty"]'],
+    "космето": ['["shop"="beauty"]'],
+    "массаж": ['["shop"="massage"]'],
     "фитнес": ['["leisure"="fitness_centre"]'],
+    "спортзал": ['["leisure"="fitness_centre"]'],
     "юрид": ['["office"="lawyer"]'],
+    "адвокат": ['["office"="lawyer"]'],
+    "нотариус": ['["office"="notary"]'],
+    "бухгалтер": ['["office"="accountant"]'],
+    "аудит": ['["office"="accountant"]'],
     "страхов": ['["office"="insurance"]'],
     "турист": ['["shop"="travel_agency"]'],
+    "турагент": ['["shop"="travel_agency"]'],
     "недвижимост": ['["office"="estate_agent"]'],
+    "риэлт": ['["office"="estate_agent"]'],
+    "кадров": ['["office"="employment_agency"]'],
+    "рекрут": ['["office"="employment_agency"]'],
+    "реклам": ['["office"="advertising_agency"]'],
+    "маркетинг": ['["office"="advertising_agency"]'],
     "ветеринар": ['["amenity"="veterinary"]'],
     "аптек": ['["amenity"="pharmacy"]'],
+    "оптик": ['["shop"="optician"]'],
     "типограф": ['["shop"="copyshop"]', '["craft"="printer"]'],
-    "мебел": ['["shop"="furniture"]'],
+    "полиграф": ['["shop"="copyshop"]', '["craft"="printer"]'],
+    "мебел": ['["shop"="furniture"]', '["craft"="carpenter"]'],
+    "кух": ['["shop"="kitchen"]'],
+    "окн": ['["shop"="windows"]', '["craft"="window_construction"]'],
+    "двер": ['["shop"="doors"]'],
+    "потолк": ['["craft"="plasterer"]'],
+    "ремонт квартир": ['["craft"="builder"]', '["shop"="doityourself"]'],
+    "отделк": ['["craft"="builder"]'],
+    "строительн": ['["office"="construction_company"]', '["craft"="builder"]'],
+    "стройматериал": ['["shop"="doityourself"]', '["shop"="hardware"]'],
+    "сантехник": ['["craft"="plumber"]'],
+    "электрик": ['["craft"="electrician"]'],
+    "кондиционер": ['["craft"="hvac"]'],
+    "вентиляц": ['["craft"="hvac"]'],
     "кафе": ['["amenity"="cafe"]'],
     "ресторан": ['["amenity"="restaurant"]'],
+    "пекарн": ['["shop"="bakery"]'],
+    "кондитер": ['["shop"="confectionery"]'],
     "гостиниц": ['["tourism"="hotel"]'],
     "отел": ['["tourism"="hotel"]'],
+    "хостел": ['["tourism"="hostel"]'],
     "банк": ['["amenity"="bank"]'],
     "логист": ['["office"="logistics"]'],
+    "грузоперевоз": ['["office"="logistics"]', '["office"="moving_company"]'],
+    "перевозк": ['["office"="logistics"]', '["office"="moving_company"]'],
+    "переезд": ['["office"="moving_company"]'],
+    "транспортн": ['["office"="logistics"]'],
     "школ": ['["amenity"="school"]', '["amenity"="language_school"]'],
+    "курсы": ['["amenity"="language_school"]', '["office"="educational_institution"]'],
     "детский сад": ['["amenity"="kindergarten"]'],
+    "ит-компан": ['["office"="it"]'],
+    "айти": ['["office"="it"]'],
+    "разработка по": ['["office"="it"]'],
+    "компьютер": ['["shop"="computer"]'],
+    "химчист": ['["shop"="dry_cleaning"]'],
+    "прачечн": ['["shop"="laundry"]'],
+    "ритуальн": ['["shop"="funeral_directors"]'],
+    "ювелир": ['["shop"="jewelry"]'],
+    "цветочн": ['["shop"="florist"]'],
+    "цветы": ['["shop"="florist"]'],
+    "салон связи": ['["shop"="mobile_phone"]'],
+    "одежд": ['["shop"="clothes"]'],
+    "продукт": ['["shop"="convenience"]', '["shop"="supermarket"]'],
+    "супермаркет": ['["shop"="supermarket"]'],
 }
 
 # Теги OSM по-русски. В карточку и в выгрузку должно попадать
@@ -96,6 +152,14 @@ RUBRIC_RU = {
     "florist": "Цветы", "bakery": "Пекарня", "butcher": "Мясная лавка",
     "jewelry": "Ювелирный", "mobile_phone": "Салон связи",
     "computer": "Компьютерный магазин", "electronics": "Электроника",
+    "notary": "Нотариус", "construction_company": "Строительная компания",
+    "educational_institution": "Учебный центр", "laboratory": "Лаборатория",
+    "car_wash": "Автомойка", "windows": "Окна", "doors": "Двери",
+    "kitchen": "Кухни", "confectionery": "Кондитерская", "hostel": "Хостел",
+    "builder": "Строительство", "plumber": "Сантехник",
+    "electrician": "Электрик", "hvac": "Вентиляция и кондиционеры",
+    "carpenter": "Столярные работы", "window_construction": "Окна",
+    "plasterer": "Отделочные работы",
 }
 
 
@@ -156,11 +220,20 @@ def build_query(query, city, limit=400):
         return ""
     low = (query or "").lower()
     parts = []
+    # Совпавших слов может быть несколько: «медицинская клиника» — это и
+    # clinic, и doctors. Раньше брали первое попавшееся и выходили, и
+    # половина подходящих тегов терялась. Больше трёх групп не берём:
+    # Overpass отвечает отказом на слишком широкий запрос.
+    seen_tags = []
     for word, tags in TAGS.items():
         if word in low:
             for t in tags:
-                parts.append('nwr%s(%s);' % (t, box))
+                if t not in seen_tags:
+                    seen_tags.append(t)
+        if len(seen_tags) >= 4:
             break
+    for t in seen_tags[:4]:
+        parts.append('nwr%s(%s);' % (t, box))
     name = stem(query)
     if name:
         # Поиск по названию — только среди организаций.

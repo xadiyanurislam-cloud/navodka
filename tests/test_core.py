@@ -1881,5 +1881,116 @@ class SearchScreen(unittest.TestCase):
             self.assertIn('id="%s"' % fid, self.html, "пропало поле %s" % fid)
 
 
+class FixedBugs(unittest.TestCase):
+    """То, что человек видел на экране и называл поломкой."""
+
+    def setUp(self):
+        db.init()
+        self.css = io.open(os.path.join(os.path.dirname(__file__), "..",
+                                        "app", "static", "app.css"),
+                           encoding="utf-8").read()
+        self.js = io.open(os.path.join(os.path.dirname(__file__), "..",
+                                       "app", "static", "app.js"),
+                          encoding="utf-8").read()
+
+    def test_every_input_type_is_styled(self):
+        """Перечисление типов по одному оставляло password и date с
+        оформлением от браузера: белая коробка посреди тёмной темы."""
+        self.assertIn("input:not([type=checkbox]):not([type=radio])", self.css)
+        self.assertNotIn("input[type=text],input[type=number],"
+                         "input[type=search],select,textarea{", self.css)
+
+    def test_native_controls_follow_the_theme(self):
+        """Флажки и полосы прокрутки рисует браузер, и без color-scheme
+        он рисует их светлыми всегда."""
+        self.assertIn("color-scheme:light dark", self.css)
+
+    def test_funnel_columns_fit_the_window(self):
+        """Пять колонок по 230 не помещались: «отказ» обрезалась краем."""
+        import re
+        m = re.search(r"\.board\{[^}]*grid-auto-columns:minmax\((\d+)px", self.css)
+        self.assertIsNotNone(m)
+        self.assertLessEqual(int(m.group(1)) * 5 + 4 * 12, 1100)
+
+    def test_format_and_address_are_kept_in_step(self):
+        """Формат Anthropic с адресом OpenAI — гарантированный отказ,
+        по которому не догадаться, что виноват адрес."""
+        self.assertIn('$("s-ai-kind").onchange', self.js)
+        self.assertIn("aiKindNote", self.js)
+
+    def test_key_is_visible_while_typing(self):
+        self.assertIn("input[type=password]", self.js)
+
+
+class StaleRunBar(unittest.TestCase):
+    """Задача, оборвавшаяся в прошлый запуск, висела в шапке вечно и
+    встречала человека при каждом открытии программы."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM tasks")
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    def test_old_finished_task_is_not_shown(self):
+        tid = db.create_task("find", {})
+        db.conn().execute("UPDATE tasks SET status='stopped', done=0, total=3, "
+                          "updated_at=? WHERE id=?",
+                          (web.STARTED_AT - 3600, tid))
+        db.conn().commit()
+        self.assertIsNone(self.app.get("/api/task").get_json()["task"])
+
+    def test_task_finished_in_this_run_is_shown(self):
+        tid = db.create_task("find", {})
+        db.conn().execute("UPDATE tasks SET status='done', updated_at=? "
+                          "WHERE id=?", (web.STARTED_AT + 5, tid))
+        db.conn().commit()
+        self.assertEqual(self.app.get("/api/task").get_json()["task"]["id"], tid)
+
+    def test_running_task_is_always_shown(self):
+        """Даже если она тянется со вчерашнего дня."""
+        tid = db.create_task("find", {})
+        db.conn().execute("UPDATE tasks SET status='running', updated_at=? "
+                          "WHERE id=?", (web.STARTED_AT - 99999, tid))
+        db.conn().commit()
+        self.assertEqual(self.app.get("/api/task").get_json()["task"]["id"], tid)
+
+    def test_favicon_does_not_404(self):
+        self.assertIn(self.app.get("/favicon.ico").status_code, (200, 204))
+
+
+class TradeToTags(unittest.TestCase):
+    """«Дента-Люкс» — стоматология, но слова «стоматология» в названии
+    нет. Без тега такая компания не находится вообще."""
+
+    def test_common_trades_have_tags(self):
+        from app.sources import osm
+        city = {"name": "Москва", "ll": "37.6,55.7", "spn": "0.9,0.5"}
+        for word, tag in (("грузоперевозки", "logistics"),
+                          ("окна", "window"),
+                          ("строительная компания", "construction_company"),
+                          ("автомойка", "car_wash"),
+                          ("бухгалтерские услуги", "accountant"),
+                          ("кадровое агентство", "employment_agency")):
+            q = osm.build_query(word, city)
+            self.assertIn(tag, q, "«%s» ищется только по названию" % word)
+
+    def test_several_tag_groups_are_used(self):
+        """Раньше брали первое совпавшее слово и выходили."""
+        from app.sources import osm
+        city = {"name": "Москва", "ll": "37.6,55.7", "spn": "0.9,0.5"}
+        q = osm.build_query("медицинская клиника", city)
+        self.assertIn("clinic", q)
+        self.assertIn("doctors", q)
+
+    def test_query_does_not_grow_without_limit(self):
+        """Overpass отвечает отказом на слишком широкий запрос."""
+        from app.sources import osm
+        city = {"name": "Москва", "ll": "37.6,55.7", "spn": "0.9,0.5"}
+        q = osm.build_query("медицинская клиника стоматология аптека "
+                            "лаборатория оптика", city)
+        self.assertLessEqual(q.count("nwr["), 10)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

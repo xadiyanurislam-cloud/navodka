@@ -1011,6 +1011,33 @@ def task_find(task_id, params):
     log("Ищу «%s» по городам: %s"
         % (query, ", ".join(c["name"] for c in cities)))
 
+    # Счётчик на время обхода.
+    #
+    # Раньше total выставлялся только после того, как опрошены все
+    # источники по всем городам, — то есть после самой долгой части
+    # работы. Всё это время в строке состояния не было ни одной цифры, и
+    # программа, которая честно ждёт чужой сервер, выглядела зависшей.
+    # Считаем шагами «источник × город»: их число известно заранее.
+    steps = 0
+    for c in cities:
+        if want_osm and c.get("ll"):
+            steps += 1
+        if want_gis and c["gis"]:
+            steps += 1
+        if want_yandex and c.get("ll"):
+            steps += 1
+        if want_egrul:
+            steps += 1
+        if want_hh and c["hh"]:
+            steps += 1
+    db.update_task(task_id, total=steps, done=0)
+    step = [0]
+
+    def did(what):
+        step[0] += 1
+        db.update_task(task_id, done=step[0],
+                       message="%s · найдено %d" % (what, len(rows)))
+
     http = requests.Session()
     http.headers.update({"User-Agent": settings.USER_AGENT})
     errors = []
@@ -1108,6 +1135,7 @@ def task_find(task_id, params):
                      "region": city["name"], "phones": it["phones"],
                      "emails": it["emails"], "links": it["links"]},
                     "OpenStreetMap")
+            did("OpenStreetMap · %s" % city["name"])
 
         if want_gis and city["gis"] and not full():
             _say(task_id, log, "2ГИС · %s" % city["name"])
@@ -1118,6 +1146,7 @@ def task_find(task_id, params):
                      "address": it["address"], "okved_name": it["rubric"],
                      "region": city["name"], "phones": it["phones"],
                      "emails": it["emails"]}, "2ГИС")
+            did("2ГИС · %s" % city["name"])
 
         if want_yandex and city.get("ll") and not full():
             _say(task_id, log, "Яндекс · %s" % city["name"])
@@ -1128,6 +1157,7 @@ def task_find(task_id, params):
                      "address": it["address"], "okved_name": it["rubric"],
                      "region": city["name"], "phones": it["phones"],
                      "emails": [], "links": it["links"]}, "Яндекс")
+            did("Яндекс · %s" % city["name"])
 
         if want_egrul and not full():
             _say(task_id, log, "ЕГРЮЛ · %s" % city["name"])
@@ -1135,6 +1165,7 @@ def task_find(task_id, params):
             for it in dadata.search_by_name(query, dadata_token, region=region,
                                             session=http, on_log=log):
                 add(dict(it, phones=[], emails=[]), "ЕГРЮЛ")
+            did("ЕГРЮЛ · %s" % city["name"])
 
         if want_hh and city["hh"] and not full():
             _say(task_id, log, "hh.ru · %s" % city["name"])
@@ -1161,6 +1192,7 @@ def task_find(task_id, params):
                      "open_vacancies": detail.get("open_vacancies") or 0,
                      "phones": [], "emails": []}, "hh.ru")
                 time.sleep(0.3)
+            did("hh.ru · %s" % city["name"])
 
     if not rows:
         # Молчаливый ноль — худший исход: непонятно, то ли таких компаний
@@ -1175,6 +1207,28 @@ def task_find(task_id, params):
     db.update_task(task_id, total=len(rows), message="")
     log("Найдено записей: %d%s. Раскладываю по базе."
         % (len(rows), " (упёрлось в предел)" if full() else ""))
+
+    # Тощая выдача — не ошибка, но и не норма, и человеку надо сказать,
+    # почему так вышло. Молчаливые «3 компании» он читает как поломку
+    # программы, хотя на деле выключены два источника из пяти.
+    if len(rows) < 15:
+        off = []
+        if not want_gis:
+            off.append("2ГИС")
+        if not want_yandex:
+            off.append("Яндекс")
+        if not want_egrul:
+            off.append("ЕГРЮЛ")
+        if not want_osm:
+            off.append("OpenStreetMap")
+        if not want_hh:
+            off.append("hh.ru")
+        why = ("Не работали: %s — из-за ключей или отказа источника. "
+               % ", ".join(off)) if off else ""
+        log("Нашлось мало — всего %d. %sПопробуйте слово короче "
+            "(«стоматология» вместо «стоматологическая клиника»), добавьте "
+            "города или включите недостающие источники." % (len(rows), why),
+            "warn")
 
     skip_empty = params.get("skip_empty", True)
     added = known = skipped = empty = 0

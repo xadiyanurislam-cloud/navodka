@@ -642,12 +642,66 @@ async function updApply() {
   }
 }
 
-// Формат подсказывается по адресу: человек, вставивший ссылку от
-// посредника Claude, о форматах не думает и думать не должен.
+// Формат и адрес должны сходиться. Раньше человек выбирал «Anthropic
+// (Claude)», а в поле адреса оставался api.openai.com от значений по
+// умолчанию — и запрос уходил на api.openai.com/v1/messages, которого
+// там нет. Ответом был голый 404, по которому не догадаться, что
+// виноват адрес.
+const OPENAI_URL = "https://api.openai.com/v1";
+function aiKindNote() {
+  const u = $("s-ai-url").value.trim().toLowerCase();
+  const k = $("s-ai-kind").value;
+  const note = $("ai-cfg-note");
+  if (!u) { note.textContent = ""; return; }
+  const looksAnthropic = /\/v1\/messages|anthropic|claude|router\.cheap/.test(u);
+  const looksOpenAI = /openai\.com|deepseek|openrouter/.test(u);
+  if (k === "anthropic" && looksOpenAI) {
+    note.innerHTML = `<span class="bad">Формат Anthropic, а адрес ведёт на
+      OpenAI — запрос не пройдёт. Впишите адрес от посредника Claude.</span>`;
+  } else if (k === "openai" && looksAnthropic) {
+    note.innerHTML = `<span class="bad">Адрес похож на посредника Claude —
+      выберите формат «Anthropic (Claude)».</span>`;
+  } else {
+    note.textContent = "";
+  }
+}
+
 $("s-ai-url").onchange = () => {
   const u = $("s-ai-url").value.toLowerCase();
-  if (/\/v1\/messages|anthropic|claude/.test(u)) $("s-ai-kind").value = "anthropic";
+  if (/\/v1\/messages|anthropic|claude|router\.cheap/.test(u)) {
+    $("s-ai-kind").value = "anthropic";
+  }
+  aiKindNote();
 };
+
+// Смена формата чистит чужой адрес и чужую модель. Оставлять
+// gpt-4o-mini при формате Anthropic незачем: такой модели у посредника
+// Claude нет, и первый же запрос вернёт ошибку про неизвестную модель.
+$("s-ai-kind").onchange = () => {
+  const k = $("s-ai-kind").value;
+  const url = $("s-ai-url");
+  const model = $("s-ai-model");
+  if (k === "anthropic") {
+    if (!url.value.trim() || /openai\.com/i.test(url.value)) url.value = "";
+    url.placeholder = "https://router.cheap";
+    if (/^gpt-/i.test(model.value.trim())) model.value = "";
+    model.placeholder = "claude-… — возьмите из списка ниже";
+  } else {
+    if (/\/v1\/messages|anthropic|router\.cheap/i.test(url.value)) url.value = "";
+    url.placeholder = OPENAI_URL;
+    if (/^claude-/i.test(model.value.trim())) model.value = "";
+    model.placeholder = "gpt-4o-mini";
+  }
+  aiKindNote();
+};
+aiKindNote();
+
+// Ключ в поле-пароле нельзя ни проверить глазами, ни сверить с тем, что
+// прислал продавец: видно только точки. Пока поле в фокусе — показываем.
+document.querySelectorAll('input[type=password]').forEach((el) => {
+  el.addEventListener("focus", () => { el.type = "text"; });
+  el.addEventListener("blur", () => { el.type = "password"; });
+});
 
 $("btn-ai-models").onclick = async () => {
   const note = $("ai-cfg-note");

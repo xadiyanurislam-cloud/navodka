@@ -10,7 +10,8 @@ import re
 import threading
 import time
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import (Flask, Response, jsonify, render_template, request,
+                   send_file)
 
 from . import ai, db, diag, export, geo, settings, update, worker
 from .sources import gis2, hh
@@ -79,11 +80,29 @@ def _exit_soon(delay=1.5):
     threading.Thread(target=later, daemon=True).start()
 
 
+# Когда запустилась эта копия программы. Нужно строке хода работы:
+# показывать в ней завершённую задачу имеет смысл, только пока человек
+# помнит, что её запускал. Задача, оборвавшаяся на прошлой неделе,
+# висела в шапке вечно и читалась как поломка.
+STARTED_AT = int(time.time())
+
+
 def create_app():
     app = Flask(__name__,
                 template_folder=settings.resource_path("app", "templates"),
                 static_folder=settings.resource_path("app", "static"))
     app.config["JSON_AS_ASCII"] = False
+
+    @app.get("/favicon.ico")
+    def favicon():
+        """Значок окна. Без маршрута браузер каждый раз получает 404 —
+        в журнале это выглядит как ошибка, которой нет."""
+        # В сборке значок лежит в корне, в исходниках — в build/.
+        for path in (settings.resource_path("icon.ico"),
+                     settings.resource_path("build", "icon.ico")):
+            if os.path.exists(path):
+                return send_file(path, mimetype="image/x-icon")
+        return Response(status=204)
 
     @app.get("/")
     def index():
@@ -354,7 +373,12 @@ def create_app():
         row = c.execute("SELECT * FROM tasks WHERE status IN ('running','queued') "
                         "ORDER BY id LIMIT 1").fetchone()
         if row is None:
-            row = c.execute("SELECT * FROM tasks ORDER BY id DESC LIMIT 1").fetchone()
+            # Только то, что закончилось при этом запуске. Иначе строка
+            # «остановлено · 0 из 3» от прошлого раза встречает человека
+            # при каждом открытии программы и выглядит как поломка.
+            row = c.execute("SELECT * FROM tasks WHERE updated_at >= ? "
+                            "ORDER BY id DESC LIMIT 1",
+                            (STARTED_AT,)).fetchone()
         queued = c.execute("SELECT COUNT(*) n FROM tasks "
                            "WHERE status='queued'").fetchone()["n"]
         if row is None:
