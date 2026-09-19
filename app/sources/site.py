@@ -20,16 +20,23 @@ from .. import settings
 
 # Страницы, которые пробуем. Первая — главная, дальше самые частые адреса
 # контактных разделов в русском вебе.
-PATHS = ["", "/contacts", "/contacts/", "/kontakty", "/kontakty/", "/contact",
-         "/about", "/about/", "/o-kompanii", "/o-nas", "/company",
-         # Страницы про людей. Здесь ФИО стоит рядом с должностью, а часто
-         # и с личной почтой — то, чего нет ни в ЕГРЮЛ, ни на «Контактах»,
-         # где лежит общий ящик приёмной.
-         "/team", "/team/", "/komanda", "/nasha-komanda", "/rukovodstvo",
-         "/management", "/administraciya", "/sotrudniki", "/vrachi",
-         "/specialists", "/staff",
-         "/rekvizity", "/requisites", "/vacancy", "/vacancies", "/karera",
-         "/privacy", "/policy"]
+# Порядок здесь — это порядок обхода, и он важнее состава.
+#
+# Страниц в списке больше, чем программа успевает обойти, поэтому ценные
+# должны стоять первыми. Однажды страницы про людей оказались в конце — и
+# при лимите в десять страниц не открывались вовсе, то есть вся работа по
+# поиску руководителя на сайте шла впустую.
+PATHS = [
+    "",                                             # главная: подвал с соцсетями
+    "/contacts", "/kontakty", "/contact",           # общие контакты
+    "/team", "/komanda", "/rukovodstvo",            # люди с должностями
+    "/about", "/o-kompanii",                        # чем занимается
+    "/management", "/nasha-komanda", "/sotrudniki",
+    "/contacts/", "/kontakty/", "/about/", "/o-nas", "/company",
+    "/administraciya", "/vrachi", "/specialists", "/staff",
+    "/rekvizity", "/requisites", "/vacancy", "/vacancies", "/karera",
+    "/privacy", "/policy",
+]
 
 # Должности первых лиц. По ним страница «Команда» превращается из списка
 # имён в ответ на вопрос «кто тут главный».
@@ -241,7 +248,7 @@ def _clean_phone(raw):
     return ""
 
 
-def crawl(site, timeout=10, pause=0.7, max_pages=10, session=None):
+def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None):
     """Возвращает словарь с находками. Сеть не обязана быть доступной —
     при любой ошибке возвращаем то, что успели собрать."""
     base = normalize_url(site)
@@ -360,6 +367,13 @@ def crawl(site, timeout=10, pause=0.7, max_pages=10, session=None):
             for slug in slugs:
                 if slug not in bag:
                     bag.append(slug)
+
+        # Довольно. Если с трёх страниц уже собраны почты, телефоны и
+        # соцсети, оставшиеся девять ничего не добавят, а времени займут
+        # столько же. На полусотне компаний это разница между пятью
+        # минутами и двадцатью.
+        if seen_html >= 3 and len(emails) >= 2 and phones and result["socials"]:
+            break
 
         # Пауза между страницами одного сайта. Десять запросов подряд без
         # задержки часть хостингов принимает за сканирование и банит по IP.

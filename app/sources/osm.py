@@ -163,7 +163,7 @@ def build_query(query, city, limit=400):
         parts.append('nwr["name"~"%s",i](%s);' % (name, box))
     if not parts:
         return ""
-    return ("[out:json][timeout:90];(%s);out center tags %d;"
+    return ("[out:json][timeout:50];(%s);out center tags %d;"
             % ("".join(parts), int(limit)))
 
 
@@ -183,7 +183,7 @@ def search(query, city, pages=1, session=None, on_log=None, should_stop=None,
         if should_stop and should_stop():
             return []
         try:
-            r = s.post(url, data={"data": q}, timeout=120,
+            r = s.post(url, data={"data": q}, timeout=70,
                        headers={"User-Agent": settings.USER_AGENT})
         except Exception as e:
             if on_log:

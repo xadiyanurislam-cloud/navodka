@@ -506,8 +506,16 @@ async function poll() {
     loadCompanies(); loadStats();
   }
   lastTask = {id: t.id, status: t.status};
-  if (live) { loadCompanies(); loadStats(); }
+  // Таблицу во время работы обновляем не чаще раза в пять секунд и
+  // только когда что-то прибавилось. Перезапрашивать пятьсот строк
+  // каждые полторы секунды — значит соревноваться за базу с тем, что
+  // как раз в неё пишет; снаружи это выглядит как зависшая программа.
+  if (live && (t.done !== liveSeen.done || Date.now() - liveSeen.at > 5000)) {
+    liveSeen = {done: t.done, at: Date.now()};
+    loadCompanies(); loadStats();
+  }
 }
+let liveSeen = {done: -1, at: 0};
 
 // ── Сводка: цифры кликабельны и ставят фильтр ────────────
 const STAT_FILTER = {lpr_found: "lpr_found", callcenter: "callcenter",

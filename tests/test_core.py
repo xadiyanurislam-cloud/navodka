@@ -970,6 +970,63 @@ class JunkAndSocials(unittest.TestCase):
         self.assertTrue(res["error"], "отказ сайта потерялся")
 
 
+class Speed(unittest.TestCase):
+    """Скорость. Узкое место — чужие серверы, и всё упирается в то,
+    сколько мы их ждём, стоя в очереди по одному."""
+
+    def test_sites_are_fetched_in_parallel(self):
+        """Восемь сайтов по полсекунды не должны занимать четыре секунды."""
+        import time as _t
+        from app import worker
+        from app.sources import site as site_src
+
+        was = site_src.crawl
+        try:
+            def slow(url, session=None, **kw):
+                _t.sleep(0.25)
+                return {"emails": [], "phones": [], "telegram": [], "tech": {},
+                        "pages": 1, "error": "", "text": [], "socials": {}}
+            site_src.crawl = slow
+            rows = [{"id": i, "site": "https://r%d.ru" % i} for i in range(8)]
+            t0 = _t.time()
+            pre = worker._Prefetch(rows, lambda *a, **k: None)
+            for i, r in enumerate(rows):
+                pre.fill(i)
+                pre.take(r["id"], r["site"])
+            pre.close()
+            spent = _t.time() - t0
+            self.assertLess(spent, 1.2, "обход идёт по очереди: %.1f с" % spent)
+        finally:
+            site_src.crawl = was
+
+    def test_broken_site_does_not_break_the_run(self):
+        from app import worker
+        from app.sources import site as site_src
+        was = site_src.crawl
+        try:
+            def boom(url, session=None, **kw):
+                raise OSError("сеть отвалилась")
+            site_src.crawl = boom
+            pre = worker._Prefetch([{"id": 1, "site": "https://x.ru"}],
+                                   lambda *a, **k: None)
+            res = pre.take(1, "https://x.ru")
+            pre.close()
+            self.assertIn("сеть отвалилась", res["error"])
+            self.assertEqual(res["emails"], [])
+        finally:
+            site_src.crawl = was
+
+    def test_pages_about_people_are_within_reach(self):
+        """Страницы «Команда» однажды оказались за пределами лимита и не
+        открывались вовсе — вся работа по поиску руководителя на сайте
+        шла впустую."""
+        from app.sources import site
+        head = site.PATHS[:12]
+        self.assertIn("/team", head)
+        self.assertIn("/komanda", head)
+        self.assertIn("/rukovodstvo", head)
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()

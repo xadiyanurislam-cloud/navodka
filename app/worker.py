@@ -258,11 +258,22 @@ def task_enrich(task_id, params):
             "соберу только контакты с сайтов.", "warn")
 
     http = requests.Session()
+    # Сайты обходятся с опережением и в несколько потоков.
+    #
+    # Раньше всё шло строго по очереди: дождались ответа одного сайта —
+    # пошли к следующему. Узкое место здесь не наш процессор, а чужие
+    # серверы, и пока мы ждём ответа от одного, остальные простаивают.
+    # Параллелить страницы одного сайта нельзя — это выглядит как
+    # сканирование и кончается баном по IP; параллелить разные сайты
+    # можно и нужно, каждый из них видит ровно тот же одиночный обход,
+    # что и раньше.
+    crawls = _Prefetch(rows, log, should_stop=_should_stop)
     for i, row in enumerate(rows, 1):
         if _should_stop():
             log("Остановлено пользователем.", "warn")
             break
         cid = row["id"]
+        crawls.fill(i - 1)
         found_lpr = False        # контакт первого лица найден, а не выведен
         log("[%d/%d] %s" % (i, len(rows), row["name"]))
 
@@ -284,7 +295,7 @@ def task_enrich(task_id, params):
         # 2. Сайт: почты, телефоны, телеграм, технографика.
         emails_found, res = [], {}
         if (row["site"] or "").strip():
-            res = site_src.crawl(row["site"], session=http)
+            res = crawls.take(cid, row["site"])
             if res.get("error"):
                 log("   сайт не открылся: %s" % res["error"], "warn")
             for addr in res["emails"]:
@@ -502,6 +513,7 @@ def task_enrich(task_id, params):
         _rescore(cid)
         db.update_task(task_id, done=i)
 
+    crawls.close()
     got = db.conn().execute(
         "SELECT COUNT(*) n FROM signals WHERE key='lpr_contact' AND value='найден'"
     ).fetchone()["n"]
@@ -517,6 +529,79 @@ def task_enrich(task_id, params):
                 "offer": db.get_setting("ai_offer", ""),
             })
             log("Разбор ИИ поставлен в очередь.")
+
+
+def _say(task_id, log, text):
+    """Сказать и записать, чем сейчас занята задача.
+
+    Запрос к справочнику идёт десятки секунд, и всё это время в строке
+    состояния было просто «выполняется». Программа в такие минуты
+    выглядит зависшей, хотя она ждёт чужой сервер.
+    """
+    log(text)
+    db.update_task(task_id, message=text)
+
+
+class _Prefetch(object):
+    """Обход сайтов с опережением, в несколько потоков.
+
+    Держит окно в несколько компаний вперёд: пока обрабатывается первая,
+    сайты следующих уже загружаются. Потоков немного намеренно —
+    четыре разных сайта одновременно не создают нагрузки ни одному из
+    них, а два десятка уже похожи на сканирование сети.
+
+    Память под окном ограничена: результаты обхода содержат текст
+    страниц, и держать их для пятисот компаний разом незачем.
+    """
+
+    WORKERS = 4
+    WINDOW = 8
+
+    def __init__(self, rows, log, should_stop=None):
+        from concurrent.futures import ThreadPoolExecutor
+        self.rows = rows
+        self.log = log
+        self.should_stop = should_stop or (lambda: False)
+        self.pool = ThreadPoolExecutor(max_workers=self.WORKERS,
+                                       thread_name_prefix="navodka-crawl")
+        self.jobs = {}
+
+    def fill(self, start):
+        """Поставить в очередь сайты ближайших компаний."""
+        if self.should_stop():
+            return
+        for row in self.rows[start:start + self.WINDOW]:
+            cid, url = row["id"], (row["site"] or "").strip()
+            if url and cid not in self.jobs:
+                self.jobs[cid] = self.pool.submit(self._one, url)
+
+    def _one(self, url):
+        # Своя сессия на поток: requests.Session не рассчитана на то,
+        # чтобы из неё ходили одновременно.
+        try:
+            return site_src.crawl(url, session=requests.Session())
+        except Exception as e:                       # pragma: no cover
+            return {"emails": [], "phones": [], "telegram": [], "tech": {},
+                    "pages": 0, "error": str(e)[:200], "text": [],
+                    "socials": {}}
+
+    def take(self, cid, url):
+        """Результат обхода. Если он ещё не готов — подождать его."""
+        fut = self.jobs.pop(cid, None)
+        if fut is None:
+            fut = self.pool.submit(self._one, url)
+        try:
+            return fut.result(timeout=180)
+        except Exception as e:
+            return {"emails": [], "phones": [], "telegram": [], "tech": {},
+                    "pages": 0, "error": str(e)[:200], "text": [],
+                    "socials": {}}
+
+    def close(self):
+        for fut in self.jobs.values():
+            fut.cancel()
+        self.jobs.clear()
+        self.pool.shutdown(wait=False)
 
 
 # ── Задача: справочник 2ГИС ──────────────────────────────
@@ -939,7 +1024,7 @@ def task_find(task_id, params):
                 "города, чтобы получить контакты." % city["name"], "warn")
 
         if want_osm and city.get("ll"):
-            log("OpenStreetMap · %s" % city["name"])
+            _say(task_id, log, "OpenStreetMap · %s" % city["name"])
             for it in osm.search(query, city, session=http, on_log=log,
                                  should_stop=_should_stop):
                 add({"name": it["name"], "site": it["site"],
@@ -949,7 +1034,7 @@ def task_find(task_id, params):
                     "OpenStreetMap")
 
         if want_gis and city["gis"]:
-            log("2ГИС · %s" % city["name"])
+            _say(task_id, log, "2ГИС · %s" % city["name"])
             for it in gis2.search(query, city["gis"], gis_key, pages=pages,
                                   session=http, on_log=log,
                                   should_stop=_should_stop):
@@ -959,7 +1044,7 @@ def task_find(task_id, params):
                      "emails": it["emails"]}, "2ГИС")
 
         if want_yandex and city.get("ll"):
-            log("Яндекс · %s" % city["name"])
+            _say(task_id, log, "Яндекс · %s" % city["name"])
             for it in yandex.search(query, city, yandex_key, pages=min(pages, 4),
                                     session=http, on_log=log,
                                     should_stop=_should_stop):
@@ -969,14 +1054,14 @@ def task_find(task_id, params):
                      "emails": [], "links": it["links"]}, "Яндекс")
 
         if want_egrul:
-            log("ЕГРЮЛ · %s" % city["name"])
+            _say(task_id, log, "ЕГРЮЛ · %s" % city["name"])
             region = "" if city["name"] == "Россия целиком" else city["name"]
             for it in dadata.search_by_name(query, dadata_token, region=region,
                                             session=http, on_log=log):
                 add(dict(it, phones=[], emails=[]), "ЕГРЮЛ")
 
         if want_hh and city["hh"]:
-            log("hh.ru · %s" % city["name"])
+            _say(task_id, log, "hh.ru · %s" % city["name"])
             before = len(errors)
             part = hh.search_employers_by_text(query, area=city["hh"],
                                                pages=min(pages, 5), on_log=log,
@@ -1011,7 +1096,7 @@ def task_find(task_id, params):
             "«стоматология» вместо «стоматологическая клиника») и убедитесь, "
             "что задан ключ 2ГИС — без него ищут только ЕГРЮЛ и hh.")
 
-    db.update_task(task_id, total=len(rows))
+    db.update_task(task_id, total=len(rows), message="")
     log("Найдено записей: %d. Раскладываю по базе." % len(rows))
 
     skip_empty = params.get("skip_empty", True)

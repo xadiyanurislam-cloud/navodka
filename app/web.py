@@ -404,14 +404,28 @@ def create_app():
             sql += " WHERE " + cond
         sql += " ORDER BY score DESC, id LIMIT 500"
 
-        out = []
-        for row in c.execute(sql, args).fetchall():
-            cts = c.execute("""SELECT kind, value, owner, confidence, verified, source
-                               FROM contacts WHERE company_id=?
-                               ORDER BY confidence DESC""", (row["id"],)).fetchall()
-            sig = {r["key"]: r["value"] for r in
-                   c.execute("SELECT key, value FROM signals WHERE company_id=?", (row["id"],))}
-            out.append(dict(row, contacts=[dict(x) for x in cts], signals=sig))
+        # Три запроса вместо тысячи.
+        #
+        # Раньше на каждую из пятисот строк делалось по два отдельных
+        # запроса за контактами и сигналами. Пока список открыт во время
+        # работы задачи, он перезапрашивается постоянно — и эта тысяча
+        # запросов соревновалась за базу с тем, что как раз в неё пишет.
+        # Снаружи это выглядело как зависшая программа.
+        rows = c.execute(sql, args).fetchall()
+        ids = [r["id"] for r in rows]
+        marks = ",".join("?" * len(ids))
+        cts_by, sig_by = {}, {}
+        if ids:
+            for r in c.execute(
+                    "SELECT company_id, kind, value, owner, confidence, verified, "
+                    "source FROM contacts WHERE company_id IN (%s) "
+                    "ORDER BY confidence DESC" % marks, ids):
+                cts_by.setdefault(r["company_id"], []).append(dict(r))
+            for r in c.execute("SELECT company_id, key, value FROM signals "
+                               "WHERE company_id IN (%s)" % marks, ids):
+                sig_by.setdefault(r["company_id"], {})[r["key"]] = r["value"]
+        out = [dict(row, contacts=cts_by.get(row["id"], []),
+                    signals=sig_by.get(row["id"], {})) for row in rows]
         total = c.execute("SELECT COUNT(*) n FROM companies").fetchone()["n"]
         return jsonify(ok=True, rows=out, total=total, shown=len(out))
 
