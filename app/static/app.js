@@ -338,11 +338,19 @@ $("btn-log").onclick = () => {
 $("btn-dedupe").onclick = async () => {
   const found = await post("/api/dedupe", {dry: true});
   if (!found || !found.ok) { toast("не вышло"); return; }
-  if (!found.found) { toast("Дублей не нашлось"); return; }
+  if (!found.found) {
+    // Чистка телефонов полезна и без дублей.
+    const d0 = await post("/api/dedupe", {});
+    toast(d0.phones ? `Дублей нет, выброшено телефонов-заглушек: ${d0.phones}`
+                    : "Дублей не нашлось, телефоны чистые");
+    if (d0.phones) { loadCompanies(true); loadStats(); }
+    return;
+  }
   if (!confirm(`Похожих пар: ${found.found}. Склеить? Контакты, заметки и `
              + `реквизиты перейдут на одну запись, вторая исчезнет.`)) return;
   const d = await post("/api/dedupe", {});
-  toast(`Склеено: ${d.merged}`);
+  toast(`Склеено: ${d.merged}`
+    + (d.phones ? `, выброшено телефонов-заглушек: ${d.phones}` : ""));
   loadCompanies(true); loadStats();
 };
 

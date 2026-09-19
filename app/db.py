@@ -467,6 +467,25 @@ def delete_search(search_id):
     c.commit()
 
 
+# ── Разовая чистка старых записей ────────────────────────
+def clean_junk_phones():
+    """Выкинуть заглушки из вёрстки, попавшие в базу до проверки.
+
+    Отсев появился позже, чем первые прогоны, и в базе остались
+    +7 101 000-00-00 и +7 999 999-99-99. Они не становятся телефонами
+    оттого, что лежат давно.
+    """
+    from .sources import site as site_src
+    c = conn()
+    bad = [r["id"] for r in c.execute(
+        "SELECT id, value FROM contacts WHERE kind='phone'")
+        if not site_src._clean_phone(r["value"])]
+    if bad:
+        c.executemany("DELETE FROM contacts WHERE id=?", [(i,) for i in bad])
+        c.commit()
+    return len(bad)
+
+
 # ── Склейка дублей ───────────────────────────────────────
 def merge_companies(keep_id, drop_id):
     """Перенести всё с одной компании на другую и удалить вторую."""

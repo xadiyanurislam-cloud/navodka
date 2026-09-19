@@ -1235,6 +1235,68 @@ class WorkWithList(unittest.TestCase):
         self.assertFalse(db.visited_recently("https://dead-site.ru"))
 
 
+class StuckTasks(unittest.TestCase):
+    """Задача, оставшаяся с прошлого запуска.
+
+    Программу закрывают посреди обхода — это норма. Но запись о задаче
+    оставалась со статусом «выполняется», и очередь её не подхватывала:
+    она берёт только «в очереди». Такая запись становилась вечной —
+    интерфейс показывал именно её, счётчик стоял на нуле, а все новые
+    задачи ждали за ней. Снаружи это выглядело как зависшая программа,
+    час и дольше.
+    """
+
+    def test_interrupted_task_is_released_on_start(self):
+        from app import worker
+        db.init()
+        db.conn().execute("DELETE FROM tasks")
+        tid = db.create_task("enrich", {}, total=156)
+        db.update_task(tid, status="running", done=0)
+        self.assertEqual(worker.recover(), 1)
+        row = db.conn().execute("SELECT status, message FROM tasks WHERE id=?",
+                                (tid,)).fetchone()
+        self.assertEqual(row["status"], "stopped")
+        self.assertIn("прервано", row["message"])
+
+    def test_queued_tasks_are_left_alone(self):
+        from app import worker
+        db.init()
+        db.conn().execute("DELETE FROM tasks")
+        tid = db.create_task("enrich", {})
+        worker.recover()
+        row = db.conn().execute("SELECT status FROM tasks WHERE id=?",
+                                (tid,)).fetchone()
+        self.assertEqual(row["status"], "queued")
+
+    def test_interruption_is_explained_in_the_journal(self):
+        """Молча сбросить — значит оставить человека с вопросом, куда
+        делась работа."""
+        from app import worker
+        db.init()
+        db.conn().execute("DELETE FROM tasks")
+        tid = db.create_task("enrich", {}, total=156)
+        db.update_task(tid, status="running", done=40)
+        worker.recover()
+        said = [r["text"] for r in db.conn().execute(
+            "SELECT text FROM logs WHERE task_id=?", (tid,))]
+        self.assertTrue(any("40" in t and "156" in t for t in said))
+
+
+class OldJunkPhones(unittest.TestCase):
+    def test_stored_placeholders_are_cleaned(self):
+        """Отсев появился позже первых прогонов, и заглушки остались в
+        базе. Они не становятся телефонами оттого, что лежат давно."""
+        db.init()
+        cid, _ = db.upsert_company({"name": "Чистка телефонов", "source": "тест"})
+        for ph in ("+70281027703", "+71010000000", "+79022216558"):
+            db.add_contact(cid, "phone", ph, "general", 85, "unchecked", "сайт")
+        self.assertEqual(db.clean_junk_phones(), 2)
+        left = [r["value"] for r in db.conn().execute(
+            "SELECT value FROM contacts WHERE company_id=? AND kind='phone'",
+            (cid,))]
+        self.assertEqual(left, ["+79022216558"])
+
+
 class SavedSearches(unittest.TestCase):
     def test_same_name_overwrites_instead_of_doubling(self):
         db.init()

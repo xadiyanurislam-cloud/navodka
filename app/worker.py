@@ -30,9 +30,43 @@ def start():
     global _thread
     if _thread and _thread.is_alive():
         return
+    recover()
     _stop.clear()
     _thread = threading.Thread(target=_loop, name="navodka-worker", daemon=True)
     _thread.start()
+
+
+def recover():
+    """Разобраться с задачами, оставшимися с прошлого запуска.
+
+    Программу закрывают посреди обхода — это норма. Но запись о задаче
+    остаётся в базе со статусом «выполняется», и при следующем запуске
+    её никто не подхватывает: очередь берёт только «в очереди». Такая
+    запись становится вечной: интерфейс показывает именно её, счётчик
+    стоит на нуле, а все новые задачи ждут за ней невидимой очередью.
+    Снаружи это выглядит как намертво зависшая программа — час, сутки,
+    сколько угодно.
+
+    Поэтому при старте все «выполняется» честно помечаются прерванными.
+    Не перезапускаются: половина работы уже сделана и лежит в базе, а
+    повторять обход за человека, которого нет у экрана, незачем.
+    """
+    try:
+        c = db.conn()
+        rows = c.execute("SELECT id, kind, done, total FROM tasks "
+                         "WHERE status='running'").fetchall()
+        for r in rows:
+            db.log(r["id"], "Прервано закрытием программы: сделано %s из %s. "
+                            "Запустите заново, уже собранное сохранилось."
+                   % (r["done"], r["total"]), "warn")
+        if rows:
+            c.execute("UPDATE tasks SET status='stopped', "
+                      "message='прервано закрытием программы' "
+                      "WHERE status='running'")
+            c.commit()
+        return len(rows)
+    except Exception:
+        return 0
 
 
 def stop_all():
@@ -42,6 +76,12 @@ def stop_all():
 
 def _should_stop():
     return _stop.is_set()
+
+
+def alive():
+    """Жив ли поток обхода. Без этой проверки его смерть выглядит как
+    вечно выполняющаяся задача."""
+    return bool(_thread and _thread.is_alive())
 
 
 def _loop():
@@ -58,8 +98,11 @@ def _loop():
 
         _stop.clear()
         _current["task_id"] = row["id"]
-        db.update_task(row["id"], status="running", message="")
         try:
+            # Отметка «взял в работу» вынесена внутрь try намеренно: база
+            # на секунду занята соседним потоком — и раньше поток обхода
+            # тихо умирал прямо здесь, а все задачи оставались висеть.
+            db.update_task(row["id"], status="running", message="")
             params = json.loads(row["params"] or "{}")
             handler = HANDLERS.get(row["kind"])
             if handler is None:

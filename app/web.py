@@ -326,6 +326,11 @@ def create_app():
 
     @app.get("/api/task")
     def api_task():
+        # Поток обхода мог умереть — например, база была занята в
+        # неудачный момент. Молча оставлять его мёртвым нельзя: задачи
+        # будут стоять в очереди вечно, а программа выглядеть зависшей.
+        if not worker.alive():
+            worker.start()
         c = db.conn()
         # Показываем идущую задачу, а если её нет — последнюю. Иначе,
         # поставив обогащение в очередь следом за поиском, человек видит
@@ -623,7 +628,10 @@ def create_app():
         for keep, drop in pairs:
             if db.merge_companies(keep, drop):
                 done += 1
-        return jsonify(ok=True, merged=done)
+        # Заодно выкидываем телефоны-заглушки, попавшие в базу до того,
+        # как появилась проверка. Они не становятся телефонами оттого,
+        # что лежат давно.
+        return jsonify(ok=True, merged=done, phones=db.clean_junk_phones())
 
     @app.post("/api/blacklist/clear")
     def api_blacklist_clear():
