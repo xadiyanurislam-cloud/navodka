@@ -24,6 +24,10 @@ import requests
 
 from . import db, settings
 
+# Версия протокола Anthropic. Заголовок обязательный: без него сервер
+# отвечает отказом, не объясняя причины.
+ANTHROPIC_VERSION = "2023-06-01"
+
 DEFAULT_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -45,7 +49,27 @@ def config():
         "key": db.get_setting("ai_key", ""),
         "url": (db.get_setting("ai_url", "") or DEFAULT_URL).rstrip("/"),
         "model": db.get_setting("ai_model", "") or DEFAULT_MODEL,
+        "kind": kind(db.get_setting("ai_kind", ""),
+                     db.get_setting("ai_url", "")),
     }
+
+
+def kind(saved, url):
+    """Какой формат у этого адреса: OpenAI или Anthropic.
+
+    Два формата несовместимы во всём: разные заголовки, разное место
+    системной подсказки, разная форма ответа. Обычно выбор задан явно в
+    настройках; если нет — угадываем по адресу, потому что человек,
+    вставивший ссылку от посредника Claude, о форматах не думает и
+    думать не должен.
+    """
+    saved = (saved or "").strip().lower()
+    if saved in ("openai", "anthropic"):
+        return saved
+    low = (url or "").lower()
+    if "/v1/messages" in low or "anthropic" in low or "claude" in low:
+        return "anthropic"
+    return "openai"
 
 
 def enabled():
@@ -57,6 +81,8 @@ def ask(messages, cfg=None, timeout=90, max_tokens=700, session=None):
     cfg = cfg or config()
     if not cfg["key"]:
         return "", "ключ не задан"
+    if cfg.get("kind") == "anthropic":
+        return _ask_anthropic(messages, cfg, timeout, max_tokens, session)
     s = session or requests.Session()
     try:
         r = s.post(
@@ -73,6 +99,96 @@ def ask(messages, cfg=None, timeout=90, max_tokens=700, session=None):
         return (data["choices"][0]["message"]["content"] or "").strip(), ""
     except Exception as e:
         return "", str(e)[:200]
+
+
+def _ask_anthropic(messages, cfg, timeout, max_tokens, session=None):
+    """Запрос в формате Anthropic Messages.
+
+    Отличий от OpenAI три, и каждое ломает запрос целиком: ключ идёт не
+    в Authorization, а в x-api-key; системная подсказка вынесена из
+    списка сообщений в отдельное поле; ответ лежит не в choices, а в
+    content — списком кусков, из которых нам нужны текстовые.
+
+    Адрес принимаем в любом виде: и «https://router.cheap», и
+    «https://router.cheap/v1», и сразу «…/v1/messages». Человек копирует
+    то, что дал посредник, и подгонять ссылку под наш вкус не обязан.
+    """
+    s = session or requests.Session()
+    base = cfg["url"].rstrip("/")
+    if base.endswith("/v1/messages"):
+        url = base
+    elif base.endswith("/v1"):
+        url = base + "/messages"
+    else:
+        url = base + "/v1/messages"
+
+    system = " ".join(m["content"] for m in messages if m.get("role") == "system")
+    rest = [{"role": ("assistant" if m.get("role") == "assistant" else "user"),
+             "content": m.get("content") or ""}
+            for m in messages if m.get("role") != "system"]
+    body = {"model": cfg["model"], "max_tokens": max_tokens,
+            "temperature": 0.2, "messages": rest}
+    if system:
+        body["system"] = system
+    try:
+        r = s.post(url,
+                   headers={"x-api-key": cfg["key"],
+                            "anthropic-version": ANTHROPIC_VERSION,
+                            "Content-Type": "application/json",
+                            "User-Agent": settings.USER_AGENT},
+                   json=body, timeout=timeout)
+        if r.status_code != 200:
+            return "", "HTTP %s: %s" % (r.status_code, (r.text or "")[:200])
+        data = r.json() or {}
+        parts = [b.get("text") or "" for b in (data.get("content") or [])
+                 if b.get("type") in (None, "text")]
+        text = "".join(parts).strip()
+        if not text:
+            return "", "модель вернула пустой ответ"
+        return text, ""
+    except Exception as e:
+        return "", str(e)[:200]
+
+
+def models(cfg=None, timeout=25, session=None):
+    """Список моделей, доступных этому ключу. Возвращает (список, ошибка).
+
+    Нужен потому, что название модели у посредников своё: угадывать его
+    за человека нельзя, а лезть в чужую документацию ради одной строки
+    он не должен.
+    """
+    cfg = cfg or config()
+    if not cfg["key"]:
+        return [], "ключ не задан"
+    s = session or requests.Session()
+    base = cfg["url"].rstrip("/")
+    for tail in ("/v1/messages", "/messages"):
+        if base.endswith(tail):
+            base = base[:-len(tail)]
+    url = base + ("/models" if base.endswith("/v1") else "/v1/models")
+    head = {"User-Agent": settings.USER_AGENT}
+    if cfg.get("kind") == "anthropic":
+        head.update({"x-api-key": cfg["key"],
+                     "anthropic-version": ANTHROPIC_VERSION})
+    else:
+        head["Authorization"] = "Bearer " + cfg["key"]
+    try:
+        r = s.get(url, headers=head, timeout=timeout)
+    except Exception as e:
+        return [], str(e)[:160]
+    if r.status_code != 200:
+        return [], "HTTP %s: %s" % (r.status_code, (r.text or "")[:160])
+    try:
+        data = r.json() or {}
+    except Exception:
+        return [], "ответ не в JSON"
+    items = data.get("data") or data.get("models") or []
+    out = []
+    for it in items:
+        name = it.get("id") or it.get("name") if isinstance(it, dict) else str(it)
+        if name:
+            out.append(name)
+    return out[:200], ""
 
 
 def _json(text):

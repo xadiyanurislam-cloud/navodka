@@ -555,7 +555,8 @@ $("s-save").onclick = async () => {
   await post("/api/settings", {
     dadata_token: $("s-dadata").value, gis_key: $("s-gis").value,
     ai_key: $("s-ai-key").value, ai_url: $("s-ai-url").value,
-    ai_model: $("s-ai-model").value, hh_token: $("s-hh-token").value,
+    ai_model: $("s-ai-model").value, ai_kind: $("s-ai-kind").value,
+    hh_token: $("s-hh-token").value,
     yandex_key: $("s-yandex").value, vk_token: $("s-vk").value,
     update_repo: $("s-upd-repo").value, update_token: $("s-upd-token").value});
   markKeys();
@@ -640,6 +641,44 @@ async function updApply() {
       /(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>')}</span>`;
   }
 }
+
+// Формат подсказывается по адресу: человек, вставивший ссылку от
+// посредника Claude, о форматах не думает и думать не должен.
+$("s-ai-url").onchange = () => {
+  const u = $("s-ai-url").value.toLowerCase();
+  if (/\/v1\/messages|anthropic|claude/.test(u)) $("s-ai-kind").value = "anthropic";
+};
+
+$("btn-ai-models").onclick = async () => {
+  const note = $("ai-cfg-note");
+  note.textContent = "спрашиваю…";
+  // Сначала сохраняем: спрашивать по старому адресу, когда в поле уже
+  // новый, — верный способ запутать.
+  await post("/api/settings", {ai_key: $("s-ai-key").value,
+    ai_url: $("s-ai-url").value, ai_kind: $("s-ai-kind").value});
+  const d = await get("/api/ai/models");
+  if (!d || !d.ok) {
+    note.innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+    return;
+  }
+  $("ai-models").innerHTML = d.models.map(
+    (m) => `<option value="${esc(m)}">`).join("");
+  note.textContent = d.models.length
+    ? `моделей: ${d.models.length} — начните печатать в поле «Модель»`
+    : "список пуст, впишите название из документации роутера";
+};
+
+$("btn-ai-check2").onclick = async () => {
+  const note = $("ai-cfg-note");
+  note.textContent = "проверяю…";
+  await post("/api/settings", {ai_key: $("s-ai-key").value,
+    ai_url: $("s-ai-url").value, ai_kind: $("s-ai-kind").value,
+    ai_model: $("s-ai-model").value});
+  const d = await post("/api/ai/check", {});
+  note.innerHTML = d.ok
+    ? `<span class="good">${esc(d.model)} (${esc(d.kind)}) — ${esc(d.note)}</span>`
+    : `<span class="bad">${esc(d.note)}</span>`;
+};
 
 $("s-open-data").onclick = async () => {
   const d = await post("/api/reveal", {});

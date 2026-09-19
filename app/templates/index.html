@@ -96,79 +96,108 @@
           <h2>Кого ищем</h2>
           <span class="tag free">три источника сразу</span>
         </header>
-        <p>Одно слово — вид деятельности: <b>стоматология</b>, <b>грузоперевозки</b>,
-           <b>автосервис</b>, <b>АТИ</b>. Программа обойдёт справочники, ЕГРЮЛ и
-           работодателей hh.ru и сведёт найденное в один список без дублей.
-           Это не «кто нанимает продавцов», а «все компании такого рода» —
-           независимо от того, ищут они кого-нибудь или нет.
-           <b>OpenStreetMap и hh.ru работают без ключей</b>, остальные
-           источники подключаются по желанию и делают выдачу полнее.</p>
-        <div class="fields two">
+        <p class="lede">Назовите вид деятельности — программа обойдёт справочники,
+           ЕГРЮЛ и работодателей hh.ru и сведёт найденное в один список без дублей.
+           <b>OpenStreetMap и hh.ru работают без ключей</b>, остальные источники
+           только делают выдачу полнее.</p>
 
-          <div class="col">
-            <label>Вид деятельности
-              <input id="q-text" type="text" list="q-hints"
-                     placeholder="стоматология" value="">
-              <em class="fld-hint">Короче — лучше: «стоматология» найдёт больше,
-                 чем «стоматологическая клиника премиум-класса»</em>
-            </label>
-            <datalist id="q-hints">
-              {% for r in rubrics %}<option value="{{ r }}">{% endfor %}
-            </datalist>
-            <label>Города
-              <select id="q-cities" multiple size="7">
-                {% for c in geo_cities %}<option value="{{ c.name }}"{% if c.name == 'Москва' %} selected{% endif %}>{{ c.name }}</option>{% endfor %}
-              </select>
-              <em class="fld-hint">Несколько — с зажатым Ctrl.
-                 <b>«Россия целиком» отключает все справочники</b>: они ищут по
-                 карте, а не по стране. Останутся ЕГРЮЛ и hh, а карточки выйдут
-                 без телефонов и сайтов — выбирайте города</em>
-            </label>
-          </div>
+        <div class="steps">
 
-          <div class="col">
-            <div class="sub">
-              <span class="lbl">Где искать</span>
-              <label class="opt"><input id="q-osm" type="checkbox" checked>
-                <span>OpenStreetMap
-                  <em>без ключа и без регистрации. Открытая карта: названия, адреса, телефоны, сайты и ссылки на сообщества ВК. Беднее платных справочников, зато работает сразу</em></span></label>
-              <label class="opt"><input id="q-gis" type="checkbox" checked>
-                <span>Справочник 2ГИС
-                  <em>{% if has_gis %}ключ есть. Главный источник: вывески, телефоны и сайты{% else %}нужен ключ Places API, иначе будет пропущен — <a href="https://dev.2gis.ru/">взять бесплатно</a>{% endif %}</em></span></label>
-              <label class="opt"><input id="q-yandex" type="checkbox" checked>
-                <span>Яндекс.Организации
-                  <em>{% if has_yandex %}ключ есть. Второй справочник: у него и 2ГИС разные пробелы, вместе покрытие шире{% else %}нужен ключ «Поиск по организациям», иначе будет пропущен — <a href="https://developer.tech.yandex.ru/services/">взять бесплатно</a>{% endif %}</em></span></label>
-              <label class="opt"><input id="q-dadata" type="checkbox" checked>
-                <span>ЕГРЮЛ
-                  <em>{% if has_dadata %}токен есть. Сразу отдаёт ИНН и ФИО руководителя{% else %}нужен токен DaData, иначе будет пропущен — <a href="https://dadata.ru/api/suggest/party/">взять бесплатно</a>{% endif %}</em></span></label>
-              <label class="opt"><input id="q-hh" type="checkbox" checked>
-                <span>Работодатели hh.ru
-                  <em>без ключа. Ищет по названию и отрасли, вакансии не нужны</em></span></label>
-              <label class="opt"><input id="q-skip-empty" type="checkbox" checked>
-                <span>Пропускать компании без контактов<em>ни сайта, ни телефона, ни ИНН — обогащать нечем, в списке только мешают</em></span></label>
-              <label class="inline">Не больше
-                <input id="q-limit" type="number" min="10" max="5000" step="50" value="200">
-                компаний за раз
-                <em class="fld-hint">Набрав столько, программа останавливается.
-                   «Магазин» по десяти городам иначе выгребает десятки тысяч, и
-                   обход идёт сутки</em>
-              </label>
-              <label class="inline">Глубина
-                <input id="q-pages" type="number" min="1" max="10" value="3">
-                <em class="fld-hint">Страниц на каждый город. Больше — дольше и шире</em>
-              </label>
+          <section class="step">
+            <span class="step-n">1</span>
+            <div class="step-body">
+              <h3>Кого и где</h3>
+              <div class="step-grid">
+                <label>Вид деятельности
+                  <input id="q-text" type="text" list="q-hints"
+                         placeholder="стоматология" value="">
+                  <em class="fld-hint">Короче — лучше: «стоматология» найдёт больше,
+                     чем «стоматологическая клиника премиум-класса»</em>
+                </label>
+                <datalist id="q-hints">
+                  {% for r in rubrics %}<option value="{{ r }}">{% endfor %}
+                </datalist>
+                <label>Города
+                  <select id="q-cities" multiple size="6">
+                    {% for c in geo_cities %}<option value="{{ c.name }}"{% if c.name == 'Москва' %} selected{% endif %}>{{ c.name }}</option>{% endfor %}
+                  </select>
+                  <em class="fld-hint">Несколько — с зажатым Ctrl. «Россия целиком»
+                     отключает справочники: они ищут по карте, а не по стране</em>
+                </label>
+              </div>
             </div>
+          </section>
 
-            <div class="sub">
-              <span class="lbl">Что делать дальше</span>
-              <label class="opt"><input id="q-then" type="checkbox" checked>
-                <span>Обогатить найденное<em>ЕГРЮЛ, сайт, ФНС — иначе в карточке одно название</em></span></label>
-              <label class="opt"><input id="q-then-zak" type="checkbox">
-                <span>Искать контакты в госзакупках<em>прямой телефон ответственного, но медленно</em></span></label>
-              <label class="opt"><input id="q-then-ai" type="checkbox">
-                <span>Разобрать через ИИ<em>нужен ключ и описание клиента в карточке ниже</em></span></label>
+          <section class="step">
+            <span class="step-n">2</span>
+            <div class="step-body">
+              <h3>Где искать</h3>
+              <div class="srcs">
+                <label class="src"><input id="q-osm" type="checkbox" checked>
+                  <span class="src-b">
+                    <span class="src-h">OpenStreetMap</span>
+                    <b class="ok">без ключа</b>
+                    <em>Открытая карта: адреса, телефоны, сайты, сообщества ВК</em>
+                  </span></label>
+                <label class="src"><input id="q-hh" type="checkbox" checked>
+                  <span class="src-b">
+                    <span class="src-h">Работодатели hh.ru</span>
+                    <b class="ok">без ключа</b>
+                    <em>По названию и отрасли — вакансии не нужны</em>
+                  </span></label>
+                <label class="src"><input id="q-gis" type="checkbox" checked>
+                  <span class="src-b">
+                    <span class="src-h">Справочник 2ГИС</span>
+                    {% if has_gis %}<b class="ok">ключ есть</b>{% else %}<b class="need">нет ключа</b>{% endif %}
+                    <em>{% if has_gis %}Главный источник: вывески, телефоны, сайты{% else %}Будет пропущен — <a href="https://dev.2gis.ru/">взять ключ бесплатно</a>{% endif %}</em>
+                  </span></label>
+                <label class="src"><input id="q-yandex" type="checkbox" checked>
+                  <span class="src-b">
+                    <span class="src-h">Яндекс.Организации</span>
+                    {% if has_yandex %}<b class="ok">ключ есть</b>{% else %}<b class="need">нет ключа</b>{% endif %}
+                    <em>{% if has_yandex %}У него и 2ГИС разные пробелы — вместе шире{% else %}Будет пропущен — <a href="https://developer.tech.yandex.ru/services/">взять ключ бесплатно</a>{% endif %}</em>
+                  </span></label>
+                <label class="src"><input id="q-dadata" type="checkbox" checked>
+                  <span class="src-b">
+                    <span class="src-h">ЕГРЮЛ</span>
+                    {% if has_dadata %}<b class="ok">токен есть</b>{% else %}<b class="need">нет токена</b>{% endif %}
+                    <em>{% if has_dadata %}Сразу отдаёт ИНН и ФИО руководителя{% else %}Будет пропущен — <a href="https://dadata.ru/api/suggest/party/">взять токен бесплатно</a>{% endif %}</em>
+                  </span></label>
+              </div>
             </div>
-          </div>
+          </section>
+
+          <section class="step">
+            <span class="step-n">3</span>
+            <div class="step-body">
+              <h3>Сколько и что делать дальше</h3>
+              <div class="step-grid">
+                <div class="nums">
+                  <div class="nums-row">
+                    <label class="num">Не больше компаний за раз
+                      <input id="q-limit" type="number" min="10" max="5000" step="50" value="200">
+                      <em class="fld-hint">Набрав столько, поиск останавливается</em>
+                    </label>
+                    <label class="num">Страниц на город
+                      <input id="q-pages" type="number" min="1" max="10" value="3">
+                      <em class="fld-hint">Больше — дольше и шире</em>
+                    </label>
+                  </div>
+                  <label class="opt"><input id="q-skip-empty" type="checkbox" checked>
+                    <span>Пропускать компании без контактов<em>ни сайта, ни телефона, ни ИНН — обогащать нечем</em></span></label>
+                </div>
+                <div class="thens">
+                  <label class="opt"><input id="q-then" type="checkbox" checked>
+                    <span>Обогатить найденное<em>ЕГРЮЛ, сайт, ФНС — иначе в карточке одно название</em></span></label>
+                  <label class="opt"><input id="q-then-zak" type="checkbox">
+                    <span>Искать контакты в госзакупках<em>прямой телефон ответственного, но медленно</em></span></label>
+                  <label class="opt"><input id="q-then-ai" type="checkbox">
+                    <span>Разобрать через ИИ<em>нужен ключ и описание клиента в карточке ниже</em></span></label>
+                </div>
+              </div>
+            </div>
+          </section>
+
         </div>
         <footer class="search-foot">
           <button class="btn primary" id="btn-find">Найти компании</button>
@@ -181,68 +210,91 @@
           <h2>Вакансии hh.ru</h2>
           <span class="tag free">без ключа</span>
         </header>
-        <p>Компании, которые прямо сейчас нанимают в продажи. Признак живёт
-           неделю, пока висит вакансия, — его не купить ни в одной базе.</p>
-        <div class="fields two">
+        <p class="lede">Компании, которые прямо сейчас нанимают в продажи. Признак
+           живёт неделю, пока висит вакансия, — его не купить ни в одной базе.</p>
 
-          <div class="col">
-            <label>Запросы — по одному на строку
-              <textarea id="f-text" rows="4">менеджер по продажам</textarea>
-            </label>
-            <div>
-              <span class="lbl">Добавить готовый</span>
-              <div class="picks" id="f-presets">
-                {% for name, query in presets.items() %}
-                <button class="pick" data-q="{{ query }}">{{ name }}</button>
-                {% endfor %}
+        <div class="steps">
+
+          <section class="step">
+            <span class="step-n">1</span>
+            <div class="step-body">
+              <h3>Что и где ищем</h3>
+              <div class="step-grid">
+                <div class="nums">
+                  <label>Запросы — по одному на строку
+                    <textarea id="f-text" rows="4">менеджер по продажам</textarea>
+                  </label>
+                  <div>
+                    <span class="lbl">Добавить готовый</span>
+                    <div class="picks" id="f-presets">
+                      {% for name, query in presets.items() %}
+                      <button class="pick" data-q="{{ query }}">{{ name }}</button>
+                      {% endfor %}
+                    </div>
+                  </div>
+                </div>
+                <label>Регионы
+                  <select id="f-area" multiple size="8">
+                    {% for code, name in areas %}<option value="{{ code }}"{% if code == '113' %} selected{% endif %}>{{ name }}</option>{% endfor %}
+                  </select>
+                  <em class="fld-hint">Несколько — с зажатым Ctrl</em>
+                </label>
               </div>
             </div>
-            <label>Регионы
-              <select id="f-area" multiple size="7">
-                {% for code, name in areas %}<option value="{{ code }}"{% if code == '113' %} selected{% endif %}>{{ name }}</option>{% endfor %}
-              </select>
-              <em class="fld-hint">Несколько — с зажатым Ctrl</em>
-            </label>
-          </div>
+          </section>
 
-          <div class="col">
-            <div class="row2">
-              <label>Период
-                <select id="f-period">
-                  <option value="3">3 дня</option>
-                  <option value="7">7 дней</option>
-                  <option value="14">14 дней</option>
-                  <option value="30" selected>30 дней</option>
-                </select>
-              </label>
-              <label>Глубина
-                <input id="f-pages" type="number" min="1" max="20" value="5">
-              </label>
+          <section class="step">
+            <span class="step-n">2</span>
+            <div class="step-body">
+              <h3>Насколько строго</h3>
+              <div class="step-grid">
+                <div class="nums">
+                  <div class="nums-row">
+                    <label class="num">Период
+                      <select id="f-period">
+                        <option value="3">3 дня</option>
+                        <option value="7">7 дней</option>
+                        <option value="14">14 дней</option>
+                        <option value="30" selected>30 дней</option>
+                      </select>
+                      <em class="fld-hint">Насколько свежие вакансии брать</em>
+                    </label>
+                    <label class="num">Страниц выдачи
+                      <input id="f-pages" type="number" min="1" max="20" value="5">
+                      <em class="fld-hint">Больше — дольше и шире</em>
+                    </label>
+                  </div>
+                  <label class="num">Пропускать компании, у которых открытых вакансий больше
+                    <input id="f-maxopen" type="number" min="0" max="5000" step="10" value="0">
+                    <em class="fld-hint">Сети и заводы занимают всю выдачу, а до
+                       генерального там не дойти. 0 — без порога</em>
+                  </label>
+                </div>
+                <div class="thens">
+                  <label class="opt"><input id="f-title" type="checkbox" checked>
+                    <span>Фраза в названии вакансии<em>иначе в выдачу попадут все, у кого она просто упомянута в описании</em></span></label>
+                  <label class="opt"><input id="f-noagency" type="checkbox" checked>
+                    <span>Без кадровых агентств<em>вакансий у них сотни, а продавать им нечего</em></span></label>
+                </div>
+              </div>
             </div>
+          </section>
 
-            <div class="sub">
-              <span class="lbl">Точность</span>
-              <label class="opt"><input id="f-title" type="checkbox" checked>
-                <span>Фраза в названии вакансии<em>иначе в выдачу попадут все, у кого она просто упомянута в описании</em></span></label>
-              <label class="opt"><input id="f-noagency" type="checkbox" checked>
-                <span>Без кадровых агентств<em>вакансий у них сотни, а продавать им нечего</em></span></label>
-              <label class="inline">Не брать компании, у которых больше
-                <input id="f-maxopen" type="number" min="0" max="5000" step="10" value="0">
-                открытых вакансий
-                <em class="fld-hint">Сети и заводы занимают всю выдачу, а до генерального там не дойти. 0 — без порога</em>
-              </label>
+          <section class="step">
+            <span class="step-n">3</span>
+            <div class="step-body">
+              <h3>Что делать дальше</h3>
+              <div class="thens wide-thens">
+                <label class="opt"><input id="f-then" type="checkbox" checked>
+                  <span>Обогатить найденное<em>иначе в карточке будет одно название</em></span></label>
+                <label class="opt"><input id="f-then-zak" type="checkbox">
+                  <span>Искать контакты в госзакупках<em>прямой телефон ответственного, но медленно</em></span></label>
+                <label class="opt"><input id="f-then-ai" type="checkbox">
+                  <span>Разобрать через ИИ<em>нужен ключ и описание клиента в карточке ниже</em></span></label>
+              </div>
             </div>
+          </section>
 
-            <div class="sub">
-              <span class="lbl">Что делать дальше</span>
-              <label class="opt"><input id="f-then" type="checkbox" checked>
-                <span>Обогатить найденное<em>иначе в карточке будет одно название</em></span></label>
-              <label class="opt"><input id="f-then-zak" type="checkbox">
-                <span>Искать контакты в госзакупках<em>прямой телефон ответственного, но медленно</em></span></label>
-              <label class="opt"><input id="f-then-ai" type="checkbox">
-                <span>Разобрать через ИИ<em>нужен ключ и описание клиента в карточке ниже</em></span></label>
-            </div>
-          </div>
         </div>
         <footer class="search-foot">
           <button class="btn primary" id="btn-search">Найти по вакансиям</button>
@@ -444,62 +496,70 @@
         <p>Ключи лежат в локальной базе рядом с программой и никуда не
            отправляются, кроме самих источников. Без ключей работают
            только hh.ru и обход сайтов — остальное нужно подключить.</p>
-        <div class="fields keys">
+        <div class="keys">
 
     <label>DaData
       <input id="s-dadata" type="text" value="{{ dadata_token }}" placeholder="токен">
-      <em>Без него ФИО руководителей взять неоткуда. Бесплатного тарифа
-          хватает на тысячи запросов в сутки.
+      <em>ФИО руководителей из ЕГРЮЛ. Бесплатного тарифа хватает на
+          тысячи запросов в сутки.
           <a href="https://dadata.ru/api/suggest/party/">где взять ключ</a></em>
     </label>
     <label>2ГИС Places API
       <input id="s-gis" type="text" value="{{ gis_key }}" placeholder="ключ">
-      <em>Справочник организаций: вывески, телефоны, сайты. Ключ нужен
-          типа <b>Places API</b> — не перепутайте с картами и маршрутами.
+      <em>Вывески, телефоны, сайты. Ключ типа <b>Places API</b> — не
+          перепутайте с картами и маршрутами.
           <a href="https://dev.2gis.ru/">где взять ключ</a></em>
     </label>
     <label>Ключ Яндекс.Карт (Геопоиск)
       <input id="s-yandex" type="text" value="{{ yandex_key }}" placeholder="ключ">
-      <em>Второй справочник организаций рядом с 2ГИС. Отдаёт ещё и
-          ссылки, которые компания сама указала в карточке, — включая
-          её страницы в соцсетях. Нужен сервис <b>«Поиск по организациям»</b>.
+      <em>Второй справочник рядом с 2ГИС, отдаёт ещё и соцсети компаний.
+          Нужен сервис <b>«Поиск по организациям»</b>.
           <a href="https://developer.tech.yandex.ru/services/">где взять ключ</a></em>
     </label>
     <label>Сервисный ключ ВКонтакте
       <input id="s-vk" type="password" value="{{ vk_token }}" placeholder="сервисный ключ">
-      <em>Для выхода на руководителя: у сообщества компании есть раздел
-          «Контакты», куда владелец сам ставит профили живых людей с
-          должностями. Программа сверяет их ФИО с ЕГРЮЛ. Нужен именно
-          <b>«Сервисный ключ доступа»</b> — он бессрочный; ключ
-          пользователя живёт час и не подойдёт. Сообщество берётся по
-          ссылке с сайта компании или из карточки справочника: поиск по
-          названию сервисному ключу ВК недоступен.
+      <em>Выход на руководителя: в разделе «Контакты» сообщества владелец
+          сам указывает профили живых людей с должностями. Нужен именно
+          <b>сервисный</b> ключ — он бессрочный.
           <a href="https://vk.com/apps?act=manage">где взять ключ</a></em>
     </label>
     <label>Токен hh.ru
       <input id="s-hh-token" type="password" value="{{ hh_token }}"
              placeholder="нужен, только если hh отвечает 403">
-      <em>Обычно не требуется: программа сама подбирает способ связи. Если
-          hh отклонил все — зарегистрируйте приложение и вставьте сюда его
-          токен. Это официальный путь, и он надёжнее любого подбора.
+      <em>Обычно не нужен: программа сама подбирает способ связи. Если hh
+          отвечает 403 всем способам — зарегистрируйте приложение.
           <a href="https://dev.hh.ru/admin">кабинет разработчика hh</a></em>
     </label>
     <label>Ключ ИИ
       <input id="s-ai-key" type="password" value="{{ ai_key }}" placeholder="sk-…">
-      <em>Подойдёт любой сервис, совместимый с OpenAI. Ключ хранится
-          только на этом компьютере и никуда не отправляется, кроме
-          адреса ниже.
+      <em>Подойдёт OpenAI, Claude и любой посредник. Ключ хранится только
+          на этом компьютере и уходит лишь по адресу ниже.
           <a href="https://platform.openai.com/api-keys">ключи OpenAI</a></em>
     </label>
-    <div class="row2">
+        </div>
+    <div class="ai-cfg">
+      <label>Формат
+        <select id="s-ai-kind">
+          <option value="openai"{% if ai_kind == 'openai' %} selected{% endif %}>OpenAI-совместимый</option>
+          <option value="anthropic"{% if ai_kind == 'anthropic' %} selected{% endif %}>Anthropic (Claude)</option>
+        </select>
+        <em class="fld-hint">Посредники Claude дают адрес вида
+           <b>…/v1/messages</b> — это второй вариант</em>
+      </label>
       <label>Адрес API
-        <input id="s-ai-url" type="text" value="{{ ai_url }}">
+        <input id="s-ai-url" type="text" value="{{ ai_url }}"
+               placeholder="https://router.cheap">
       </label>
       <label>Модель
-        <input id="s-ai-model" type="text" value="{{ ai_model }}">
+        <input id="s-ai-model" type="text" value="{{ ai_model }}" list="ai-models">
+        <datalist id="ai-models"></datalist>
       </label>
     </div>
-        </div>
+    <div class="ai-cfg-foot">
+      <button class="btn sm" id="btn-ai-models">Показать доступные модели</button>
+      <button class="btn quiet sm" id="btn-ai-check2">Проверить связь</button>
+      <span class="hint" id="ai-cfg-note"></span>
+    </div>
       </article>
 
       <article class="card">
@@ -522,7 +582,7 @@
                placeholder="если репозиторий закрытый">
       </label>
     </div>
-    
+        </div>
         <footer class="upd-line">
           <button class="btn" id="s-upd-check">Проверить обновления</button>
           <span class="upd-state" id="upd-state">версия {{ version }} — {{ build }}</span>

@@ -863,3 +863,85 @@ thead th{background:var(--surface-2)}
 /* Цифры в шапке относятся к базе. На «Сегодня» у них своя, крупная
    подача плитками, и дублировать их мелким шрифтом незачем. */
 .bar-stats[hidden]{display:none}
+
+/* ── Экран настроек ─────────────────────────────────────
+   Ключи стояли в общей сетке полей, и одно длинное пояснение
+   растягивало всю строку: соседние поля уезжали вниз, а подпись
+   «Токен GitHub» не помещалась в свою колонку. Теперь каждый ключ —
+   отдельная карточка с одинаковой высотой заголовка. */
+.keys{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));
+  gap:14px}
+.keys > label{
+  background:var(--surface-2);border:1px solid var(--line-2);
+  border-radius:12px;padding:13px 14px;gap:7px;
+  font-size:12px;color:var(--ink);font-weight:550}
+.keys > label em{font-weight:400;color:var(--ink-3);min-height:34px}
+.keys > label input{background:var(--surface)}
+
+.ai-cfg{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  gap:12px;margin-top:16px;padding-top:16px;border-top:1px solid var(--line-2)}
+.ai-cfg-foot{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  margin-top:12px}
+#ai-cfg-note{font-size:12px}
+
+/* Поля обновления больше не жмутся в половину колонки. */
+#view-settings .row2{grid-template-columns:1fr;gap:12px}
+
+/* ── Экран поиска ───────────────────────────────────────
+   Раньше главная карточка была двумя длинными колонками: слева два
+   поля, справа шесть галочек, два числа и ещё три галочки. Колонки
+   расходились по высоте втрое, и порядок действий был не виден —
+   человек не понимал, что заполнять сначала. Теперь это три
+   пронумерованных шага во всю ширину: кого и где → откуда → сколько. */
+.find .lede{max-width:78ch}
+.steps{display:flex;flex-direction:column;gap:2px}
+.step{display:grid;grid-template-columns:30px 1fr;gap:14px;
+  padding:18px 0;border-top:1px solid var(--line-2)}
+.step:first-child{border-top:0;padding-top:4px}
+.step-n{width:26px;height:26px;border-radius:50%;
+  display:grid;place-items:center;
+  background:var(--accent-soft);color:var(--accent);
+  font-size:12.5px;font-weight:650;font-variant-numeric:tabular-nums;
+  margin-top:1px}
+.step-body{min-width:0;display:flex;flex-direction:column;gap:13px}
+.step-body > h3{margin:0;font-size:13px;font-weight:600;color:var(--ink);
+  letter-spacing:-.01em}
+.step-grid{display:grid;grid-template-columns:minmax(260px,1fr) minmax(260px,1.1fr);
+  gap:24px;align-items:start}
+@media (max-width:900px){
+  .step-grid{grid-template-columns:1fr;gap:16px}
+  .step{grid-template-columns:24px 1fr;gap:10px}
+}
+
+/* Источники — не список галочек, а плитки одинакового вида с явным
+   ярлыком состояния ключа. Видно с первого взгляда, что отработает
+   сейчас, а что будет молча пропущено. */
+.srcs{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  gap:10px}
+label.src{flex-direction:row;align-items:flex-start;gap:10px;
+  background:var(--surface-2);border:1px solid var(--line-2);
+  border-radius:12px;padding:11px 13px;cursor:pointer;
+  transition:border-color .12s ease,background .12s ease}
+label.src:hover{border-color:var(--line);background:var(--hover)}
+label.src:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+label.src input{margin-top:2px;flex:0 0 auto;width:auto;accent-color:var(--accent)}
+.src-b{display:flex;flex-direction:column;gap:3px;min-width:0}
+.src-h{font-size:12.5px;font-weight:600;color:var(--ink);line-height:1.35}
+/* Ярлык состояния всегда на своей строке: в узкой плитке он иначе
+   переносится у длинных названий, и плитки перестают быть похожими. */
+.src-b > b{align-self:flex-start;font-weight:600;font-size:10.5px;
+  letter-spacing:.02em;padding:2px 7px;border-radius:20px;white-space:nowrap}
+.src-b > b.ok{color:var(--ok);background:var(--ok-bg)}
+.src-b > b.need{color:var(--warn);background:var(--warn-bg)}
+label.src em{font-style:normal;font-size:11.5px;color:var(--ink-3);
+  line-height:1.5}
+
+/* Числа обхода и «что дальше» — две ровные колонки третьего шага. */
+.nums,.thens{display:flex;flex-direction:column;gap:11px}
+label.num{font-size:12.5px;color:var(--ink);font-weight:550}
+label.num input{width:100%}
+.nums-row{display:grid;grid-template-columns:1.3fr 1fr;gap:12px;align-items:start}
+label.num em.fld-hint{margin-top:1px}
+label.num select{width:100%}
+.wide-thens{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));
+  gap:12px}

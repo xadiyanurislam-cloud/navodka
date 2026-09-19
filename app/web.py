@@ -97,6 +97,7 @@ def create_app():
             ai_key=db.get_setting("ai_key", ""),
             ai_url=db.get_setting("ai_url", "") or ai.DEFAULT_URL,
             ai_model=db.get_setting("ai_model", "") or ai.DEFAULT_MODEL,
+            ai_kind=ai.config()["kind"],
             hh_ua=db.get_setting("hh_ua", ""),
             hh_token=db.get_setting("hh_token", ""),
             update_repo=db.get_setting("update_repo", "") or update.DEFAULT_REPO,
@@ -248,8 +249,23 @@ def create_app():
 
     @app.post("/api/ai/check")
     def api_ai_check():
-        ok, note = ai.check()
-        return jsonify(ok=ok, note=note, model=ai.config()["model"])
+        cfg = ai.config()
+        ok, note = ai.check(cfg)
+        # Формат называем всегда: половина неудач здесь — не тот формат,
+        # а по сообщению «HTTP 404» этого не понять.
+        return jsonify(ok=ok, note=note, model=cfg["model"],
+                       kind=cfg["kind"])
+
+    @app.get("/api/ai/models")
+    def api_ai_models():
+        """Какие модели доступны этому ключу.
+
+        У посредников названия свои, и заставлять человека искать их в
+        чужой документации ради одной строки настроек — лишний шаг.
+        """
+        names, err = ai.models()
+        return jsonify(ok=not err, error=err, models=names,
+                       kind=ai.config()["kind"])
 
     @app.post("/api/ai/queries")
     def api_ai_queries():
@@ -577,7 +593,7 @@ def create_app():
         for key in ("dadata_token", "gis_key", "ai_key", "ai_url",
                     "ai_model", "hh_ua", "hh_token",
                     "update_repo", "update_token", "update_url",
-                    "yandex_key", "vk_token"):
+                    "yandex_key", "vk_token", "ai_kind"):
             if key in d:
                 db.set_setting(key, (d[key] or "").strip())
         return jsonify(ok=True)

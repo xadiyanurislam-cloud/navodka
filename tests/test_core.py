@@ -4,6 +4,7 @@
 Сеть здесь не трогаем намеренно: тест, зависящий от чужого сервера, рано
 или поздно краснеет не из-за нашей ошибки, и его перестают читать.
 """
+import json
 import io
 import os
 import sys
@@ -1742,6 +1743,142 @@ class Update(unittest.TestCase):
         m = re.search(r'#define\s+AppVersion\s+"([^"]+)"', iss)
         self.assertIsNotNone(m, "в installer.iss нет запасной версии")
         self.assertEqual(m.group(1), settings.VERSION)
+
+
+class Router(unittest.TestCase):
+    """Посредники, отдающие Claude по адресу вида …/v1/messages.
+
+    Формат Anthropic несовместим с OpenAI сразу в трёх местах, и каждое
+    ломает запрос целиком: ключ в другом заголовке, системная подсказка
+    вынесена из списка сообщений, ответ лежит не в choices."""
+
+    def test_guesses_format_by_url(self):
+        self.assertEqual(ai.kind("", "https://router.cheap/v1/messages"),
+                         "anthropic")
+        self.assertEqual(ai.kind("", "https://api.anthropic.com"), "anthropic")
+        self.assertEqual(ai.kind("", "https://api.openai.com/v1"), "openai")
+        self.assertEqual(ai.kind("", ""), "openai")
+
+    def test_explicit_choice_wins_over_url(self):
+        """Человек выбрал формат руками — угадывать поверх него нельзя."""
+        self.assertEqual(ai.kind("openai", "https://router.cheap/v1/messages"),
+                         "openai")
+        self.assertEqual(ai.kind("anthropic", "https://api.openai.com/v1"),
+                         "anthropic")
+
+    def _fake(self, payload, status=200):
+        sent = {}
+
+        class R:
+            status_code = status
+            text = json.dumps(payload)
+
+            def json(self_inner):
+                return payload
+
+        class S:
+            def post(self_inner, url, headers=None, json=None, timeout=None):
+                sent["url"] = url
+                sent["headers"] = headers
+                sent["body"] = json
+                return R()
+
+            def get(self_inner, url, headers=None, timeout=None):
+                sent["url"] = url
+                sent["headers"] = headers
+                return R()
+
+        return S(), sent
+
+    def test_anthropic_request_shape(self):
+        s, sent = self._fake({"content": [{"type": "text", "text": "  да  "}]})
+        cfg = {"key": "k", "url": "https://router.cheap", "model": "claude",
+               "kind": "anthropic"}
+        text, err = ai.ask([{"role": "system", "content": "правила"},
+                            {"role": "user", "content": "вопрос"}],
+                           cfg=cfg, session=s)
+        self.assertEqual((text, err), ("да", ""))
+        self.assertEqual(sent["url"], "https://router.cheap/v1/messages")
+        self.assertEqual(sent["headers"]["x-api-key"], "k")
+        self.assertIn("anthropic-version", sent["headers"])
+        self.assertNotIn("Authorization", sent["headers"])
+        # Системная подсказка вынесена из messages в своё поле.
+        self.assertEqual(sent["body"]["system"], "правила")
+        self.assertEqual(sent["body"]["messages"],
+                         [{"role": "user", "content": "вопрос"}])
+
+    def test_url_taken_in_any_form(self):
+        """Человек вставляет то, что дал посредник, а не то, что удобно нам."""
+        for given in ("https://router.cheap", "https://router.cheap/",
+                      "https://router.cheap/v1", "https://router.cheap/v1/messages"):
+            s, sent = self._fake({"content": [{"type": "text", "text": "ок"}]})
+            ai.ask([{"role": "user", "content": "?"}],
+                   cfg={"key": "k", "url": given, "model": "m",
+                        "kind": "anthropic"}, session=s)
+            self.assertEqual(sent["url"], "https://router.cheap/v1/messages",
+                             "адрес %s собрался неверно" % given)
+
+    def test_empty_answer_is_an_error_not_an_empty_card(self):
+        s, _ = self._fake({"content": []})
+        text, err = ai.ask([{"role": "user", "content": "?"}],
+                           cfg={"key": "k", "url": "https://router.cheap",
+                                "model": "m", "kind": "anthropic"}, session=s)
+        self.assertEqual(text, "")
+        self.assertTrue(err)
+
+    def test_openai_path_untouched(self):
+        s, sent = self._fake(
+            {"choices": [{"message": {"content": "ответ"}}]})
+        text, err = ai.ask([{"role": "system", "content": "правила"},
+                            {"role": "user", "content": "вопрос"}],
+                           cfg={"key": "k", "url": "https://api.openai.com/v1",
+                                "model": "m", "kind": "openai"}, session=s)
+        self.assertEqual((text, err), ("ответ", ""))
+        self.assertEqual(sent["url"], "https://api.openai.com/v1/chat/completions")
+        self.assertEqual(sent["headers"]["Authorization"], "Bearer k")
+        self.assertEqual(len(sent["body"]["messages"]), 2)
+
+    def test_model_list_asks_the_right_address(self):
+        """Название модели у посредника своё, и угадывать его за человека
+        нельзя — список приходится спрашивать."""
+        s, sent = self._fake({"data": [{"id": "claude-sonnet-4"},
+                                       {"id": "gpt-4o-mini"}]})
+        got, err = ai.models(cfg={"key": "k", "model": "m",
+                                  "url": "https://router.cheap/v1/messages",
+                                  "kind": "anthropic"}, session=s)
+        self.assertEqual(err, "")
+        self.assertEqual(got, ["claude-sonnet-4", "gpt-4o-mini"])
+        self.assertEqual(sent["url"], "https://router.cheap/v1/models")
+        self.assertEqual(sent["headers"]["x-api-key"], "k")
+
+
+class SearchScreen(unittest.TestCase):
+    """Экран поиска. Две колонки расходились по высоте втрое, и порядок
+    действий в них не читался."""
+
+    def setUp(self):
+        db.init()
+        self.html = io.open(os.path.join(os.path.dirname(__file__), "..",
+                                         "app", "templates", "index.html"),
+                            encoding="utf-8").read()
+
+    def test_both_big_cards_are_numbered_steps(self):
+        self.assertGreaterEqual(self.html.count('class="step-n"'), 6)
+        self.assertNotIn('class="fields two"', self.html)
+
+    def test_sources_are_tiles_with_key_state(self):
+        """Видно с первого взгляда, что отработает, а что молча пропустят."""
+        self.assertEqual(self.html.count('class="src"'), 5)
+        self.assertIn('class="need"', self.html)
+
+    def test_all_search_fields_survived(self):
+        for fid in ("q-text", "q-cities", "q-osm", "q-gis", "q-yandex",
+                    "q-dadata", "q-hh", "q-skip-empty", "q-limit", "q-pages",
+                    "q-then", "q-then-zak", "q-then-ai",
+                    "f-text", "f-presets", "f-area", "f-period", "f-pages",
+                    "f-title", "f-noagency", "f-maxopen",
+                    "f-then", "f-then-zak", "f-then-ai"):
+            self.assertIn('id="%s"' % fid, self.html, "пропало поле %s" % fid)
 
 
 if __name__ == "__main__":
