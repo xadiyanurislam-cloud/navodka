@@ -312,7 +312,7 @@ class Scoring(unittest.TestCase):
                                           "tech_calltracking": "Calltouch"}, [])
         self.assertEqual(weak, 0)
         self.assertGreaterEqual(strong, 45)
-        self.assertTrue(any("вакансий" in r for r in why))
+        self.assertTrue(any("вакансий" in p["text"] for p in why if p["got"]))
 
     def test_score_never_exceeds_hundred(self):
         row = {"director": "И", "site": "x.ru"}
@@ -2535,6 +2535,81 @@ class AnalyzeOneCompany(unittest.TestCase):
     def test_missing_company_is_not_a_crash(self):
         d = self.app.post("/api/company/999999/analyze").get_json()
         self.assertFalse(d["ok"])
+
+
+class ScoreBreakdown(unittest.TestCase):
+    """Число без разбора человек либо принимает на веру, либо не верит
+    вовсе, и оба исхода одинаково бесполезны."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    def test_parts_add_up_to_the_score(self):
+        row = {"director": "Иванов", "site": "x.ru"}
+        sig = {"hh_vacancies": "4", "tech_calltracking": "Calltouch",
+               "size": "малый"}
+        cts = [{"kind": "email", "owner": "general", "verified": "unchecked"},
+               {"kind": "phone", "owner": "general", "verified": "unchecked"}]
+        value, parts = score.compute(row, sig, cts)
+        got = sum(p["points"] for p in parts if p["got"])
+        self.assertEqual(value, min(100, got), "разбор не сходится с баллом")
+
+    def test_unearned_points_are_listed_too(self):
+        """Несделанное объясняет балл не хуже сделанного и заодно
+        показывает, чем его поднять."""
+        value, parts = score.compute({"director": "", "site": ""}, {}, [])
+        self.assertEqual(value, 0)
+        miss = [p for p in parts if not p["got"]]
+        self.assertTrue(len(miss) >= 8)
+        self.assertTrue(any(p["key"] == "lpr_found" for p in miss))
+        self.assertTrue(all(p["points"] > 0 for p in miss),
+                        "незасчитанное без веса ничего не объясняет")
+
+    def test_every_part_explains_itself(self):
+        _v, parts = score.compute({"director": "И", "site": "x.ru"},
+                                  {"hh_vacancies": "1"}, [])
+        for p in parts:
+            self.assertTrue(p["text"], p)
+            self.assertTrue(p["why"], "слагаемое %s без объяснения" % p["key"])
+
+    def test_half_weight_for_a_single_vacancy(self):
+        """Три вакансии — отдел растёт, одна — затыкают дыру."""
+        one, parts_one = score.compute({"director": "", "site": ""},
+                                       {"hh_vacancies": "1"}, [])
+        many, _ = score.compute({"director": "", "site": ""},
+                                {"hh_vacancies": "3"}, [])
+        self.assertEqual(one, many // 2)
+        self.assertIn("меньше трёх", [p["text"] for p in parts_one
+                                      if p["key"] == "vacancies_sales"][0])
+
+    def test_guessed_contact_does_not_hide_the_missing_found_one(self):
+        """Выведенный адрес — догадка, и она не должна выглядеть как
+        найденный контакт."""
+        _v, parts = score.compute({"director": "И", "site": "x.ru"},
+                                  {"lpr_contact": "выведен"}, [])
+        keys = {p["key"]: p for p in parts}
+        self.assertTrue(keys["lpr_guessed"]["got"])
+        self.assertFalse(keys["lpr_found"]["got"])
+
+    def test_card_returns_the_breakdown(self):
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест",
+                                    "site": "t.ru"})
+        d = self.app.get("/api/company/%d" % cid).get_json()
+        self.assertTrue(d["score_parts"])
+        self.assertIn("score_now", d)
+        got = sum(p["points"] for p in d["score_parts"] if p["got"])
+        self.assertEqual(d["score_now"], min(100, got))
+
+    def test_legend_lists_everything_with_weights(self):
+        d = self.app.get("/api/score/legend").get_json()
+        self.assertEqual(d["max"], 100)
+        keys = {x["key"] for x in d["legend"]}
+        self.assertEqual(keys, set(score.WEIGHTS),
+                         "в справке не все слагаемые")
+        self.assertTrue(all(x["why"] for x in d["legend"]))
 
 
 if __name__ == "__main__":

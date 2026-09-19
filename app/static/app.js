@@ -1045,6 +1045,40 @@ function parseSeries(raw) {
 
 const GROWTH_CLASS = (g) => /рост/.test(g) ? "good" : /спад/.test(g) ? "bad" : "";
 
+// Из чего сложился балл.
+//
+// Число без разбора человек либо принимает на веру, либо не верит ему
+// вовсе, и оба исхода одинаково бесполезны. Показываем и засчитанное, и
+// незасчитанное: второе объясняет балл не хуже первого, а заодно
+// говорит, чем его поднять — и это уже список дел, а не жалоба.
+function scoreBlock(c, parts, now) {
+  if (!parts.length) return "";
+  const got = parts.filter((p) => p.got);
+  const miss = parts.filter((p) => !p.got && p.points >= 5);
+  const row = (p, plus) => `<li class="${plus ? "got" : "miss"}"
+      title="${esc(p.why || "")}">
+      <b>${plus ? "+" : ""}${p.points}</b><span>${esc(p.text)}</span></li>`;
+  // Считаем по слагаемым, а не берём число из таблицы. В таблице лежит
+  // балл с последнего обогащения, и если правила с тех пор поменялись,
+  // он разойдётся с разбором, который стоит прямо под ним.
+  const total = now != null ? now : Math.min(100,
+    got.reduce((a, p) => a + p.points, 0));
+  const could = Math.min(miss.reduce((a, p) => a + p.points, 0), 100 - total);
+  const stale = c.score != null && c.score !== total;
+  return `<div class="score-block">
+    <h4>Из чего сложился балл <b class="score-total">${total}</b></h4>
+    ${stale ? `<p class="score-stale">В таблице ${c.score} — балл с
+      прошлого обогащения. Обновится, когда компанию обогатят снова.</p>` : ""}
+    <ul class="score-list">${got.map((p) => row(p, true)).join("")}</ul>
+    ${miss.length ? `<p class="score-could">Не засчитано — это ещё
+      ${could} баллов, если появится:</p>
+      <ul class="score-list">${miss.map((p) => row(p, false)).join("")}</ul>` : ""}
+    <p class="score-note">Балл нужен не для точности, а для порядка
+      обзвона: список проходят сверху вниз и до середины обычно не
+      доходят. Наведите на строку — объяснение, почему она считается.</p>
+  </div>`;
+}
+
 // Всё сгенерированное помечено и лежит отдельным блоком: смешать его с
 // разобранными фактами значит потерять возможность отличить одно от другого.
 function aiBlock(c, sig) {
@@ -1193,6 +1227,7 @@ async function toggleCard(tr, id) {
         ${fact(sig.hh_salary, "зарплаты в вакансиях")}
       </div>
 
+      ${scoreBlock(c, d.score_parts || [], d.score_now)}
       ${aiBlock(c, sig)}
       ${(() => { const r = risks(c, sig); return r.length ? `
         <h4 class="mt">На что обратить внимание</h4>

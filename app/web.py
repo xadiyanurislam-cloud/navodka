@@ -13,7 +13,7 @@ import time
 from flask import (Flask, Response, jsonify, render_template, request,
                    send_file)
 
-from . import ai, db, diag, export, geo, settings, update, worker
+from . import ai, db, diag, export, geo, score, settings, update, worker
 from .sources import gis2, hh
 
 
@@ -509,6 +509,11 @@ def create_app():
         return jsonify(ok=True, rows=out, total=total, shown=matched,
                        returned=len(out))
 
+    @app.get("/api/score/legend")
+    def api_score_legend():
+        """Из чего вообще складывается балл — вне привязки к компании."""
+        return jsonify(ok=True, legend=score.legend(), max=100)
+
     @app.get("/api/company/<int:cid>")
     def api_company(cid):
         """Полная карточка — то, что не влезает в строку таблицы."""
@@ -521,6 +526,11 @@ def create_app():
                            ORDER BY confidence DESC""", (cid,)).fetchall()
         sig = {r["key"]: r["value"] for r in
                c.execute("SELECT key, value FROM signals WHERE company_id=?", (cid,))}
+        # Из чего сложился балл. Считаем на лету, а не храним: правила
+        # меняются от версии к версии, и сохранённое объяснение начнёт
+        # расходиться с числом, которое лежит рядом в той же строке.
+        score_now, score_parts = score.compute(dict(row), sig,
+                                               [dict(x) for x in cts])
         # Ссылки на поиск по ФИО отдаются, но не сохраняются: программа по
         # ним не ходит. Автоматически собранная база личных страниц — это
         # профилирование частного лица, а по имени ещё и ненадёжно.
@@ -533,7 +543,8 @@ def create_app():
                 x["note"] = site_src.phone_kind(x["value"])
             out.append(x)
         return jsonify(ok=True, company=dict(row), contacts=out, signals=sig,
-                       notes=db.notes(cid),
+                       notes=db.notes(cid), score_parts=score_parts,
+                       score_now=score_now,
                        search=[{"title": t, "url": u} for t, u in
                                social.search_links(row["director"], row["name"])])
 
