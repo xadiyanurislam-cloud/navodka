@@ -728,6 +728,28 @@ class KeyLinks(unittest.TestCase):
             block = html[i:i + 900]
             self.assertIn(host, block, "нет ссылки на ключ у поля %s" % field)
 
+    def test_link_opening_does_not_rely_on_webbrowser_alone(self):
+        """В собранном exe webbrowser срывается: ищет браузер по путям,
+        которых внутри сборки нет, и Windows получает пустую строку."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "app/web.py"), encoding="utf-8") as f:
+            code = f.read()
+        i = code.index("def _open_outside")
+        block = code[i:i + 2500]
+        self.assertIn("os.startfile", block)
+        self.assertIn("FileProtocolHandler", block)
+        # webbrowser остаётся, но последним.
+        self.assertGreater(block.index("import webbrowser"),
+                           block.index("os.startfile"))
+
+    def test_unopened_link_is_not_a_dead_end(self):
+        """Не открылось — адрес должен попасть в буфер обмена."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "app/static/app.js"), encoding="utf-8") as f:
+            js = f.read()
+        i = js.index('post("/api/open"')
+        self.assertIn("copy(a.href)", js[i:i + 600])
+
     def test_external_links_go_to_the_browser(self):
         """Внутри окна программы нет ни адресной строки, ни кнопки
         «назад»: открытая в нём чужая страница — тупик."""

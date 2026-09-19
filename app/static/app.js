@@ -1017,11 +1017,16 @@ $("f-text").addEventListener("keydown", (e) => {
 // Любая внешняя ссылка уходит в системный браузер. Внутри окна
 // программы нет ни адресной строки, ни кнопки «назад»: открытый в нём
 // чужой сайт — это тупик, из которого выход один — закрыть программу.
-document.addEventListener("click", (e) => {
+document.addEventListener("click", async (e) => {
   const a = e.target.closest && e.target.closest('a[href^="http"]');
   if (!a) return;
   e.preventDefault();
-  post("/api/open", {url: a.href});
+  const d = await post("/api/open", {url: a.href});
+  if (d && d.ok) return;
+  // Браузер не открылся. Тупик вместо ссылки — это хуже, чем ссылка,
+  // поэтому кладём адрес в буфер: вставить его человек сможет сам.
+  await copy(a.href);
+  toast("Браузер не открылся — адрес скопирован, вставьте его сами");
 });
 
 loadStats();

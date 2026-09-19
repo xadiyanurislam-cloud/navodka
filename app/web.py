@@ -14,6 +14,46 @@ from . import ai, db, diag, export, geo, settings, update, worker
 from .sources import gis2, hh
 
 
+def _open_outside(url):
+    """Отдать адрес системе. Возвращает (получилось, что пошло не так).
+
+    Способов несколько, и это не перестраховка. Модуль webbrowser в
+    собранном exe срывается: он ищет браузер по путям и переменным
+    окружения, которых внутри сборки нет, и Windows получает вместо
+    адреса пустую строку — на экране появляется «Windows не удаётся найти
+    "\\"». Поэтому сначала просим систему открыть адрес напрямую, и
+    только в самом конце пробуем webbrowser.
+    """
+    import subprocess
+    tried = []
+
+    if os.name == "nt":
+        try:
+            os.startfile(url)                    # noqa: S606 — это и есть цель
+            return True, ""
+        except Exception as e:
+            tried.append("startfile: %s" % str(e)[:80])
+        try:
+            # Обработчик протоколов Windows. Берёт адрес как аргумент
+            # целиком, поэтому «?» и «&» в нём не нужно экранировать —
+            # в отличие от cmd start, который на «&» ломает команду.
+            subprocess.Popen(["rundll32", "url.dll,FileProtocolHandler", url],
+                             creationflags=0x08000000)   # без окна консоли
+            return True, ""
+        except Exception as e:
+            tried.append("rundll32: %s" % str(e)[:80])
+
+    try:
+        import webbrowser
+        if webbrowser.open(url):
+            return True, ""
+        tried.append("webbrowser: браузер не отозвался")
+    except Exception as e:
+        tried.append("webbrowser: %s" % str(e)[:80])
+
+    return False, "не удалось открыть браузер (%s)" % "; ".join(tried)
+
+
 def _exit_soon(delay=1.5):
     """Закрыть программу, дав браузеру получить ответ.
 
@@ -250,15 +290,12 @@ def create_app():
         дороги обратно: остаётся закрывать программу целиком. Поэтому все
         внешние ссылки уходят сюда, а отсюда — в системный браузер.
         """
-        import webbrowser
-        url = (request.get_json(silent=True) or {}).get("url") or ""
+        url = ((request.get_json(silent=True) or {}).get("url") or "").strip()
         if not url.startswith(("http://", "https://")):
-            return jsonify(ok=False, error="ссылка не похожа на адрес")
-        try:
-            webbrowser.open(url)
-        except Exception as e:
-            return jsonify(ok=False, error=str(e)[:160])
-        return jsonify(ok=True)
+            return jsonify(ok=False, error="ссылка не похожа на адрес", url=url)
+        ok, err = _open_outside(url)
+        # Адрес возвращаем всегда: не открылось — человек хотя бы скопирует.
+        return jsonify(ok=ok, error=err, url=url)
 
     @app.post("/api/stop")
     def api_stop():
