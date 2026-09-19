@@ -108,6 +108,49 @@ def by_name(name, token, count=1, timeout=15, session=None):
     return _unpack(items[0])
 
 
+def search_by_name(query, token, count=20, region="", timeout=20, session=None,
+                   on_log=None):
+    """Действующие юрлица, у которых искомое слово стоит в названии.
+
+    Это второй способ искать «стоматологии» — не по справочнику
+    организаций, а по ЕГРЮЛ. В России вид деятельности очень часто вынесен
+    прямо в название: «Стоматология Улыбка», «АвтоТрансЛогистика». Улов
+    получается другой, чем у 2ГИС, и потому полезный: здесь сразу есть ИНН
+    и ФИО руководителя, ради которых иначе делался бы отдельный запрос.
+
+    Ограничение источника: за один запрос отдаётся не больше двадцати
+    совпадений. Поэтому запрос повторяется по городам — двадцать на
+    каждый, а не двадцать на всю страну.
+    """
+    if not (query or "").strip() or not token:
+        return []
+    s = session or requests.Session()
+    body = {"query": query, "count": max(1, min(20, int(count or 20))),
+            "status": ["ACTIVE"], "type": "LEGAL"}
+    if region:
+        # Фильтр по адресу регистрации. Без него «стоматология» приносит
+        # двадцать компаний со всей страны — по одной из каждого города.
+        body["locations"] = [{"region": region}]
+    try:
+        r = s.post(SUGGEST, json=body, headers=_headers(token), timeout=timeout)
+        if r.status_code != 200:
+            if on_log:
+                on_log("ЕГРЮЛ ответил %s: %s" % (r.status_code, (r.text or "")[:160]),
+                       "warn")
+            return []
+        items = (r.json() or {}).get("suggestions") or []
+    except Exception as e:
+        if on_log:
+            on_log("ЕГРЮЛ недоступен: %s" % str(e)[:160], "warn")
+        return []
+    out = []
+    for it in items:
+        row = _unpack(it)
+        if row.get("name"):
+            out.append(row)
+    return out
+
+
 def by_inn(inn, token, timeout=15, session=None):
     if not (inn or "").strip() or not token:
         return {}

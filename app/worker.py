@@ -15,7 +15,7 @@ import time
 
 import requests
 
-from . import ai, db, enrich, profile, score, settings, social, verify
+from . import ai, db, enrich, geo, profile, score, settings, social, verify
 from .sources import dadata, fns, gis2, hh, importer, site as site_src, zakupki
 
 _thread = None
@@ -98,17 +98,28 @@ def task_hh_search(task_id, params):
         db.log(task_id, msg, level)
 
     errors = []
+    queries_left = True
     employers, seen = [], set()
     for qi, text in enumerate(queries, 1):
+        if not queries_left:
+            break
         for area in areas:
             if _should_stop():
                 break
             log("[%d/%d] Ищу: «%s», регион %s, за %d дней"
                 % (qi, len(queries) * len(areas), text, area, period))
+            before = len(errors)
             part = hh.search_employers(text, area=area, period=period, pages=pages,
                                        on_log=log, should_stop=_should_stop,
                                        errors=errors, in_title=in_title,
                                        skip_agencies=skip_agencies)
+            if len(errors) > before and "403" in errors[-1]:
+                # Отказ по отпечатку не зависит ни от запроса, ни от
+                # региона: повторять его двенадцать раз — значит двенадцать
+                # раз ждать впустую.
+                log("hh отклоняет обращения — остальные запросы пропускаю.", "warn")
+                queries_left = False
+                break
             for emp in part:
                 # Одна компания находится по нескольким запросам сразу —
                 # это норма. Складываем вакансии, а не заводим дубль.
@@ -652,8 +663,180 @@ def _rescore(company_id):
     db.set_score(company_id, value)
 
 
+# ── Задача: поиск по виду деятельности ───────────────────
+def task_find(task_id, params):
+    """Один запрос — «стоматология», «грузоперевозки», «АТИ» — по всем
+    источникам сразу.
+
+    Это другой вопрос, чем у поиска по вакансиям. Там мы искали компании
+    с подтверждённой болью: нанимают продавцов, значит продажи буксуют.
+    Здесь — все компании нужного вида, независимо от того, нанимают они
+    кого-нибудь или нет. Ни один справочник в одиночку на такой вопрос
+    не отвечает: 2ГИС знает вывески, но не знает ИНН; ЕГРЮЛ знает
+    юрлица, но только те, у кого вид деятельности попал в название; hh
+    знает работодателей, но только тех, кто хоть раз нанимал. Поэтому
+    спрашиваем все три и сводим ответы в один список.
+    """
+    query = (params.get("query") or "").strip()
+    cities = geo.pick(params.get("cities") or [])
+    use = params.get("sources") or {}
+    pages = max(1, min(10, int(params.get("pages") or 3)))
+
+    def log(msg, level="info"):
+        db.log(task_id, msg, level)
+
+    if not query:
+        raise RuntimeError("не задано, кого искать")
+
+    gis_key = db.get_setting("gis_key", "")
+    dadata_token = db.get_setting("dadata_token", "")
+    want_gis = use.get("gis", True) and bool(gis_key)
+    want_egrul = use.get("dadata", True) and bool(dadata_token)
+    want_hh = use.get("hh", True)
+
+    if use.get("gis", True) and not gis_key:
+        log("2ГИС пропущен: не задан ключ Places API. Это главный источник "
+            "для такого поиска — ключ берётся бесплатно на dev.2gis.ru.", "warn")
+    if use.get("dadata", True) and not dadata_token:
+        log("ЕГРЮЛ пропущен: не задан токен DaData.", "warn")
+    if not (want_gis or want_egrul or want_hh):
+        raise RuntimeError("не включён ни один источник — задайте ключи в «Настройках»")
+
+    log("Ищу «%s» по городам: %s"
+        % (query, ", ".join(c["name"] for c in cities)))
+
+    http = requests.Session()
+    http.headers.update({"User-Agent": settings.USER_AGENT})
+    errors = []
+    # Ключ — название в нижнем регистре: одна и та же компания приходит
+    # из справочника как «Стоматология Улыбка», а из ЕГРЮЛ как
+    # «ООО "Улыбка"». Полного совпадения не будет, но точные дубли внутри
+    # одного прогона отсечь надо, иначе список вдвое длиннее, чем правда.
+    rows, seen = [], set()
+
+    def add(row, source):
+        key = (row.get("inn") or "").strip() or \
+            (row.get("site") or "").strip().lower() or \
+            (row.get("name") or "").strip().lower()
+        if not key or key in seen:
+            return False
+        seen.add(key)
+        row["source"] = source
+        rows.append(row)
+        return True
+
+    for city in cities:
+        if _should_stop():
+            break
+
+        if want_gis and city["gis"]:
+            log("2ГИС · %s" % city["name"])
+            for it in gis2.search(query, city["gis"], gis_key, pages=pages,
+                                  session=http, on_log=log,
+                                  should_stop=_should_stop):
+                add({"name": it["name"], "site": it["site"],
+                     "address": it["address"], "okved_name": it["rubric"],
+                     "region": city["name"], "phones": it["phones"],
+                     "emails": it["emails"]}, "2ГИС")
+
+        if want_egrul:
+            log("ЕГРЮЛ · %s" % city["name"])
+            region = "" if city["name"] == "Россия целиком" else city["name"]
+            for it in dadata.search_by_name(query, dadata_token, region=region,
+                                            session=http, on_log=log):
+                add(dict(it, phones=[], emails=[]), "ЕГРЮЛ")
+
+        if want_hh and city["hh"]:
+            log("hh.ru · %s" % city["name"])
+            before = len(errors)
+            part = hh.search_employers_by_text(query, area=city["hh"],
+                                               pages=min(pages, 5), on_log=log,
+                                               should_stop=_should_stop,
+                                               errors=errors)
+            if len(errors) > before:
+                # hh отказал. Повторять перебор способов связи на каждом
+                # следующем городе бессмысленно: ответ будет тот же, а
+                # ждать придётся по минуте на город.
+                want_hh = False
+                log("hh отключён до конца прогона — остальные источники "
+                    "продолжают работу.", "warn")
+            for e in part:
+                detail = hh.employer_details(e["id"], session=http)
+                add({"name": detail.get("name") or e["name"],
+                     "hh_id": e["id"],
+                     "site": site_src.normalize_url(detail.get("site") or ""),
+                     "region": detail.get("area") or e.get("area") or city["name"],
+                     "okved_name": detail.get("industries") or "",
+                     "about": detail.get("about") or "",
+                     "open_vacancies": detail.get("open_vacancies") or 0,
+                     "phones": [], "emails": []}, "hh.ru")
+                time.sleep(0.3)
+
+    if not rows:
+        # Молчаливый ноль — худший исход: непонятно, то ли таких компаний
+        # нет, то ли источник отказал.
+        if errors:
+            raise RuntimeError(errors[-1][:400])
+        raise RuntimeError(
+            "ничего не нашлось. Проверьте слово (попробуйте короче: "
+            "«стоматология» вместо «стоматологическая клиника») и убедитесь, "
+            "что задан ключ 2ГИС — без него ищут только ЕГРЮЛ и hh.")
+
+    db.update_task(task_id, total=len(rows))
+    log("Найдено записей: %d. Раскладываю по базе." % len(rows))
+
+    added = known = skipped = 0
+    for i, row in enumerate(rows, 1):
+        if _should_stop():
+            log("Остановлено пользователем.", "warn")
+            break
+        if db.is_blacklisted({"inn": row.get("inn"), "hh_id": row.get("hh_id"),
+                              "name": row.get("name")}):
+            skipped += 1
+            db.update_task(task_id, done=i)
+            continue
+        phones = row.pop("phones", []) or []
+        emails = row.pop("emails", []) or []
+        about = row.pop("about", "")
+        open_vac = row.pop("open_vacancies", 0)
+        cid, is_new = db.upsert_company(row)
+        added += 1 if is_new else 0
+        known += 0 if is_new else 1
+        for ph in phones[:4]:
+            db.add_contact(cid, "phone", ph, "general", 85, "unchecked", "2ГИС")
+        for addr in emails[:3]:
+            db.add_contact(cid, "email", addr, site_src.guess_owner(addr), 85,
+                           "unchecked", "2ГИС")
+        # По какому слову компания попала в список. Через неделю это
+        # единственный способ вспомнить, зачем она здесь.
+        db.add_signal(cid, "found_by", query)
+        if about:
+            db.add_signal(cid, "hh_about", about)
+        if open_vac:
+            db.add_signal(cid, "hh_open_all", open_vac)
+        _rescore(cid)
+        db.update_task(task_id, done=i)
+
+    total = db.conn().execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
+    log("Готово. Новых: %d, уже было: %d%s. Всего в базе: %d"
+        % (added, known,
+           (", пропущено из чёрного списка: %d" % skipped) if skipped else "",
+           total))
+
+    if params.get("then_enrich") and added:
+        db.create_task("enrich", {
+            "limit": min(500, added), "fns": True, "only_lpr": False,
+            "zakupki": bool(params.get("then_zakupki")),
+            "then_ai": bool(params.get("then_ai")),
+        })
+        log("Обогащение поставлено в очередь.")
+    elif params.get("then_enrich"):
+        log("Новых компаний нет — обогащать нечего.", "warn")
+
+
 HANDLERS = {
     "ai": task_ai,
+    "find": task_find,
     "hh_search": task_hh_search,
     "gis_search": task_gis_search,
     "import": task_import,

@@ -19,7 +19,7 @@ from app import settings                                    # noqa: E402
 settings.data_dir = lambda: _TMP
 settings.db_path = lambda: os.path.join(_TMP, "test.sqlite3")
 
-from app import ai, db, enrich, export, profile, score, social, update  # noqa: E402
+from app import ai, db, enrich, export, geo, profile, score, social, update  # noqa: E402
 from app.sources import dadata, fns, gis2, hh, importer, site, zakupki  # noqa: E402
 
 
@@ -449,6 +449,78 @@ class SearchPrecision(unittest.TestCase):
         self.assertIsNone(hh.days_since("вчера"))
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         self.assertEqual(hh.days_since(now), 0)
+
+
+class FindByTrade(unittest.TestCase):
+    """Поиск по виду деятельности: «стоматология», «грузоперевозки»."""
+
+    def test_city_has_number_in_both_directories(self):
+        """У 2ГИС свои номера регионов, у hh — свои. Разъедутся — будем
+        искать стоматологии Москвы в Новосибирске."""
+        msk = [c for c in geo.cities() if c["name"] == "Москва"][0]
+        self.assertEqual(msk["hh"], "1")
+        self.assertEqual(msk["gis"], 32)
+        spb = [c for c in geo.cities() if c["name"] == "Санкт-Петербург"][0]
+        self.assertEqual(spb["hh"], "2")
+
+    def test_whole_country_is_skipped_by_gis(self):
+        """У 2ГИС нет «России целиком» — поиск там всегда по городу."""
+        ru = [c for c in geo.cities() if c["name"] == "Россия целиком"][0]
+        self.assertFalse(ru["gis"])
+        self.assertEqual(ru["hh"], "113")
+
+    def test_empty_choice_falls_back_to_country(self):
+        self.assertEqual([c["name"] for c in geo.pick([])], ["Россия целиком"])
+        self.assertEqual([c["name"] for c in geo.pick(["Казань", "Москва"])],
+                         ["Москва", "Казань"])
+
+    def test_unknown_city_does_not_silently_search_everything(self):
+        """Название с опечаткой не должно превращаться в поиск по стране
+        без единого слова об этом... но и падать нельзя."""
+        self.assertEqual([c["name"] for c in geo.pick(["Мордор"])],
+                         ["Россия целиком"])
+
+    def test_employer_search_does_not_need_vacancies(self):
+        """Стоматология может не публиковать вакансий вовсе, а карточка
+        работодателя у неё есть."""
+        seen = {}
+
+        class FakeResp:
+            status_code = 200
+            def json(self):
+                return {"items": [{"id": "1", "name": "Стоматология Улыбка",
+                                   "area": {"name": "Москва"}}],
+                        "pages": 1, "found": 1}
+
+        class FakeSession:
+            headers = {}
+            def get(self, url, params=None, timeout=None):
+                seen.update(params or {})
+                seen["url"] = url
+                return FakeResp()
+
+        rows = hh.search_employers_by_text("стоматология",
+                                           session_factory=lambda: FakeSession())
+        self.assertTrue(seen["url"].endswith("/employers"))
+        self.assertEqual(seen["only_with_vacancies"], "false")
+        self.assertEqual([r["name"] for r in rows], ["Стоматология Улыбка"])
+
+    def test_agencies_are_dropped_here_too(self):
+        class FakeResp:
+            status_code = 200
+            def json(self):
+                return {"items": [{"id": "1", "name": "Кадровое агентство Успех"},
+                                  {"id": "2", "name": "Стоматология Улыбка"}],
+                        "pages": 1, "found": 2}
+
+        class FakeSession:
+            headers = {}
+            def get(self, url, params=None, timeout=None):
+                return FakeResp()
+
+        rows = hh.search_employers_by_text("стоматология",
+                                           session_factory=lambda: FakeSession())
+        self.assertEqual([r["name"] for r in rows], ["Стоматология Улыбка"])
 
 
 class SavedSearches(unittest.TestCase):

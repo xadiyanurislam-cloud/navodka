@@ -273,6 +273,70 @@ def search_employers(text, area="113", period=30, pages=5, per_page=100,
     return sorted(found.values(), key=lambda x: -x["vacancies"])
 
 
+def search_employers_by_text(text, area="113", pages=3, per_page=50, pause=0.4,
+                             on_log=None, should_stop=None, errors=None,
+                             session_factory=None, skip_agencies=True):
+    """Работодатели, у которых искомое слово в названии или в сфере.
+
+    Отдельный от вакансий способ. «Стоматология» вакансий может не
+    публиковать вовсе, но карточка работодателя у неё есть, и в ней —
+    сайт, отрасль и город, то есть всё, с чего начинается обогащение.
+    Вакансии тут не нужны: ищем не тех, кто нанимает, а тех, кто есть.
+    """
+    s = (session_factory or _session)()
+    pages = max(1, min(20, int(pages or 3)))
+    per_page = max(1, min(100, int(per_page or 50)))
+    found, agencies = {}, set()
+    for page in range(pages):
+        if should_stop and should_stop():
+            break
+        params = {"text": text, "area": area, "only_with_vacancies": "false",
+                  "per_page": per_page, "page": page}
+        r, err = _request(s, BASE + "/employers", params, on_log, session_factory)
+        if err:
+            if on_log:
+                on_log(err, "error")
+            if errors is not None:
+                errors.append(err)
+            break
+        if r.status_code != 200:
+            msg = "hh.ru ответил %s: %s" % (r.status_code, (r.text or "")[:300])
+            if on_log:
+                on_log(msg, "error")
+            if errors is not None:
+                errors.append(msg)
+            break
+        try:
+            data = r.json()
+        except Exception:
+            break
+        items = data.get("items") or []
+        if page == 0 and on_log:
+            on_log("hh.ru знает работодателей по запросу: %s" % data.get("found", "?"))
+        for e in items:
+            eid, name = str(e.get("id") or ""), (e.get("name") or "").strip()
+            if not eid or not name or eid in found:
+                continue
+            if skip_agencies and looks_like_agency(name):
+                agencies.add(name)
+                continue
+            found[eid] = {
+                "id": eid, "name": name,
+                "area": (e.get("area") or {}).get("name", ""),
+                "open_vacancies": e.get("open_vacancies") or 0,
+                "vacancies": 0, "titles": [], "salaries": [], "fresh": None,
+            }
+        if on_log:
+            on_log("hh: страница %d — работодателей %d, всего %d"
+                   % (page + 1, len(items), len(found)))
+        if page + 1 >= (data.get("pages") or 0):
+            break
+        time.sleep(pause)
+    if agencies and on_log:
+        on_log("Пропущено кадровых агентств: %d" % len(agencies))
+    return list(found.values())
+
+
 def employer_details(employer_id, session=None, timeout=20, ua=None):
     """Карточка работодателя: сайт и отрасль.
 

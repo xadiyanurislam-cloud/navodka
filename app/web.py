@@ -10,7 +10,7 @@ import threading
 
 from flask import Flask, Response, jsonify, render_template, request
 
-from . import ai, db, diag, export, settings, update, worker
+from . import ai, db, diag, export, geo, settings, update, worker
 from .sources import gis2, hh
 
 
@@ -56,9 +56,39 @@ def create_app():
             # экранируем: запрос человек пишет сам, и «</script>» в нём
             # сломал бы страницу целиком.
             last_search=(db.get_setting("last_search", "") or "{}").replace("<", "\\u003c"),
+            last_find=(db.get_setting("last_find", "") or "{}").replace("<", "\\u003c"),
+            geo_cities=geo.cities(),
+            # Какие источники готовы к работе. Сказать это надо до запуска,
+            # а не после: «ничего не нашлось» из-за незаданного ключа —
+            # самая обидная из возможных причин.
+            has_gis=bool(db.get_setting("gis_key", "")),
+            has_dadata=bool(db.get_setting("dadata_token", "")),
         )
 
     # ── Задачи ───────────────────────────────────────────
+    @app.post("/api/find")
+    def api_find():
+        """Поиск по виду деятельности: «стоматология», «грузоперевозки»."""
+        d = request.get_json(silent=True) or {}
+        query = (d.get("query") or "").strip()
+        if not query:
+            return jsonify(ok=False, error="впишите, кого ищем")
+        params = {
+            "query": query[:120],
+            "cities": [str(c) for c in (d.get("cities") or [])][:14],
+            "pages": max(1, min(10, int(d.get("pages") or 3))),
+            "sources": {
+                "gis": bool(d.get("gis", True)),
+                "dadata": bool(d.get("dadata", True)),
+                "hh": bool(d.get("hh", True)),
+            },
+            "then_enrich": bool(d.get("then_enrich")),
+            "then_zakupki": bool(d.get("then_zakupki")),
+            "then_ai": bool(d.get("then_ai")),
+        }
+        db.set_setting("last_find", json.dumps(params, ensure_ascii=False))
+        return jsonify(ok=True, task_id=db.create_task("find", params))
+
     def _search_params(d):
         """Условия поиска из формы — в том виде, в каком их берёт задача.
 

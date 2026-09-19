@@ -72,6 +72,72 @@
     <div class="diag" id="diag" hidden></div>
     <div class="cards">
 
+      <article class="card span find">
+        <header>
+          <h2>Кого ищем</h2>
+          <span class="tag free">три источника сразу</span>
+        </header>
+        <p>Одно слово — вид деятельности: <b>стоматология</b>, <b>грузоперевозки</b>,
+           <b>автосервис</b>, <b>АТИ</b>. Программа обойдёт справочник 2ГИС,
+           ЕГРЮЛ и работодателей hh.ru и сведёт найденное в один список без
+           дублей. Это не «кто нанимает продавцов», а «все компании такого
+           рода» — независимо от того, ищут они кого-нибудь или нет.</p>
+        <div class="fields two">
+
+          <div class="col">
+            <label>Вид деятельности
+              <input id="q-text" type="text" list="q-hints"
+                     placeholder="стоматология" value="">
+              <em class="fld-hint">Короче — лучше: «стоматология» найдёт больше,
+                 чем «стоматологическая клиника премиум-класса»</em>
+            </label>
+            <datalist id="q-hints">
+              {% for r in rubrics %}<option value="{{ r }}">{% endfor %}
+            </datalist>
+            <label>Города
+              <select id="q-cities" multiple size="7">
+                {% for c in geo_cities %}<option value="{{ c.name }}"{% if c.name == 'Москва' %} selected{% endif %}>{{ c.name }}</option>{% endfor %}
+              </select>
+              <em class="fld-hint">Несколько — с зажатым Ctrl. «Россия целиком»
+                 работает только для ЕГРЮЛ и hh: у 2ГИС поиск всегда по городу</em>
+            </label>
+          </div>
+
+          <div class="col">
+            <div class="sub">
+              <span class="lbl">Где искать</span>
+              <label class="opt"><input id="q-gis" type="checkbox" checked>
+                <span>Справочник 2ГИС
+                  <em>{% if has_gis %}ключ есть. Главный источник: вывески, телефоны и сайты{% else %}нужен ключ Places API, иначе будет пропущен — берётся бесплатно на dev.2gis.ru{% endif %}</em></span></label>
+              <label class="opt"><input id="q-dadata" type="checkbox" checked>
+                <span>ЕГРЮЛ
+                  <em>{% if has_dadata %}токен есть. Сразу отдаёт ИНН и ФИО руководителя{% else %}нужен токен DaData, иначе будет пропущен{% endif %}</em></span></label>
+              <label class="opt"><input id="q-hh" type="checkbox" checked>
+                <span>Работодатели hh.ru
+                  <em>без ключа. Ищет по названию и отрасли, вакансии не нужны</em></span></label>
+              <label class="inline">Глубина
+                <input id="q-pages" type="number" min="1" max="10" value="3">
+                <em class="fld-hint">Страниц на каждый город. Больше — дольше и шире</em>
+              </label>
+            </div>
+
+            <div class="sub">
+              <span class="lbl">Что делать дальше</span>
+              <label class="opt"><input id="q-then" type="checkbox" checked>
+                <span>Обогатить найденное<em>ЕГРЮЛ, сайт, ФНС — иначе в карточке одно название</em></span></label>
+              <label class="opt"><input id="q-then-zak" type="checkbox">
+                <span>Искать контакты в госзакупках<em>прямой телефон ответственного, но медленно</em></span></label>
+              <label class="opt"><input id="q-then-ai" type="checkbox">
+                <span>Разобрать через ИИ<em>нужен ключ и описание клиента в карточке ниже</em></span></label>
+            </div>
+          </div>
+        </div>
+        <footer class="search-foot">
+          <button class="btn primary" id="btn-find">Найти компании</button>
+          <span class="hint" id="find-ready"></span>
+        </footer>
+      </article>
+
       <article class="card span hh">
         <header>
           <h2>Вакансии hh.ru</h2>
@@ -141,7 +207,7 @@
           </div>
         </div>
         <footer class="search-foot">
-          <button class="btn primary" id="btn-search">Найти компании</button>
+          <button class="btn primary" id="btn-search">Найти по вакансиям</button>
           <button class="btn" id="btn-save-search">Сохранить набор</button>
           <span class="saved" id="saved-list"></span>
         </footer>
@@ -193,7 +259,7 @@
            чего начать разговор. Ничего не добывает и не придумывает —
            объясняет то, что уже лежит в карточке.</p>
         <div class="fields">
-          <label class="wide">Кого ищем
+          <label class="wide">Кто ваш клиент
             <textarea id="a-icp" rows="3" placeholder="Частные стоматологии и медцентры в Москве, отдел продаж от 3 человек, запись по телефону">{{ ai_icp }}</textarea>
           </label>
           <label class="wide">Что продаём
@@ -352,7 +418,8 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script>window.LAST_SEARCH = {{ last_search|safe }};</script>
+<script>window.LAST_SEARCH = {{ last_search|safe }};
+window.LAST_FIND = {{ last_find|safe }};</script>
 <script src="/static/app.js"></script>
 </body>
 </html>

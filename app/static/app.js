@@ -96,6 +96,70 @@ async function run(url, body, what) {
   poll();
 }
 
+// ── Поиск по виду деятельности ───────────────────────────
+// Главный вход: «стоматология», «грузоперевозки», «АТИ». Три источника
+// отвечают на этот вопрос по-разному, и спрашиваются они все сразу.
+function findForm() {
+  return {
+    query: $("q-text").value.trim(),
+    cities: [...$("q-cities").selectedOptions].map((o) => o.value),
+    pages: $("q-pages").value,
+    gis: $("q-gis").checked,
+    dadata: $("q-dadata").checked,
+    hh: $("q-hh").checked,
+    then_enrich: $("q-then").checked,
+    then_zakupki: $("q-then-zak").checked,
+    then_ai: $("q-then-ai").checked,
+  };
+}
+
+function fillFindForm(p) {
+  if (!p || !p.query) return;
+  $("q-text").value = p.query;
+  const want = (p.cities || []).map(String);
+  if (want.length) {
+    [...$("q-cities").options].forEach((o) => { o.selected = want.includes(o.value); });
+  }
+  if (p.pages) $("q-pages").value = String(p.pages);
+  const src = p.sources || {};
+  $("q-gis").checked = src.gis !== false;
+  $("q-dadata").checked = src.dadata !== false;
+  $("q-hh").checked = src.hh !== false;
+  $("q-then").checked = !!p.then_enrich;
+  $("q-then-zak").checked = !!p.then_zakupki;
+  $("q-then-ai").checked = !!p.then_ai;
+}
+
+// Сколько источников реально готово — видно до нажатия, а не после.
+function findReady() {
+  const f = findForm();
+  const on = [f.gis && "2ГИС", f.dadata && "ЕГРЮЛ", f.hh && "hh.ru"].filter(Boolean);
+  const box = $("find-ready");
+  box.textContent = on.length
+    ? `ищем в: ${on.join(", ")}`
+    : "ни один источник не выбран";
+  box.classList.toggle("bad", !on.length);
+}
+["q-gis", "q-dadata", "q-hh"].forEach((id) => { $(id).onchange = findReady; });
+findReady();
+
+$("btn-find").onclick = async () => {
+  const f = findForm();
+  if (!f.query) { $("q-text").focus(); toast("Впишите, кого ищем"); return; }
+  if (!f.gis && !f.dadata && !f.hh) { toast("Выберите хотя бы один источник"); return; }
+  const d = await post("/api/find", f);
+  if (!d.ok) { toast(d.error || "не вышло"); return; }
+  toast(`Ищу «${f.query}» — ${f.cities.length || 1} город(ов)`);
+  showView("base");
+  poll();
+};
+
+$("q-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("btn-find").click();
+});
+
+fillFindForm(window.LAST_FIND);
+
 // Условия поиска собираются в одном месте — их и запускают, и сохраняют,
 // и восстанавливают при следующем открытии программы.
 function searchForm() {
@@ -358,8 +422,9 @@ document.addEventListener("keydown", (e) => {
 // ── Ход работы ───────────────────────────────────────────
 const STATUS = {queued: "в очереди", running: "выполняется", done: "готово",
                 error: "ошибка", stopped: "остановлено"};
-const KINDS = {hh_search: "Поиск по вакансиям", gis_search: "Поиск по 2ГИС",
-               import: "Импорт списка", enrich: "Обогащение", ai: "ИИ-анализ"};
+const KINDS = {find: "Поиск компаний", hh_search: "Поиск по вакансиям",
+               gis_search: "Поиск по 2ГИС", import: "Импорт списка",
+               enrich: "Обогащение", ai: "ИИ-анализ"};
 let lastTask = null;
 
 // Сколько ещё ждать.
@@ -543,6 +608,7 @@ function signalChips(sig) {
   if (sig.size) out.push([esc(sig.size), ["малый", "средний"].includes(sig.size)]);
   if (sig.revenue) out.push([(sig.revenue / 1e6).toFixed(1) + " млн ₽", false]);
   if (sig.zakupki_person) out.push(["в закупках", true]);
+  if (sig.found_by) out.push([`найдено по «${esc(sig.found_by)}»`, false]);
   return out.map(([t, hot]) => `<span class="sig ${hot ? "hot" : ""}">${t}</span>`).join("");
 }
 
