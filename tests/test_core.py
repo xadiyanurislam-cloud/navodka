@@ -3012,5 +3012,92 @@ class ParallelAI(unittest.TestCase):
         self.assertEqual(n, 5)
 
 
+class LighterList(unittest.TestCase):
+    """Список перезапрашивается, пока идёт обход. Каждый лишний
+    килобайт в ответе — это работа вместо ответа на нажатия."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM companies")
+        db.conn().execute("DELETE FROM contacts")
+        db.conn().execute("DELETE FROM signals")
+        db.conn().commit()
+        self.app = web.create_app().test_client()
+
+    def test_heavy_columns_stay_out_of_the_list(self):
+        """КП — до шести килобайт на компанию, и в строке его не видно."""
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
+        db.update_company_fields(cid, {"ai_kp": "К" * 6000,
+                                       "ai_opener": "О" * 800})
+        row = self.app.get("/api/companies").get_json()["rows"][0]
+        self.assertNotIn("ai_kp", row)
+        self.assertNotIn("ai_opener", row)
+
+    def test_columns_the_table_draws_are_all_there(self):
+        db.upsert_company({"name": "ООО Тест", "source": "тест",
+                           "inn": "77", "site": "x.ru", "region": "Москва",
+                           "director": "Иванов"})
+        row = self.app.get("/api/companies").get_json()["rows"][0]
+        for key in ("id", "name", "inn", "site", "region", "director",
+                    "director_post", "score", "stage", "callcenter",
+                    "next_step", "next_date"):
+            self.assertIn(key, row, "в списке нет %s" % key)
+
+    def test_only_the_first_contacts_travel_but_the_count_is_honest(self):
+        cid, _ = db.upsert_company({"name": "Много контактов", "source": "тест"})
+        for i in range(60):
+            db.add_contact(cid, "email", "a%d@x.ru" % i, "general", 50,
+                           "unchecked", "сайт")
+        row = self.app.get("/api/companies").get_json()["rows"][0]
+        self.assertLessEqual(len(row["contacts"]), 12)
+        self.assertEqual(row["contacts_total"], 60)
+
+    def test_socials_are_not_crowded_out_by_phones(self):
+        """Своя квота: иначе шесть телефонов вытесняют группу ВК, ради
+        которой список и открывают."""
+        cid, _ = db.upsert_company({"name": "С соцсетями", "source": "тест"})
+        for i in range(20):
+            db.add_contact(cid, "phone", "+7495000000%d" % i, "general", 90,
+                           "unchecked", "сайт")
+        db.add_contact(cid, "social", "https://vk.com/x", "general", 50,
+                       "unchecked", "сайт")
+        row = self.app.get("/api/companies").get_json()["rows"][0]
+        self.assertTrue(any(x["kind"] == "social" for x in row["contacts"]))
+
+    def test_unused_signals_stay_out(self):
+        cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
+        db.add_signal(cid, "revenue_series", "2019:1;2020:2;2021:3")
+        db.add_signal(cid, "hh_vacancies", "3")
+        sig = self.app.get("/api/companies").get_json()["rows"][0]["signals"]
+        self.assertIn("hh_vacancies", sig)
+        self.assertNotIn("revenue_series", sig)
+
+
+class StallWatchdog(unittest.TestCase):
+    """«Зависло» снаружи выглядит одинаково, а причин две, и лечатся они
+    по-разному. Сторож говорит, какая именно."""
+
+    def test_watchdog_is_started_with_the_worker(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        self.assertIn("_watchdog", src)
+        self.assertIn('name="navodka-watch"', src)
+
+    def test_small_delays_are_not_reported(self):
+        """Просыпаться на сотню миллисекунд позже — норма, и засорять
+        этим журнал значит сделать его нечитаемым."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        block = src[src.index("def _watchdog"):src.index("def recover")]
+        self.assertIn("if late < 2.0:", block)
+        self.assertIn("continue", block)
+
+    def test_worst_stall_is_remembered(self):
+        worker._stall["worst"] = 0.0
+        worker._stall["worst"] = max(worker._stall["worst"], 7.5)
+        self.assertEqual(worker._stall["worst"], 7.5)
+        worker._stall["worst"] = 0.0
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

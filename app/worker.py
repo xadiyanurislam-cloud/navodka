@@ -28,13 +28,54 @@ _current = {"task_id": None}
 
 # ── Запуск и остановка ───────────────────────────────────
 def start():
-    global _thread
+    global _thread, _watch
     if _thread and _thread.is_alive():
         return
     recover()
     _stop.clear()
     _thread = threading.Thread(target=_loop, name="navodka-worker", daemon=True)
     _thread.start()
+    if not (_watch and _watch.is_alive()):
+        _watch = threading.Thread(target=_watchdog, name="navodka-watch",
+                                  daemon=True)
+        _watch.start()
+
+
+_watch = None
+_stall = {"worst": 0.0}
+
+
+def _watchdog():
+    """Сторож: замечает, когда программа перестаёт отвечать, и говорит
+    об этом в журнале.
+
+    Нужен потому, что «зависло» снаружи выглядит одинаково, а причин
+    две, и лечатся они по-разному. Либо все потоки Python стоят — тогда
+    и этот поток проснётся с опозданием, и опоздание попадёт в журнал.
+    Либо стоит только окно, а Python работает — тогда в журнале будет
+    пусто, и значит дело не в обходе, а в отрисовке.
+
+    Сам сторож почти ничего не стоит: просыпается раз в секунду и
+    смотрит на часы. Без него разбор зависания — гадание, а гадать здесь
+    уже приходилось, причём мимо.
+    """
+    last = time.time()
+    while True:
+        time.sleep(1.0)
+        now = time.time()
+        late = now - last - 1.0
+        last = now
+        if late < 2.0:
+            continue
+        _stall["worst"] = max(_stall["worst"], late)
+        tid = _current.get("task_id")
+        if tid:
+            try:
+                db.log(tid, "Программа не отвечала %.0f с — потоки стояли. "
+                            "Если окно в этот момент побелело, причина здесь."
+                       % late, "warn")
+            except Exception:
+                pass
 
 
 def recover():
@@ -320,6 +361,7 @@ def task_enrich(task_id, params):
         crawls.fill(i - 1)
         found_lpr = False        # контакт первого лица найден, а не выведен
         guessed_lpr = False      # выведен по схеме домена — это догадка
+        step_t0 = time.time()
         log("[%d/%d] %s" % (i, len(rows), row["name"]))
 
         # 1. ЕГРЮЛ: ФИО руководителя, ИНН, ОКВЭД, адрес.
@@ -574,8 +616,19 @@ def task_enrich(task_id, params):
         db.add_signal(cid, "enriched", int(time.time()))
         _rescore(cid)
         db.update_task(task_id, done=i)
+        # Долгая компания — не беда сама по себе: чужой сервер думает
+        # столько, сколько думает. Но если жалуются на зависание, по
+        # журналу должно быть видно, на ком именно оно случилось.
+        spent = time.time() - step_t0
+        if spent > 25:
+            log("   заняла %.0f с — это много. Обычно виноват медленный "
+                "сайт компании." % spent, "warn")
 
     crawls.close()
+    if _stall["worst"] > 2:
+        log("За прогон программа переставала отвечать, худшая заминка "
+            "%.0f с. Это Python, а не отрисовка." % _stall["worst"], "warn")
+        _stall["worst"] = 0.0
     got = db.conn().execute(
         "SELECT COUNT(*) n FROM signals WHERE key='lpr_contact' AND value='найден'"
     ).fetchone()["n"]

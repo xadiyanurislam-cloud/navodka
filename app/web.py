@@ -88,6 +88,12 @@ def _exit_soon(delay=1.5):
 STARTED_AT = int(time.time())
 
 
+# Признаки, которые видно в строке списка. Всё остальное — в карточке.
+LIST_SIGNALS = ("hh_vacancies", "hh_fresh_days", "tech_calltracking",
+                "tech_crm", "tech_telephony", "gis_rubric", "size",
+                "revenue", "zakupki_person", "found_by", "cc_why")
+
+
 def create_app():
     app = Flask(__name__,
                 template_folder=settings.resource_path("app", "templates"),
@@ -481,7 +487,14 @@ def create_app():
         q = (request.args.get("q") or "").strip()
         only = request.args.get("only") or ""
         cond, args = _company_where(q, only, request.args.get("ids") or "")
-        sql = "SELECT * FROM companies"
+        # Только те колонки, которые видно в строке. «SELECT *» тянул и
+        # составленное КП — до шести килобайт на компанию, — и черновик
+        # письма, и список учредителей: всё это едет в ответе лишь затем,
+        # чтобы браузер его выбросил. На сотне строк это половина веса
+        # ответа, а ответ приходит заново, пока идёт обход.
+        sql = ("SELECT id, name, inn, site, region, director, director_post, "
+               "score, stage, callcenter, ai_fit, next_step, next_date "
+               "FROM companies")
         if cond:
             sql += " WHERE " + cond
         # Сколько строк отдавать. Интерфейс просит ровно столько, сколько
@@ -508,11 +521,29 @@ def create_app():
                     "source FROM contacts WHERE company_id IN (%s) "
                     "ORDER BY confidence DESC" % marks, ids):
                 cts_by.setdefault(r["company_id"], []).append(dict(r))
-            for r in c.execute("SELECT company_id, key, value FROM signals "
-                               "WHERE company_id IN (%s)" % marks, ids):
+            # Признаков у обогащённой компании десятки, а в строке
+            # таблицы видно восемь. Остальные — ряды выручки по годам,
+            # тексты вакансий, описания — едут в ответе только чтобы
+            # быть выброшенными, и весят больше всего остального.
+            for r in c.execute(
+                    "SELECT company_id, key, value FROM signals "
+                    "WHERE company_id IN (%s) AND key IN (%s)"
+                    % (marks, ",".join("?" * len(LIST_SIGNALS))),
+                    ids + list(LIST_SIGNALS)):
                 sig_by.setdefault(r["company_id"], {})[r["key"]] = r["value"]
-        out = [dict(row, contacts=cts_by.get(row["id"], []),
-                    signals=sig_by.get(row["id"], {})) for row in rows]
+        # В строке таблицы видно три контакта, остальные — в карточке.
+        # Отдавать все значило слать по три сотни штук на компанию: у
+        # обойдённого сайта их набирается столько, и ответ на сотню строк
+        # разрастался до трёхсот килобайт. Он приходит заново каждые
+        # несколько секунд, пока идёт обход.
+        out = []
+        for row in rows:
+            all_cts = cts_by.get(row["id"], [])
+            socials = [x for x in all_cts if x["kind"] == "social"][:6]
+            rest = [x for x in all_cts if x["kind"] != "social"][:6]
+            out.append(dict(row, contacts=rest + socials,
+                            contacts_total=len(all_cts),
+                            signals=sig_by.get(row["id"], {})))
         total = c.execute("SELECT COUNT(*) n FROM companies").fetchone()["n"]
         # Сколько строк подходит под фильтр — считаем отдельно, иначе
         # «показать ещё» не знает, есть ли что показывать.
