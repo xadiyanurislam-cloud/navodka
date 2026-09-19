@@ -3182,6 +3182,14 @@ class AuditFindings(unittest.TestCase):
                                  "WHERE company_id=?", (cid,)).fetchone()["n"]
         self.assertEqual(left, 0, "заметки остались от удалённой компании")
 
+    def test_orphans_are_swept_at_startup(self):
+        """Хвосты подметаются сами: просить человека нажать кнопку ради
+        уборки за программой — не дело."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        block = src[src.index("def recover("):src.index("def stop_all(")]
+        self.assertIn("db.clean_orphans()", block)
+
     def test_old_orphans_can_be_swept(self):
         cid, _ = db.upsert_company({"name": "ООО Тест", "source": "тест"})
         db.add_note(cid, "хвост")
@@ -3275,6 +3283,116 @@ class LinksFromStrangers(unittest.TestCase):
         self.assertIn("https?:", block)
         self.assertNotIn("javascript", block.lower().replace(
             "javascript:alert(1)", ""))
+
+
+class ExcelFormulas(unittest.TestCase):
+    """Названия и заметки приходят с чужих сайтов, то есть их пишет кто
+    угодно, а Excel читает ячейку со знака равенства как формулу."""
+
+    def test_formula_becomes_text(self):
+        blob = export.to_csv([{"name": "=cmd|'/c calc'!A1"}]).decode("utf-8")
+        line = blob.split("\r\n")[1]
+        self.assertTrue(line.startswith("'="), line[:30])
+
+    def test_all_four_dangerous_heads_are_caught(self):
+        for head in ("=", "+", "-", "@"):
+            got = export._cell(head + "что-то")
+            self.assertTrue(got.startswith("'"), head)
+
+    def test_xlsx_holds_no_formulas(self):
+        import io as _io
+        import zipfile
+        blob = export.to_xlsx([{"name": "=WEBSERVICE(\"http://x\")"}])
+        if blob is None:
+            self.skipTest("openpyxl не установлен")
+        z = zipfile.ZipFile(_io.BytesIO(blob))
+        body = b"".join(z.read(n) for n in z.namelist()
+                        if "sheet" in n or "shared" in n).decode("utf-8")
+        self.assertEqual(body.count("<f>"), 0, "формула попала в книгу")
+
+    def test_phone_keeps_its_plus(self):
+        """Побочная польза: +74951234567 Excel читал как сложение и
+        показывал число без кода страны."""
+        self.assertEqual(export._cell("+74951234567"), "'+74951234567")
+
+    def test_ordinary_values_are_untouched(self):
+        for v in ("ООО Ромашка", "info@x.ru", "", 42, None):
+            self.assertEqual(export._cell(v), v)
+
+
+class LocalMidnight(unittest.TestCase):
+    """Сервер считает срок по местному времени, браузер считал по
+    Гринвичу. Для Новосибирска это семь часов в сутки, когда звонок на
+    сегодня помечен просроченным."""
+
+    def test_client_uses_local_date(self):
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8").read()
+        block = js[js.index("const today = ()"):]
+        block = block[:block.index("};") + 2]
+        self.assertIn("getTimezoneOffset", block,
+                      "дата всё ещё берётся по UTC")
+
+    def test_server_uses_local_date(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "web.py"), encoding="utf-8").read()
+        self.assertIn("date('now','localtime')", src)
+
+
+class StrangeAnswers(unittest.TestCase):
+    """У ответа чужого сервера нет обязательства быть таким, каким мы
+    его ждём, а падение разбора останавливает всё обогащение."""
+
+    def test_empty_item_in_the_list_is_skipped(self):
+        from app.sources import dadata as dd
+        self.assertEqual(dd._unpack(None), {})
+        self.assertEqual(dd._unpack("мусор"), {})
+        self.assertEqual(dd._unpack([]), {})
+
+    def test_real_item_still_unpacks(self):
+        from app.sources import dadata as dd
+        got = dd._unpack({"value": "ООО Ромашка",
+                          "data": {"inn": "7701234567",
+                                   "management": {"name": "Иванов И. И."}}})
+        self.assertEqual(got.get("inn"), "7701234567")
+
+    def test_every_source_guards_its_lists(self):
+        """Проверка типа стоит там, где элемент списка разбирается как
+        словарь: иначе один null валит весь прогон."""
+        import glob
+        import re
+        missing = []
+        for path in glob.glob(os.path.join(os.path.dirname(__file__), "..",
+                                           "app", "sources", "*.py")):
+            src = io.open(path, encoding="utf-8").read()
+            for m in re.finditer(r"for (\w+) in \([^)]*or \[\]\):\n(\s+)(.*)",
+                                 src):
+                nxt = m.group(3)
+                if ".get(" in nxt and "isinstance" not in nxt:
+                    missing.append("%s: %s" % (os.path.basename(path),
+                                               nxt.strip()[:50]))
+        self.assertEqual(missing, [], "разбор без проверки типа")
+
+
+class UpdateIsChecked(unittest.TestCase):
+    """Обрыв на середине даёт файл подходящего размера, но нерабочий, а
+    запускать такой поверх установленной программы — худшее, что можно
+    сделать: старой версии уже нет, новая не встала."""
+
+    def test_checksum_travels_from_the_release(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "update.py"), encoding="utf-8").read()
+        self.assertIn('"setup_sha": setup_sha', src)
+        self.assertIn("hashlib.sha256(blob).hexdigest()", src)
+        self.assertIn("setup_sha=info.get(\"setup_sha\")", src)
+
+    def test_missing_checksum_is_not_a_refusal(self):
+        """Старый релиз или свой источник обновлений отпечатка не даёт,
+        и это не повод отказывать в обновлении."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "update.py"), encoding="utf-8").read()
+        block = src[src.index("if setup_sha:"):]
+        self.assertTrue(block.startswith("if setup_sha:"))
 
 
 if __name__ == "__main__":

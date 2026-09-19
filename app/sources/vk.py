@@ -247,6 +247,8 @@ def _people(g, token, session=None):
                              "fields": "domain,city"}, token, session)
         if not err2:
             for u in (resp2 or []):
+                if not isinstance(u, dict):
+                    continue
                 people[u.get("id")] = u
 
     out = []

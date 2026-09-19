@@ -87,11 +87,13 @@ def search(query, city, key, pages=2, pause=0.3, session=None, on_log=None,
             if not name or name.lower() in seen:
                 continue
             seen.add(name.lower())
-            phones = [p.get("formatted") or "" for p in (meta.get("Phones") or [])]
+            phones = [p.get("formatted") or "" for p in (meta.get("Phones") or [])
+                      if isinstance(p, dict)]
             # Ссылки, которые компания указала сама. Здесь и соцсети, и
             # иногда прямой телеграм — то, чего нет ни в ЕГРЮЛ, ни на
             # половине сайтов.
-            links = [l.get("href") or "" for l in (meta.get("Links") or [])]
+            links = [l.get("href") or "" for l in (meta.get("Links") or [])
+                     if isinstance(l, dict)]
             out.append({
                 "name": name,
                 "address": meta.get("address") or "",
@@ -99,7 +101,8 @@ def search(query, city, key, pages=2, pause=0.3, session=None, on_log=None,
                 "phones": [p for p in phones if p][:4],
                 "links": [l for l in links if l][:8],
                 "rubric": ", ".join(c.get("name", "")
-                                    for c in (meta.get("Categories") or [])[:2]),
+                                    for c in (meta.get("Categories") or [])[:2]
+                                    if isinstance(c, dict)),
             })
         if on_log:
             on_log("Яндекс: страница %d — организаций %d, всего %d"

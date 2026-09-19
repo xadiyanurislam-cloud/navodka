@@ -109,7 +109,7 @@ def check():
     # Какой из них нужен — зависит от того, как программа запущена, и
     # решается это ниже, в run(). Здесь просто находим оба.
     zip_url = d.get("zipball_url") or ""
-    setup_url = setup_api = zip_api = ""
+    setup_url = setup_api = zip_api = setup_sha = ""
     for a in (d.get("assets") or []):
         name = (a.get("name") or "").lower()
         link = a.get("browser_download_url") or ""
@@ -122,6 +122,12 @@ def check():
             # api.github.com при этом работает — иначе мы бы и о новой
             # версии не узнали.
             setup_api = a.get("url") or ""
+            # Отпечаток файла, каким его посчитал GitHub при выкладке.
+            # Скачанное сверяется с ним перед запуском: обрыв на
+            # середине даёт файл нужного размера, но нерабочий, а
+            # запускать недокачанный установщик поверх установленной
+            # программы — худшее, что можно сделать.
+            setup_sha = (a.get("digest") or "").replace("sha256:", "").strip()
         elif name.endswith(".zip") and "setup" not in name:
             zip_url = link
             zip_api = a.get("url") or ""
@@ -135,6 +141,7 @@ def check():
         "zip_api": zip_api,
         "setup": setup_url,
         "setup_api": setup_api,
+        "setup_sha": setup_sha,
         "kind": kind(),
         "published": (d.get("published_at") or "")[:10],
     }, ""
@@ -334,7 +341,7 @@ def _routes(api=False):
     return out
 
 
-def apply_installer(setup_url, on_log=None, setup_api=""):
+def apply_installer(setup_url, on_log=None, setup_api="", setup_sha=""):
     """Скачать установщик и запустить его поверх текущей установки.
 
     Установщик не может переписать exe, пока тот работает, поэтому он
@@ -384,6 +391,25 @@ def apply_installer(setup_url, on_log=None, setup_api=""):
     if not os.path.exists(path):
         return False, "файл установщика не сохранился", False
 
+    # Сверка с отпечатком, который GitHub посчитал при выкладке.
+    # Обрыв на середине даёт файл подходящего размера, но нерабочий, и
+    # запускать такой поверх установленной программы — худшее, что можно
+    # сделать: старая версия уже удалена, новая не встала. Отпечатка в
+    # ответе может и не быть (старый релиз, свой источник обновлений) —
+    # тогда просто идём дальше, это не повод отказывать в обновлении.
+    if setup_sha:
+        import hashlib
+        got = hashlib.sha256(blob).hexdigest()
+        if got.lower() != setup_sha.lower():
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+            return False, ("файл скачался повреждённым — отпечаток не сошёлся. "
+                           "Попробуйте ещё раз или скачайте установщик "
+                           "вручную: %s" % setup_url), False
+        log("Отпечаток сошёлся, файл целый.")
+
     log("Запускаю установку...")
     # Запускаем напрямую, без cmd.
     #
@@ -419,7 +445,8 @@ def run(info, on_log=None):
     info = info or {}
     if kind() == "installer":
         return apply_installer(info.get("setup") or "", on_log,
-                               setup_api=info.get("setup_api") or "")
+                               setup_api=info.get("setup_api") or "",
+                               setup_sha=info.get("setup_sha") or "")
     ok, msg = apply(info.get("zip") or "", on_log,
                     zip_api=info.get("zip_api") or "")
     return ok, msg, False

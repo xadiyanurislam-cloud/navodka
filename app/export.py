@@ -120,12 +120,34 @@ def rows_for_export(conn, where="", args=()):
     return out
 
 
+# Знаки, с которых Excel начинает считать ячейку формулой.
+_FORMULA_HEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _cell(value):
+    """Значение для таблицы, которое останется значением.
+
+    Excel читает ячейку, начинающуюся со знака равенства, как формулу и
+    выполняет её. Названия и заметки приходят с чужих сайтов, то есть их
+    пишет кто угодно: компания, назвавшаяся =cmd|'/c calc'!A1, при
+    открытии выгрузки предложит выполнить команду. Апостроф в начале
+    заставляет Excel считать содержимое текстом; в самой ячейке он не
+    виден.
+
+    Побочно чинится потеря плюса у телефонов: +74951234567 Excel читал
+    как формулу сложения и показывал число без кода страны.
+    """
+    if isinstance(value, str) and value[:1] in _FORMULA_HEAD:
+        return "'" + value
+    return value
+
+
 def to_csv(rows):
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL)
     w.writerow([title for _, title in COLUMNS])
     for r in rows:
-        w.writerow([r.get(key, "") for key, _ in COLUMNS])
+        w.writerow([_cell(r.get(key, "")) for key, _ in COLUMNS])
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
 
@@ -144,7 +166,7 @@ def to_xlsx(rows):
     for cell in ws[1]:
         cell.font = Font(bold=True)
     for r in rows:
-        ws.append([r.get(key, "") for key, _ in COLUMNS])
+        ws.append([_cell(r.get(key, "")) for key, _ in COLUMNS])
     # Ширины подбираются под содержимое: колонок много, и таблица, которую
     # приходится растягивать руками, до продавца доезжает закрытой.
     widths = [34, 13, 26, 20, 18, 26, 8, 13, 30, 30, 18, 34, 26, 18, 34, 34,

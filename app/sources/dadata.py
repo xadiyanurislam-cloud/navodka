@@ -25,6 +25,11 @@ def _headers(token):
 
 
 def _unpack(item):
+    # Элемент списка может прийти пустым: у ответа чужого сервера нет
+    # обязательства быть таким, каким мы его ждём, а падение разбора
+    # останавливает всё обогащение целиком.
+    if not isinstance(item, dict):
+        return {}
     d = item.get("data") or {}
     mgmt = d.get("management") or {}
     addr = d.get("address") or {}
@@ -32,6 +37,8 @@ def _unpack(item):
 
     okved_name, extra = "", []
     for o in (d.get("okveds") or []):
+        if not isinstance(o, dict):
+            continue
         if o.get("main"):
             okved_name = o.get("name") or ""
         elif o.get("name"):

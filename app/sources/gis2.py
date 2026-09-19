@@ -70,7 +70,11 @@ def search(query, region_id, key, pages=2, page_size=50, pause=0.4,
         for it in items:
             phones, sites, emails = [], [], []
             for group in (it.get("contact_groups") or []):
+                if not isinstance(group, dict):
+                    continue
                 for c in (group.get("contacts") or []):
+                    if not isinstance(c, dict):
+                        continue
                     kind, value = c.get("type"), (c.get("value") or c.get("url") or "")
                     if kind == "phone" and value:
                         phones.append(value)
@@ -85,7 +89,8 @@ def search(query, region_id, key, pages=2, page_size=50, pause=0.4,
                 "site": sites[0] if sites else "",
                 "phones": phones[:4],
                 "emails": emails[:3],
-                "rubric": ", ".join(r.get("name", "") for r in (it.get("rubrics") or [])[:2]),
+                "rubric": ", ".join(r.get("name", "") for r in (it.get("rubrics") or [])[:2]
+                                  if isinstance(r, dict)),
             })
         if on_log:
             on_log("2ГИС: страница %d — организаций %d" % (page, len(items)))

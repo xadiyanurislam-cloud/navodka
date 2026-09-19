@@ -327,6 +327,8 @@ def search(query, city, pages=1, session=None, on_log=None, should_stop=None,
 
     out, seen = [], set()
     for el in (data.get("elements") or []):
+        if not isinstance(el, dict):
+            continue
         t = el.get("tags") or {}
         name = (t.get("name") or "").strip()
         if not name or name.lower() in seen:

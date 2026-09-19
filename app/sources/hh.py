@@ -356,7 +356,8 @@ def employer_details(employer_id, session=None, timeout=20, ua=None):
         "site": d.get("site_url") or "",
         "about": about[:600],
         "area": (d.get("area") or {}).get("name", ""),
-        "industries": ", ".join(i.get("name", "") for i in (d.get("industries") or [])),
+        "industries": ", ".join(i.get("name", "") for i in (d.get("industries") or [])
+                              if isinstance(i, dict)),
         # Все открытые вакансии компании, а не только по нашему запросу:
         # по ним видно, растёт ли она вообще или нанимает точечно.
         "open_vacancies": d.get("open_vacancies") or 0,
