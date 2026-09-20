@@ -107,52 +107,94 @@
             <span class="step-n">1</span>
             <div class="step-body">
               <h3>Кого и где</h3>
-              <div class="step-grid">
-                <label>Вид деятельности
-                  <input id="q-text" type="text" list="q-hints"
-                         placeholder="стоматология" value="">
-                  <em class="fld-hint">Короче — лучше: «стоматология» найдёт больше,
-                     чем «стоматологическая клиника премиум-класса».
-                     Не знаете, с чего начать — возьмите из списка ниже</em>
-                </label>
-                <datalist id="q-hints">
-                  {% for r in rubrics %}<option value="{{ r }}">{% endfor %}
-                </datalist>
+              <p class="lede tight">Три выбора по порядку: тема сужает список
+                 видов, вид — это и есть запрос, города задают, где искать.</p>
+
+              <div class="pickers">
+
                 <div class="fld">
-                  <span class="lbl">Города — нажмите, сколько нужно</span>
-                  <div class="cities" id="q-cities">
-                    {% for c in geo_cities %}
-                    <button type="button" class="city{% if c.name == 'Москва' %} is-on{% endif %}{% if c.name == 'Россия целиком' %} wide-one{% endif %}"
-                            data-city="{{ c.name }}">{{ c.name }}</button>
-                    {% endfor %}
+                  <span class="lbl">1. Тема — сфера деятельности компаний</span>
+                  <div class="dd" id="dd-theme">
+                    <button type="button" class="dd-head" aria-expanded="false">
+                      <span class="dd-val">Все темы</span>
+                      <i class="dd-arrow" aria-hidden="true"></i>
+                    </button>
+                    <div class="dd-menu" hidden>
+                      <input type="text" class="dd-find" autocomplete="off"
+                             placeholder="Найти тему">
+                      <div class="dd-list">
+                        <button type="button" class="dd-opt is-on" data-v="">Все темы
+                          <em>{{ rubrics|length }} видов</em></button>
+                        {% for g in trades %}
+                        <button type="button" class="dd-opt" data-v="{{ loop.index0 }}">{{ g.title }}
+                          <em>{{ g["items"]|length }}</em></button>
+                        {% endfor %}
+                      </div>
+                      <p class="dd-none" hidden>Ничего не подошло</p>
+                    </div>
+                  </div>
+                  <em class="fld-hint">Только сужает список ниже. Можно не
+                     выбирать — тогда доступны все виды сразу</em>
+                </div>
+
+                <div class="fld">
+                  <span class="lbl">2. Вид деятельности — по нему и пойдёт поиск</span>
+                  <div class="dd dd-combo" id="dd-trade">
+                    <input id="q-text" type="text" class="dd-head" value=""
+                           placeholder="стоматология" autocomplete="off"
+                           aria-expanded="false">
+                    <i class="dd-arrow" aria-hidden="true"></i>
+                    <div class="dd-menu" hidden>
+                      <div class="dd-list">
+                        {% for g in trades %}{% set gi = loop.index0 %}
+                        {% for it in g["items"] %}
+                        <button type="button" class="dd-opt{% if not it.tagged %} weak{% endif %}"
+                                data-theme="{{ gi }}" data-q="{{ it.q }}"
+                                title="{% if it.tagged %}Ищется по тегам карты: найдутся и те, у кого это не написано в названии{% else %}Тега в карте нет — ищется только по названию, найдётся меньше{% endif %}">{{ it.q }}
+                          <em>{{ g.title }}</em></button>
+                        {% endfor %}{% endfor %}
+                      </div>
+                      <p class="dd-none" hidden>Такого вида в списке нет —
+                         ищите по своему слову, оно тоже работает</p>
+                    </div>
+                  </div>
+                  <em class="fld-hint" id="trade-note"></em>
+                </div>
+
+                <div class="fld">
+                  <span class="lbl">3. Город — можно несколько</span>
+                  <div class="dd dd-multi" id="dd-city">
+                    <button type="button" class="dd-head" aria-expanded="false">
+                      <span class="dd-val" id="city-val">Москва</span>
+                      <i class="dd-arrow" aria-hidden="true"></i>
+                    </button>
+                    <div class="dd-menu" hidden>
+                      <input type="text" class="dd-find" autocomplete="off"
+                             placeholder="Найти город">
+                      <div class="dd-list" id="q-cities">
+                        <button type="button" class="city dd-opt wide-one"
+                                data-city="{{ geo_whole }}">{{ geo_whole }}
+                          <em>только ЕГРЮЛ и hh</em></button>
+                        {% for g in geo_groups %}
+                        <div class="dd-grp" data-part="{{ g.title }}">
+                          <span class="dd-grp-t">{{ g.title }}</span>
+                          <button type="button" class="dd-all"
+                                  data-part="{{ g.title }}">выбрать округ</button>
+                        </div>
+                        {% for c in g["items"] %}
+                        <button type="button" class="city dd-opt{% if c.name == 'Москва' %} is-on{% endif %}"
+                                data-part="{{ g.title }}" data-city="{{ c.name }}"
+                                data-full="{% if c.gis %}1{% endif %}">{{ c.name }}
+                          {% if c.gis or c.hh %}<em class="ok-em">все источники</em>{% else %}<em>карта и ЕГРЮЛ</em>{% endif %}</button>
+                        {% endfor %}
+                        {% endfor %}
+                      </div>
+                      <p class="dd-none" hidden>Такого города в списке нет</p>
+                    </div>
                   </div>
                   <em class="fld-hint" id="cities-note"></em>
                 </div>
-              </div>
 
-              <div class="trades">
-                <span class="lbl">Готовый список — 1. выберите тему</span>
-                <div class="trade-tabs" id="trade-tabs">
-                  {% for g in trades %}
-                  <button class="trade-tab{% if loop.first %} is-on{% endif %}"
-                          data-group="{{ loop.index0 }}">{{ g.title }}</button>
-                  {% endfor %}
-                </div>
-                <span class="lbl">2. нажмите вид деятельности — он попадёт
-                  в поле «Вид деятельности» наверху</span>
-                {% for g in trades %}
-                <div class="trade-items" data-group="{{ loop.index0 }}"
-                     {% if not loop.first %}hidden{% endif %}>
-                  {% for it in g["items"] %}
-                  <button class="pick{% if not it.tagged %} weak{% endif %}"
-                          data-q="{{ it.q }}"
-                          title="{% if it.tagged %}Ищется по тегам карты: найдутся и те, у кого это не написано в названии{% else %}Тега в карте нет — ищется только по названию, найдётся меньше{% endif %}">{{ it.q }}</button>
-                  {% endfor %}
-                </div>
-                {% endfor %}
-                <em class="fld-hint" id="trade-note">Бледные слова ищутся
-                   только по названию — у них нет тега на карте, и компания,
-                   не назвавшая себя так, не найдётся</em>
               </div>
             </div>
           </section>
@@ -264,9 +306,9 @@
                 </div>
                 <div class="fld">
                   <span class="lbl">Регионы — нажмите, сколько нужно</span>
-                  <div class="cities" id="f-area">
+                  <div class="chips" id="f-area">
                     {% for code, name in areas %}
-                    <button type="button" class="city area{% if code == '113' %} is-on{% endif %}{% if code == '113' %} wide-one{% endif %}"
+                    <button type="button" class="area{% if code == '113' %} is-on wide-one{% endif %}"
                             data-code="{{ code }}">{{ name }}</button>
                     {% endfor %}
                   </div>
@@ -454,7 +496,7 @@
   <!-- ── База ──────────────────────────────────────── -->
   <main class="view" id="view-base" hidden>
     <div class="toolbar">
-      <input id="q" class="search" type="search" placeholder="Компания, ФИО, ИНН или сайт">
+      <input id="q" class="search" type="search" placeholder="Компания, ФИО, ИНН, ОГРН или сайт">
       <div class="chips" id="chips">
         <button class="chip is-active" data-only="">Все</button>
         <button class="chip" data-only="today">На сегодня</button>
@@ -673,7 +715,11 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>window.LAST_SEARCH = {{ last_search|safe }};
-window.LAST_FIND = {{ last_find|safe }};</script>
+window.LAST_FIND = {{ last_find|safe }};
+/* Название строки «весь список» берётся с сервера: скопированная
+   в скрипт руками, она разошлась бы с geo.py при первом же
+   переименовании, и кнопка молча перестала бы работать. */
+window.WHOLE_RU = {{ geo_whole|tojson }};</script>
 <script src="/static/app.js"></script>
 </body>
 </html>

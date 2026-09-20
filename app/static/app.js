@@ -1,6 +1,12 @@
 // Голый JS намеренно: программа собирается в exe без сборщика фронтенда,
 // а вся логика всё равно живёт на стороне Python.
 const $ = (id) => document.getElementById(id);
+// Название строки «весь список» приходит с сервера вместе с самим
+// списком городов: две копии одной строки однажды разошлись бы. Здесь,
+// а не рядом с городами, потому что восстановление прошлого поиска
+// зовёт citiesNote() задолго до того места, и const из середины
+// файла ещё не существует: страница ломалась бы у всех, кто уже искал.
+const WHOLE_RU = window.WHOLE_RU || "Россия целиком";
 const esc = (s) => String(s == null ? "" : s)
   .replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;",
                                 '"': "&quot;", "'": "&#39;"}[c]));
@@ -351,7 +357,7 @@ function fillFindForm(p) {
   $("q-text").value = p.query;
   const want = (p.cities || []).map(String);
   if (want.length) {
-    document.querySelectorAll(".city").forEach(
+    $("q-cities").querySelectorAll(".city").forEach(
       (el) => el.classList.toggle("is-on", want.includes(el.dataset.city)));
     citiesNote();
   }
@@ -395,8 +401,37 @@ $("btn-find").onclick = async () => {
   poll();
 };
 
+// Клавиатура в поле вида деятельности.
+//
+// Стрелки ведут по открытому списку, Enter берёт подсвеченное, а если
+// ничего не подсвечено — запускает поиск: своё слово тоже ищется, и
+// заставлять выбирать из списка было бы неправильно. Список при запуске
+// закрывается, иначе он накрывает строку состояния, и человек не видит
+// того, что сам только что начал.
 $("q-text").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("btn-find").click();
+  const box = $("dd-trade");
+  const open = box.classList.contains("is-open");
+  const vis = () => [...box.querySelectorAll(".dd-opt")].filter((o) => !o.hidden);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!open) { ddOpen(box); return; }
+    const list = vis();
+    if (!list.length) return;
+    const i = list.findIndex((o) => o.classList.contains("is-cur"));
+    const next = e.key === "ArrowDown"
+      ? (i < 0 ? 0 : Math.min(i + 1, list.length - 1))
+      : (i <= 0 ? 0 : i - 1);
+    list.forEach((o) => o.classList.toggle("is-cur", o === list[next]));
+    list[next].scrollIntoView({block: "nearest"});
+    return;
+  }
+  if (e.key === "Escape") { ddClose(box); return; }
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const cur = open ? box.querySelector(".dd-opt.is-cur") : null;
+  if (cur) { cur.click(); return; }
+  ddClose(box);
+  $("btn-find").click();
 });
 
 fillFindForm(window.LAST_FIND);
@@ -494,41 +529,307 @@ $("btn-import").onclick = () => {
   run("/api/import", {text}, "Импорт");
 };
 
-// Каталог тематик. Поле «Вид деятельности» — пустая строка, и человек,
-// открывший программу впервые, не знает, что в неё писать: разница
-// между «грузоперевозки» и «транспортная компания» решает, найдётся
-// сотня компаний или три.
-// Тема только переключает список, а ищется слово. Два ряда кнопок
-// подряд читаются как один выбор, поэтому подпись к теме говорит «1.»,
-// подпись к словам «2.», а выбранное слово подсвечено: иначе человек
-// жмёт тему, видит в поле прежний запрос и считает это поломкой.
+// Три выпадающих списка: тема, вид деятельности, город
+//
+// Раньше здесь были два ряда одинаковых кнопок подряд, и это читалось
+// как один выбор: человек нажимал тему «Строительство и ремонт», видел
+// в поле «дизайн интерьера» с прошлого раза и считал, что программа
+// ищет не то, что он выбрал. Теперь у каждого шага своё поле, в котором
+// видно текущее значение, а список открывается только по нажатию.
+//
+// Список свой, а не системный <select>, по двум причинам: системный
+// рисует операционная система, и посреди тёмной темы он оставался белым
+// прямоугольником, — и в своём есть поиск по буквам, без которого
+// полторы сотни городов листают глазами.
+
+// Открытый список только один: два раскрытых меню перекрывают друг
+// друга, и нажатие попадает не туда, куда человек смотрел.
+function ddClose(box) {
+  box.classList.remove("is-open");
+  const menu = box.querySelector(".dd-menu");
+  menu.hidden = true;
+  box.querySelectorAll(".dd-opt.is-cur").forEach((o) => o.classList.remove("is-cur"));
+  const head = box.querySelector(".dd-head");
+  if (head) head.setAttribute("aria-expanded", "false");
+}
+
+function ddCloseAll(except) {
+  document.querySelectorAll(".dd.is-open").forEach((b) => {
+    if (b !== except) ddClose(b);
+  });
+}
+
+function ddOpen(box) {
+  ddCloseAll(box);
+  box.classList.add("is-open");
+  box.querySelector(".dd-menu").hidden = false;
+  const head = box.querySelector(".dd-head");
+  if (head) head.setAttribute("aria-expanded", "true");
+  const find = box.querySelector(".dd-find");
+  if (find) { find.value = ""; ddFilter(box); find.focus(); }
+  // Выбранное должно быть видно сразу: список на полторы сотни строк
+  // открывался всегда с начала, и выбранный Челябинск оставался
+  // где-то ниже края.
+  const on = box.querySelector(".dd-opt.is-on");
+  if (on) on.scrollIntoView({block: "nearest"});
+}
+
+// Поиск по буквам внутри списка. Заголовок округа прячется вместе со
+// всеми своими городами: пустой заголовок посреди выдачи выглядит как
+// сбой отрисовки.
+function ddFilter(box) {
+  const find = box.querySelector(".dd-find");
+  const q = find ? find.value.trim().toLowerCase() : "";
+  let shown = 0;
+  box.querySelectorAll(".dd-opt").forEach((o) => {
+    const hit = !q || o.textContent.toLowerCase().includes(q);
+    o.hidden = !hit;
+    if (hit) shown += 1;
+  });
+  box.querySelectorAll(".dd-grp").forEach((g) => {
+    const part = g.dataset.part;
+    g.hidden = ![...box.querySelectorAll('.dd-opt[data-part="' + cssq(part) + '"]')]
+      .some((o) => !o.hidden);
+  });
+  const none = box.querySelector(".dd-none");
+  if (none) none.hidden = shown > 0;
+}
+
+// Название округа попадает в селектор, а кавычек и обратных слэшей в
+// нём быть не должно. Своих кавычек там нет, но подставлять чужую
+// строку в селектор без оглядки — привычка, которая однажды ломает
+// страницу молча.
+function cssq(v) { return String(v || "").replace(/["\\]/g, ""); }
+
+document.querySelectorAll(".dd .dd-find").forEach((f) => {
+  f.oninput = () => ddFilter(f.closest(".dd"));
+  f.onkeydown = (e) => {
+    if (e.key === "Escape") { ddClose(f.closest(".dd")); return; }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const first = [...f.closest(".dd").querySelectorAll(".dd-opt")]
+        .find((o) => !o.hidden);
+      if (first) first.click();
+    }
+  };
+});
+
+document.querySelectorAll(".dd > .dd-head").forEach((h) => {
+  if (h.tagName === "BUTTON") {
+    h.onclick = () => {
+      const box = h.closest(".dd");
+      if (box.classList.contains("is-open")) ddClose(box); else ddOpen(box);
+    };
+  }
+});
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".dd")) ddCloseAll(null);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") ddCloseAll(null);
+});
+
+// ── 1. Тема ──────────────────────────────────────────────
+// Тема ничего не ищет: она сужает список видов. Об этом сказано и
+// подписью к полю, и тем, что поиск запускается кнопкой, а не выбором.
+let themePick = "";
+
+function themeApply() {
+  const box = $("dd-trade");
+  box.querySelectorAll(".dd-opt").forEach((o) => {
+    o.dataset.off = (themePick !== "" && o.dataset.theme !== themePick) ? "1" : "";
+  });
+  box.classList.toggle("by-theme", themePick !== "");
+  // Спрятать по теме и по набранным буквам — одно и то же действие, и
+  // делать его должен один кусок кода, иначе они начинают спорить.
+  tradeFilter();
+}
+
+function tradeFilter() {
+  const box = $("dd-trade");
+  const q = $("q-text").value.trim().toLowerCase();
+  let shown = 0;
+  box.querySelectorAll(".dd-opt").forEach((o) => {
+    const hit = !o.dataset.off
+      && (!q || o.dataset.q.toLowerCase().includes(q));
+    o.hidden = !hit;
+    if (hit) shown += 1;
+  });
+  box.querySelector(".dd-none").hidden = shown > 0;
+}
+
+$("dd-theme").querySelector(".dd-list").onclick = (e) => {
+  const opt = e.target.closest(".dd-opt");
+  if (!opt) return;
+  themePick = opt.dataset.v;
+  $("dd-theme").querySelectorAll(".dd-opt").forEach(
+    (o) => o.classList.toggle("is-on", o === opt));
+  $("dd-theme").querySelector(".dd-val").textContent =
+    opt.textContent.trim().split("\n")[0].trim();
+  themeApply();
+  ddClose($("dd-theme"));
+  // Тему выбрали, а поле вида осталось от прошлого раза — и это та самая
+  // путаница, из-за которой «выбрал строительство, а ищет дизайн».
+  // Открываем список видов сразу: следующий шаг очевиден.
+  if (themePick !== "" && !tradeInTheme()) {
+    $("q-text").value = "";
+    markTrade();
+    tradeFilter();
+  }
+  ddOpen($("dd-trade"));
+};
+
+// Лежит ли нынешнее слово в выбранной теме.
+function tradeInTheme() {
+  const cur = $("q-text").value.trim().toLowerCase();
+  if (!cur) return true;
+  return [...$("dd-trade").querySelectorAll(".dd-opt")].some(
+    (o) => o.dataset.q.toLowerCase() === cur && o.dataset.theme === themePick);
+}
+
+// ── 2. Вид деятельности ──────────────────────────────────
+// Поле остаётся полем ввода: своё слово программа искать умеет, и
+// запирать человека в списке из трёхсот строк было бы хуже, чем помочь
+// ему этим списком. Подпись честно говорит, что слово не из списка.
 function markTrade() {
   const cur = $("q-text").value.trim().toLowerCase();
-  let known = false;
-  document.querySelectorAll(".trade-items .pick").forEach((el) => {
+  let known = null;
+  $("dd-trade").querySelectorAll(".dd-opt").forEach((el) => {
     const on = el.dataset.q.toLowerCase() === cur;
     el.classList.toggle("is-on", on);
-    if (on) known = true;
+    if (on) known = el;
   });
   const note = $("trade-note");
-  if (cur && !known) {
-    note.innerHTML = `Сейчас ищется <b>${esc($("q-text").value.trim())}</b> —
-      своё слово, не из списка. Нажмите любое ниже, чтобы заменить.`;
+  if (!cur) {
+    note.textContent = "Выберите из списка или впишите своё слово. "
+      + "Короче — лучше: «стоматология» найдёт больше, чем "
+      + "«стоматологическая клиника премиум-класса»";
+    note.classList.remove("warn-note");
+  } else if (!known) {
+    note.innerHTML = `Ищем по своему слову <b>${esc($("q-text").value.trim())}</b> —
+      в списке такого нет. Это работает, но по карте найдутся только те,
+      у кого слово стоит в названии.`;
+    note.classList.add("warn-note");
+  } else if (known.classList.contains("weak")) {
+    note.innerHTML = `<b>${esc(known.dataset.q)}</b> ищется только по названию —
+      тега на карте у него нет, и компания, не назвавшая себя так,
+      не найдётся. Справочники и ЕГРЮЛ ищут по тексту и помогут.`;
     note.classList.add("warn-note");
   } else {
-    note.textContent = "Бледные слова ищутся только по названию — у них нет "
-      + "тега на карте, и компания, не назвавшая себя так, не найдётся";
+    note.innerHTML = `<b>${esc(known.dataset.q)}</b> ищется по тегам карты —
+      найдутся и те, у кого это не написано в названии.`;
     note.classList.remove("warn-note");
   }
 }
 
-// Города выбираются нажатием, а не Ctrl-кликом по системному списку.
+$("dd-trade").querySelector(".dd-list").onclick = (e) => {
+  const opt = e.target.closest(".dd-opt");
+  if (!opt) return;
+  $("q-text").value = opt.dataset.q;
+  markTrade();
+  tradeFilter();
+  ddClose($("dd-trade"));
+  toast("Вид: " + opt.dataset.q + ". Проверьте города и жмите «Найти компании»");
+};
+
+$("q-text").onfocus = () => ddOpen($("dd-trade"));
+$("q-text").oninput = () => {
+  if (!$("dd-trade").classList.contains("is-open")) ddOpen($("dd-trade"));
+  markTrade();
+  tradeFilter();
+};
+$("dd-trade").querySelector(".dd-arrow").onclick = () => {
+  const box = $("dd-trade");
+  if (box.classList.contains("is-open")) ddClose(box); else $("q-text").focus();
+};
+
+// ── 3. Города ────────────────────────────────────────────
+// Города берём только из своего списка.
 //
-// Тот список был единственным местом, куда интерфейс не дотягивался:
-// белая рамка и синее выделение операционной системы посреди тёмной
-// темы. Плюс сам приём — «несколько с зажатым Ctrl» — знают не все, а
-// промахнувшийся снимал выделение со всего разом и не понимал, почему
-// поиск идёт по одному городу.
+// Раньше это был поиск по всей странице, а кнопки округов в фильтре
+// списка носили тот же класс — и «выбранным городом» поиска молча
+// оказывалась кнопка с другой вкладки, без названия вовсе.
+function pickedCities() {
+  return [...$("q-cities").querySelectorAll(".city.is-on")]
+    .map((el) => el.dataset.city);
+}
+
+function cityHead() {
+  const picked = pickedCities();
+  const val = $("city-val");
+  if (!picked.length) val.textContent = "не выбран ни один город";
+  else if (picked.length <= 2) val.textContent = picked.join(", ");
+  else val.textContent = picked.slice(0, 2).join(", ")
+    + " и ещё " + (picked.length - 2);
+}
+
+function citiesNote() {
+  const picked = pickedCities();
+  const note = $("cities-note");
+  cityHead();
+  if (!picked.length) {
+    note.innerHTML = `<span class="warn-note">Не выбран ни один город —
+      поиск не пойдёт.</span>`;
+    return;
+  }
+  if (picked.includes(WHOLE_RU)) {
+    note.innerHTML = `<span class="warn-note">«${esc(WHOLE_RU)}» отключает
+      справочники: они ищут по карте, а не по стране. Останутся ЕГРЮЛ и
+      hh, а карточки выйдут без телефонов и сайтов.</span>`;
+    return;
+  }
+  // Города, которых нет в справочниках 2ГИС и hh, ищутся по карте и по
+  // ЕГРЮЛ. Сказать это надо до запуска: «нашлось вдвое меньше» без
+  // объяснения читается как поломка программы.
+  const thin = picked.filter((n) => {
+    const el = $("q-cities").querySelector('.city[data-city="' + cssq(n) + '"]');
+    return el && !el.querySelector(".ok-em");
+  });
+  let t = "Выбрано: " + picked.length + " — поиск обойдёт каждый";
+  if (thin.length) {
+    t += ". Без 2ГИС и hh: " + thin.slice(0, 3).join(", ")
+      + (thin.length > 3 ? " и ещё " + (thin.length - 3) : "")
+      + " — этих городов нет в их справочниках, останутся карта и ЕГРЮЛ";
+  }
+  note.textContent = t;
+}
+
+$("q-cities").onclick = (e) => {
+  const all = e.target.closest(".dd-all");
+  if (all) {
+    // Округ целиком: «выбрать Поволжье» — это одно нажатие вместо
+    // двадцати шести, и обратно тоже одно.
+    const opts = [...$("q-cities").querySelectorAll(
+      '.city[data-part="' + cssq(all.dataset.part) + '"]')];
+    const turnOn = opts.some((o) => !o.classList.contains("is-on"));
+    if (turnOn) {
+      const w = $("q-cities").querySelector('.city[data-city="' + cssq(WHOLE_RU) + '"]');
+      if (w) w.classList.remove("is-on");
+    }
+    opts.forEach((o) => o.classList.toggle("is-on", turnOn));
+    citiesNote();
+    return;
+  }
+  const el = e.target.closest(".city");
+  if (!el) return;
+  if (el.dataset.city === WHOLE_RU) {
+    // «Россия целиком» и города — взаимоисключающие: вместе они значат
+    // то же, что «Россия целиком», только дольше.
+    const on = !el.classList.contains("is-on");
+    $("q-cities").querySelectorAll(".city").forEach(
+      (x) => x.classList.remove("is-on"));
+    el.classList.toggle("is-on", on);
+  } else {
+    const w = $("q-cities").querySelector('.city[data-city="' + cssq(WHOLE_RU) + '"]');
+    if (w) w.classList.remove("is-on");
+    el.classList.toggle("is-on");
+  }
+  citiesNote();
+};
+
+// Города, выбранные в фильтре списка, — другой набор кнопок и другая
+// вкладка, но правило «Россия против отдельных регионов» то же.
 function pickedAreas() {
   return [...document.querySelectorAll(".area.is-on")].map((el) => el.dataset.code);
 }
@@ -536,7 +837,6 @@ function pickedAreas() {
 $("f-area").onclick = (e) => {
   const el = e.target.closest(".area");
   if (!el) return;
-  // «Россия» и отдельные регионы — взаимоисключающие, как и у городов.
   const all = el.dataset.code === "113";
   if (all) {
     const on = !el.classList.contains("is-on");
@@ -549,67 +849,9 @@ $("f-area").onclick = (e) => {
   }
 };
 
-function pickedCities() {
-  return [...document.querySelectorAll(".city.is-on")].map((el) => el.dataset.city);
-}
-
-function citiesNote() {
-  const picked = pickedCities();
-  const note = $("cities-note");
-  if (!picked.length) {
-    note.innerHTML = `<span class="warn-note">Не выбран ни один город —
-      поиск не пойдёт.</span>`;
-  } else if (picked.includes("Россия целиком")) {
-    note.innerHTML = `<span class="warn-note">«Россия целиком» отключает
-      справочники: они ищут по карте, а не по стране. Останутся ЕГРЮЛ и
-      hh, а карточки выйдут без телефонов и сайтов.</span>`;
-  } else {
-    note.textContent = "Выбрано: " + picked.length + " — поиск обойдёт каждый";
-  }
-}
-
-$("q-cities").onclick = (e) => {
-  const el = e.target.closest(".city");
-  if (!el) return;
-  const all = el.dataset.city === "Россия целиком";
-  if (all) {
-    // «Россия целиком» и города — взаимоисключающие: вместе они значат
-    // то же, что «Россия целиком», только дольше.
-    const on = !el.classList.contains("is-on");
-    document.querySelectorAll(".city").forEach((x) => x.classList.remove("is-on"));
-    el.classList.toggle("is-on", on);
-  } else {
-    document.querySelector('.city[data-city="Россия целиком"]')
-      .classList.remove("is-on");
-    el.classList.toggle("is-on");
-  }
-  citiesNote();
-};
-citiesNote();
-
-$("trade-tabs").onclick = (e) => {
-  const tab = e.target.closest(".trade-tab");
-  if (!tab) return;
-  document.querySelectorAll(".trade-tab").forEach(
-    (t) => t.classList.toggle("is-on", t === tab));
-  document.querySelectorAll(".trade-items").forEach(
-    (box) => { box.hidden = box.dataset.group !== tab.dataset.group; });
-  markTrade();
-};
-document.querySelectorAll(".trade-items").forEach((box) => {
-  box.onclick = (e) => {
-    const pick = e.target.closest(".pick");
-    if (!pick) return;
-    $("q-text").value = pick.dataset.q;
-    markTrade();
-    // Подставили — и сразу показали, что дальше: иначе человек жмёт
-    // слово и ждёт, что поиск пойдёт сам.
-    $("q-text").focus();
-    toast("Вписано: " + pick.dataset.q + ". Проверьте города и жмите «Найти компании»");
-  };
-});
-$("q-text").oninput = markTrade;
+themeApply();
 markTrade();
+citiesNote();
 
 $("btn-socials").onclick = () => run("/api/socials",
   {limit: $("e-limit").value, only_empty: true}, "Поиск соцсетей");
@@ -1433,7 +1675,10 @@ async function toggleCard(tr, id) {
       <div class="ct-id">
         <h3>${esc(c.name)}</h3>
         <div class="ct-meta">
-          ${c.inn ? `<span>ИНН ${esc(c.inn)}</span>` : ""}
+          ${c.inn ? `<span class="copyable" data-copy="${esc(c.inn)}"
+            title="Нажмите, чтобы скопировать">ИНН ${esc(c.inn)}</span>` : ""}
+          ${c.ogrn ? `<span class="copyable" data-copy="${esc(c.ogrn)}"
+            title="Нажмите, чтобы скопировать">ОГРН ${esc(c.ogrn)}</span>` : ""}
           ${c.site ? `<a href="${safeUrl(c.site)}" target="_blank">${
             esc(c.site.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</a>` : ""}
           ${c.region ? `<span>${esc(c.region)}</span>` : ""}
@@ -1869,7 +2114,8 @@ async function loadCompanies(force) {
     // вещь должна выглядеть одинаково везде, иначе её каждый раз
     // приходится узнавать заново.
     const host = r.site ? r.site.replace(/^https?:\/\//, "") : "";
-    const meta = [r.inn ? `<span>${esc(r.inn)}</span>` : "",
+    const meta = [r.inn ? `<span title="ИНН">${esc(r.inn)}</span>` : "",
+                  (!r.inn && r.ogrn) ? `<span title="ОГРН">${esc(r.ogrn)}</span>` : "",
                   host ? `<a href="${safeUrl(r.site)}" target="_blank">${esc(host)}</a>` : "",
                   r.region ? `<span>${esc(r.region)}</span>` : ""].filter(Boolean).join("");
     // Порядок: найденный контакт ГД, потом выведенный по схеме, потом всё

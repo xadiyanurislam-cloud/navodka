@@ -1023,36 +1023,81 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
 .soc:hover{background:var(--accent);color:#fff}
 .soc.more{color:var(--ink-3);background:var(--cold-bg)}
 
-/* ── Каталог тематик ──────────────────────────────────────
-   Список из семидесяти слов одним полотном не читается, а по темам —
-   читается: человек знает, в какой он отрасли, и ищет только в ней. */
-.trades{margin-top:14px;padding-top:14px;border-top:1px solid var(--line-2)}
-.trade-tabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}
-.trade-tab{border:1px solid var(--line);background:var(--surface);
-  color:var(--ink-2);border-radius:20px;padding:5px 12px;font:inherit;
-  font-size:12px;cursor:pointer;transition:all .12s ease}
-.trade-tab:hover{border-color:var(--ink-3);color:var(--ink)}
-.trade-tab.is-on{background:var(--ink);color:var(--surface);
-  border-color:var(--ink)}
-.trade-items{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}
-.trade-items[hidden]{display:none}
-/* Бледное слово — то, у которого нет тега на карте. Разница не
-   косметическая: «Дента-Люкс» стоматологией себя не называет, и без
-   тега такая компания не найдётся вообще. */
-.trade-items .pick.weak{opacity:.55}
+/* ── Три выпадающих списка поиска ─────────────────
+   Тема, вид деятельности, город — три разных выбора, и раньше они были
+   двумя рядами одинаковых кнопок подряд. Человек выбирал «Строительство
+   и ремонт», видел в поле «дизайн интерьера» с прошлого раза и считал,
+   что программа ищет не то, что он нажал. Теперь у каждого выбора своё
+   поле со своим значением на виду, а список открывается только когда
+   его позвали.
 
-/* Слово из каталога — это значение, тема — только переключатель списка.
-   Пока они выглядели одинаково, человек жал тему и ждал, что поиск
-   переключится вместе с ней. */
-.trades .lbl{display:block;margin-bottom:7px}
-.trade-items .pick{border-color:var(--accent);color:var(--accent);
-  background:var(--accent-soft)}
-.trade-items .pick:hover{background:var(--accent);color:#fff}
-.trade-items .pick.is-on{background:var(--accent);color:#fff;
+   Список свой, а не системный <select>: системный рисует операционная
+   система, и посреди тёмной темы он оставался белым прямоугольником с
+   синим выделением. Плюс в своём есть поиск по буквам — без него
+   полторы сотни городов листают глазами. */
+.pickers{display:flex;flex-direction:column;gap:16px}
+.dd{position:relative}
+.dd-head{width:100%;display:flex;align-items:center;justify-content:space-between;
+  gap:8px;text-align:left;font:inherit;font-size:14px;cursor:pointer;
+  background:var(--surface);color:var(--ink);
+  border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+  transition:border-color .12s ease,box-shadow .12s ease}
+.dd-head:hover{border-color:var(--ink-3)}
+.dd.is-open>.dd-head{border-color:var(--accent);
   box-shadow:0 0 0 3px var(--accent-soft)}
-.trade-items .pick.weak{border-color:var(--line);color:var(--ink-3);
-  background:var(--surface-2);opacity:1}
-.trade-items .pick.weak:hover{border-color:var(--ink-3);color:var(--ink)}
+.dd-val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dd-arrow{flex:0 0 auto;width:8px;height:8px;margin-right:2px;
+  border-right:1.8px solid var(--ink-3);border-bottom:1.8px solid var(--ink-3);
+  transform:rotate(45deg) translateY(-2px);transition:transform .15s ease}
+.dd.is-open .dd-arrow{transform:rotate(-135deg) translateY(-2px)}
+/* У поля ввода стрелка лежит поверх: сам ввод занимает всю ширину,
+   иначе длинное слово уезжает под неё. */
+.dd-combo{display:flex;align-items:center}
+.dd-combo .dd-arrow{position:absolute;right:12px;pointer-events:none}
+.dd-combo .dd-head{padding-right:30px}
+
+.dd-menu{position:absolute;z-index:40;left:0;right:0;top:calc(100% + 5px);
+  background:var(--surface);border:1px solid var(--line);border-radius:11px;
+  box-shadow:0 14px 34px rgba(0,0,0,.18);padding:7px;
+  display:flex;flex-direction:column;gap:6px}
+.dd-menu[hidden]{display:none}
+.dd-find{font:inherit;font-size:13px}
+.dd-list{max-height:290px;overflow:auto;display:flex;flex-direction:column;
+  gap:1px;scrollbar-width:thin}
+.dd-opt{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  width:100%;text-align:left;font:inherit;font-size:13px;cursor:pointer;
+  background:none;border:0;border-radius:7px;padding:7px 9px;color:var(--ink);
+  transition:background .1s ease}
+.dd-opt[hidden]{display:none}
+.dd-opt em{flex:0 0 auto;font-style:normal;font-size:11px;color:var(--ink-3);
+  white-space:nowrap}
+.dd-opt em.ok-em{color:var(--ok)}
+/* Когда тема выбрана, её название повторяется в каждой строке
+   и не говорит уже ничего. */
+.dd.by-theme .dd-opt em{display:none}
+.dd-opt:hover,.dd-opt.is-cur{background:var(--surface-2)}
+.dd-opt.is-on{background:var(--accent);color:#fff;font-weight:550}
+.dd-opt.is-on em{color:rgba(255,255,255,.75)}
+/* Бледная строка — вид без тега на карте. Разница не косметическая:
+   «Дента-Люкс» стоматологией себя не называет, и без тега такая
+   компания не найдётся вообще. */
+.dd-opt.weak{color:var(--ink-3)}
+.dd-opt.weak:hover{color:var(--ink)}
+.dd-opt.wide-one{font-style:italic}
+.dd-opt.wide-one.is-on{background:var(--warn);color:#111}
+.dd-opt.wide-one.is-on em{color:rgba(0,0,0,.6)}
+.dd-grp{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:9px 9px 4px;position:sticky;top:0;background:var(--surface);
+  border-bottom:1px solid var(--line-2);margin-bottom:2px}
+.dd-grp[hidden]{display:none}
+.dd-grp-t{font-size:10.5px;font-weight:650;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-3)}
+.dd-all{border:0;background:none;font:inherit;font-size:11px;cursor:pointer;
+  color:var(--accent);padding:0}
+.dd-all:hover{text-decoration:underline}
+.dd-none{margin:0;padding:8px 9px;font-size:12.5px;color:var(--ink-3)}
+.dd-none[hidden]{display:none}
+.lede.tight{margin:0 0 4px;font-size:12.5px}
 #trade-note.warn-note{color:var(--warn)}
 
 
@@ -1178,22 +1223,21 @@ details.score-block .score-stale{margin-left:14px;margin-right:14px}
 details.score-block .score-list:first-of-type{margin-top:12px}
 details.score-block .score-note{margin-bottom:12px}
 
-/* ── Города ───────────────────────────────────────────────
-   Системный многострочный список был единственным местом, куда
-   оформление не дотягивалось: белая рамка и синее выделение системы
-   посреди тёмной темы. Плюс «несколько с зажатым Ctrl» знают не все, а
-   промахнувшийся снимал выделение со всего разом. */
+/* ── Поле с подписью и кнопки-фишки ──────────────
+   Фишки остались в фильтре списка: там выбирают из пятнадцати регионов,
+   и раскрывающийся список ради пятнадцати строк был бы лишним шагом.
+   Свой класс, а не общий с городами поиска: пока он был общий, кнопка
+   с этой вкладки молча числилась выбранным городом в поиске. */
 .fld{display:flex;flex-direction:column;gap:5px}
-.cities{display:flex;flex-wrap:wrap;gap:6px}
-.city{
-  border:1px solid var(--line);background:var(--surface);color:var(--ink-2);
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.area{border:1px solid var(--line);background:var(--surface);color:var(--ink-2);
   border-radius:20px;padding:6px 13px;font:inherit;font-size:12.5px;
   cursor:pointer;transition:all .12s ease}
-.city:hover{border-color:var(--ink-3);color:var(--ink)}
-.city.is-on{background:var(--accent);border-color:var(--accent);color:#fff;
+.area:hover{border-color:var(--ink-3);color:var(--ink)}
+.area.is-on{background:var(--accent);border-color:var(--accent);color:#fff;
   font-weight:550}
-.city.wide-one{order:-1;font-style:italic}
-.city.wide-one.is-on{background:var(--warn);border-color:var(--warn);color:#111}
+.area.wide-one{order:-1;font-style:italic}
+.area.wide-one.is-on{background:var(--warn);border-color:var(--warn);color:#111}
 .warn-note{color:var(--warn)}
 
 /* ── Откуда контакт и какой он ────────────────────────────

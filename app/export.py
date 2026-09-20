@@ -9,7 +9,8 @@ import csv
 import io
 
 COLUMNS = [
-    ("name", "Компания"), ("inn", "ИНН"), ("director", "Руководитель"),
+    ("name", "Компания"), ("inn", "ИНН"), ("ogrn", "ОГРН"),
+    ("director", "Руководитель"),
     ("director_post", "Должность"), ("region", "Регион"), ("site", "Сайт"),
     ("score", "Оценка"), ("lpr_status", "Контакт ГД"),
     ("email_director", "Почта ГД (найдена)"),
@@ -72,7 +73,8 @@ def rows_for_export(conn, where="", args=()):
                      if x["kind"] == "phone" and x["owner"] == "director"]
         oth_mail = [x["value"] for x in cts if x["kind"] == "email" and x["owner"] != "director"]
         out.append({
-            "name": c["name"], "inn": c["inn"] or "", "director": c["director"] or "",
+            "name": c["name"], "inn": c["inn"] or "",
+            "ogrn": c["ogrn"] or "", "director": c["director"] or "",
             "director_post": c["director_post"] or "", "region": c["region"] or "",
             "site": c["site"] or "", "score": c["score"],
             "lpr_status": sig.get("lpr_contact", ""),
@@ -169,7 +171,7 @@ def to_xlsx(rows):
         ws.append([_cell(r.get(key, "")) for key, _ in COLUMNS])
     # Ширины подбираются под содержимое: колонок много, и таблица, которую
     # приходится растягивать руками, до продавца доезжает закрытой.
-    widths = [34, 13, 26, 20, 18, 26, 8, 13, 30, 30, 18, 34, 26, 18, 34, 34,
+    widths = [34, 13, 15, 26, 20, 18, 26, 8, 13, 30, 30, 18, 34, 26, 18, 34, 34,
               24, 18, 34, 44, 12, 14, 14, 16, 14, 18, 16, 16, 12, 12, 34,
               16, 26, 22, 16, 34, 16, 12, 44, 44, 14, 44, 60,
               10, 26, 40, 12, 30]

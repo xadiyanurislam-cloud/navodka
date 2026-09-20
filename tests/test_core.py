@@ -2789,7 +2789,7 @@ class TradeCatalog(unittest.TestCase):
     def test_catalog_reaches_the_page(self):
         db.init()
         html = web.create_app().test_client().get("/").get_data(as_text=True)
-        self.assertIn("trade-tab", html)
+        self.assertIn('id="dd-theme"', html)
         self.assertIn("Медицина и здоровье", html)
         self.assertIn('data-q="стоматология"', html)
 
@@ -2799,10 +2799,182 @@ class TradeCatalog(unittest.TestCase):
         self.assertIn("автосервис", words)
 
 
-class CatalogIsTwoSteps(unittest.TestCase):
-    """Тема только переключает список, а ищется слово. Пока два ряда
-    кнопок выглядели одинаково, человек жал тему, видел в поле прежний
-    запрос и считал это поломкой."""
+class GeographyIsWide(unittest.TestCase):
+    """Список из двенадцати городов бесполезен тому, чей город в
+    него не попал. Но неверная координата хуже отсутствующего города:
+    поиск пойдёт молча и не там."""
+
+    def test_the_list_is_actually_large(self):
+        self.assertGreaterEqual(len(geo.cities()), 100)
+
+    def test_no_city_appears_twice(self):
+        names = [c["name"] for c in geo.cities()]
+        self.assertEqual(len(names), len(set(names)),
+                         "дубли: %s"
+                         % sorted(n for n in set(names) if names.count(n) > 1))
+
+    def test_every_coordinate_is_inside_the_country(self):
+        """Перепутанные широта с долготой — самая частая описка
+        в такой таблице, и заметна она только по пустой выдаче."""
+        for c in geo.cities():
+            if c["name"] == geo.WHOLE:
+                continue
+            lon, lat = [float(x) for x in c["ll"].split(",")]
+            self.assertTrue(19.0 <= lon <= 190.0,
+                            "долгота вне России: %s %s" % (c["name"], lon))
+            self.assertTrue(41.0 <= lat <= 72.0,
+                            "широта вне России: %s %s" % (c["name"], lat))
+
+    def test_two_cities_never_share_one_point(self):
+        """Скопировал строку и забыл поменять числа — и два
+        разных города ищутся в одном и том же месте."""
+        seen = {}
+        for c in geo.cities():
+            if c["name"] == geo.WHOLE:
+                continue
+            key = c["ll"]
+            self.assertNotIn(key, seen,
+                             "%s и %s в одной точке" % (c["name"], seen.get(key)))
+            seen[key] = c["name"]
+
+    def test_northern_cities_get_a_wider_box_in_degrees(self):
+        """Градус долготы в Сочи — восемьдесят километров, в
+        Мурманске — сорок. Одинаковый охват в градусах оставил бы
+        половину северного города за краем прямоугольника."""
+        by = {c["name"]: c for c in geo.cities()}
+        def dlon(name):
+            return float(by[name]["spn"].split(",")[0])
+        def dlat(name):
+            return float(by[name]["spn"].split(",")[1])
+        # У Мурманска и Сочи один радиус по широте не совпадает,
+        # поэтому сравниваем форму прямоугольника, а не его размер.
+        self.assertGreater(dlon("Мурманск") / dlat("Мурманск"),
+                           dlon("Сочи") / dlat("Сочи"))
+
+    def test_every_city_builds_a_map_query(self):
+        """Город без работающего прямоугольника молча выпадает
+        из двух источников из пяти."""
+        from app.sources import osm
+        for c in geo.cities():
+            if c["name"] == geo.WHOLE:
+                continue
+            self.assertTrue(osm.bbox(c), c["name"])
+            self.assertTrue(osm.build_query("стоматология", c), c["name"])
+
+    def test_directory_numbers_are_never_invented(self):
+        """Номер региона, взятый наугад, — это поиск в другом
+        городе без единого слова об этом. Номера берутся только из
+        самих справочников, по совпадению названия."""
+        from app.sources import gis2, hh
+        gis_names = {n for n, _ in gis2.CITIES}
+        hh_names = {n for _, n in hh.AREAS}
+        for c in geo.cities():
+            # «Россия целиком» — не город, её номер у hh стоит прямо в
+            # списке: совпадению по названию там совпадать не с чем.
+            if c["name"] == geo.WHOLE:
+                continue
+            if c["gis"]:
+                self.assertIn(c["name"], gis_names, c["name"])
+            if c["hh"]:
+                self.assertIn(c["name"], hh_names, c["name"])
+
+    def test_omsk_is_reachable_at_all(self):
+        """Омск стоял в справочнике hh, но список городов строился
+        по справочнику 2ГИС, и в интерфейс город не попадал вовсе."""
+        omsk = [c for c in geo.cities() if c["name"] == "Омск"]
+        self.assertTrue(omsk, "Омска нет в списке")
+        self.assertEqual(omsk[0]["hh"], "68")
+
+    def test_groups_cover_every_city_exactly_once(self):
+        flat = [c["name"] for g in geo.groups() for c in g["items"]]
+        self.assertEqual(sorted(flat),
+                         sorted(c["name"] for c in geo.cities()
+                                if c["name"] != geo.WHOLE))
+
+    def test_choosing_many_cities_still_works(self):
+        got = [c["name"] for c in geo.pick(["Пермь", "Сочи", "Якутск"])]
+        self.assertEqual(got, ["Сочи", "Пермь", "Якутск"])
+
+
+class TagsDoNotOverreach(unittest.TestCase):
+    """Слово целиком внутри другого слова — не совпадение.
+
+    «Автошкола» содержит и «школ», и в запрос попадали заодно все
+    школы города. «Барбершоп» содержит «бар» — и принёс бы бары."""
+
+    def setUp(self):
+        self.city = {"name": "Москва", "ll": "37.6173,55.7558",
+                     "spn": "1.12,0.63"}
+
+    def q(self, text):
+        from app.sources import osm
+        return osm.build_query(text, self.city)
+
+    def test_driving_school_is_not_every_school(self):
+        got = self.q("автошкола")
+        self.assertIn("driving_school", got)
+        self.assertNotIn('"amenity"="school"', got)
+        self.assertNotIn("language_school", got)
+
+    def test_barbershop_is_not_a_bar(self):
+        got = self.q("барбершоп")
+        self.assertIn("hairdresser", got)
+        self.assertNotIn('"amenity"="bar"', got)
+
+    def test_vet_pharmacy_is_not_a_human_one_only(self):
+        got = self.q("ветаптека")
+        self.assertIn("veterinary", got)
+
+    def test_shoe_repair_is_not_a_shoe_shop(self):
+        got = self.q("ремонт обуви")
+        self.assertIn("shoe_repair", got)
+        self.assertNotIn('"shop"="shoes"', got)
+
+    def test_two_real_words_both_survive(self):
+        """«Медицинская клиника» — это и clinic, и doctors:
+        отбрасывать надо только вложенные слова, а не вторые."""
+        got = self.q("медицинская клиника")
+        self.assertIn("clinic", got)
+        self.assertIn("doctors", got)
+
+    def test_short_keys_cannot_hide_inside_common_words(self):
+        """«Газ» лежит внутри «магазина», «спа» — внутри
+        «спальни». Таких ключей в словаре быть не должно."""
+        from app.sources import osm
+        trap = ("магазин", "компания", "услуги", "центр", "салон",
+                "производство", "организация", "предприятие")
+        for word in osm.TAGS:
+            for t in trap:
+                self.assertNotIn(word, t,
+                                 "ключ «%s» сработает на любом «%s»" % (word, t))
+
+    def test_every_tag_value_has_a_russian_name(self):
+        """В карточке и в выгрузке должно стоять «Груминг»,
+        а не pet_grooming: список читает продавец, а не картограф."""
+        from app.sources import osm
+        missing = set()
+        for tags in osm.TAGS.values():
+            for t in tags:
+                value = t.split("=")[1].strip('"[]')
+                if value not in osm.RUBRIC_RU:
+                    missing.add(value)
+        self.assertFalse(missing, "без русского названия: %s"
+                         % sorted(missing))
+
+    def test_the_catalogue_is_wide_now(self):
+        """Список из семидесяти слов не покрывал большинства
+        занятий, и человек возвращался к пустому полю."""
+        self.assertGreaterEqual(len(trades.GROUPS), 18)
+        self.assertGreaterEqual(len(trades.all_words()), 250)
+
+
+class SearchIsThreeDropdowns(unittest.TestCase):
+    """Тема, вид деятельности, город — три разных выбора.
+
+    Раньше они были двумя рядами одинаковых кнопок подряд, и это
+    читалось как один выбор: человек жал тему «Строительство и
+    ремонт», видел в поле «дизайн интерьера» с прошлого раза и считал,
+    что программа ищет не то, что он выбрал."""
 
     def setUp(self):
         db.init()
@@ -2811,25 +2983,70 @@ class CatalogIsTwoSteps(unittest.TestCase):
                                        "app", "static", "app.js"),
                           encoding="utf-8").read()
 
-    def test_steps_are_numbered_on_the_page(self):
-        self.assertIn("1. выберите тему", self.html)
-        self.assertIn("2. нажмите вид деятельности", self.html)
+    def test_three_fields_are_numbered_in_order(self):
+        for label in ("1. Тема", "2. Вид деятельности", "3. Город"):
+            self.assertIn(label, self.html, label)
 
-    def test_chosen_word_is_marked(self):
-        self.assertIn("markTrade", self.js)
-        self.assertIn("is-on", self.js)
+    def test_every_dropdown_is_on_the_page(self):
+        for box in ('id="dd-theme"', 'id="dd-trade"', 'id="dd-city"'):
+            self.assertIn(box, self.html, box)
 
-    def test_own_word_is_named_in_the_note(self):
-        """«Сейчас ищется дизайн — своё слово, не из списка»: иначе
-        расхождение между полем и списком ничем не объясняется."""
-        self.assertIn("не из списка", self.js)
+    def test_long_lists_can_be_searched_by_letters(self):
+        """Триста видов и полторы сотни городов листать глазами
+        нельзя: в каждом списке есть поиск."""
+        self.assertIn('placeholder="Найти тему"', self.html)
+        self.assertIn('placeholder="Найти город"', self.html)
+        self.assertIn("function ddFilter", self.js)
 
-    def test_theme_click_does_not_touch_the_field(self):
-        """Тема меняет только видимый список — поле трогать нельзя,
-        иначе набранное руками пропадёт от случайного нажатия."""
-        block = self.js[self.js.index('$("trade-tabs").onclick'):]
-        block = block[:block.index("};")]
-        self.assertNotIn('$("q-text").value =', block)
+    def test_only_one_menu_is_open_at_a_time(self):
+        """Два раскрытых меню перекрывают друг друга, и нажатие
+        попадает не туда, куда человек смотрел."""
+        self.assertIn("function ddCloseAll", self.js)
+        self.assertIn("ddCloseAll(box)", self.js)
+
+    def test_own_word_still_works_and_is_named(self):
+        """Своё слово программа искать умеет, и запирать человека
+        в списке было бы хуже, чем помочь ему этим списком."""
+        self.assertIn('<input id="q-text"', self.html)
+        self.assertIn(u"в списке такого нет", self.js)
+
+    def test_theme_clears_only_a_word_from_another_theme(self):
+        """Выбрал «Строительство», а в поле остался «дизайн» —
+        именно на это жаловались. Но слово из самой же темы стирать
+        нельзя: тогда оно пропадало бы от случайного нажатия."""
+        block = self.js[self.js.index('$("dd-theme").querySelector(".dd-list").onclick'):]
+        block = block[:block.index("\n};")]
+        self.assertIn("tradeInTheme()", block)
+        self.assertIn('$("q-text").value = ""', block)
+        # Стираем только под проверкой, а не всегда.
+        self.assertIn("if (themePick !== \"\" && !tradeInTheme())", block)
+
+    def test_cities_are_grouped_by_federal_district(self):
+        """Сто сорок городов одним полотном не читаются."""
+        for part in ("Поволжье", "Сибирь", "Дальний Восток"):
+            self.assertIn('data-part="%s"' % part, self.html, part)
+        self.assertIn("выбрать округ", self.html)
+
+    def test_city_says_which_sources_know_it(self):
+        """Города, которого нет в справочниках 2ГИС и hh, для них
+        не существует. Сказать это надо до запуска: «нашлось вдвое
+        меньше» без объяснения читается как поломка."""
+        self.assertIn("все источники", self.html)
+        self.assertIn("карта и ЕГРЮЛ", self.html)
+        self.assertIn("Без 2ГИС и hh", self.js)
+
+    def test_whole_country_name_is_not_copied_into_the_script(self):
+        """Две копии одной строки разошлись бы при первом же
+        переименовании, и кнопка молча перестала бы работать."""
+        self.assertIn("window.WHOLE_RU", self.html)
+        self.assertIn("window.WHOLE_RU ||", self.js)
+
+    def test_country_constant_exists_before_the_saved_search_is_restored(self):
+        """Восстановление прошлого поиска зовёт citiesNote()
+        в начале файла. const из середины там ещё не существует,
+        и страница упала бы у всех, кто уже искал."""
+        self.assertLess(self.js.index("const WHOLE_RU"),
+                        self.js.index("fillFindForm(window.LAST_FIND)"))
 
 
 class DesignAndArchitecture(unittest.TestCase):
@@ -3338,6 +3555,65 @@ class LocalMidnight(unittest.TestCase):
         src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
                                    "web.py"), encoding="utf-8").read()
         self.assertIn("date('now','localtime')", src)
+
+
+class EgrulSearchesTheRightPlace(unittest.TestCase):
+    """«ЕГРЮЛ не работает» — на самом деле работал, но искал
+    в пустоте.
+
+    Название города подставлялось в поле «регион», и совпадало это
+    только для Москвы и Петербурга: они сами себе регионы. Для
+    Новосибирска регион — «Новосибирская область», и фильтр не
+    совпадал никогда — ни одной компании, ни одной ошибки."""
+
+    class Stub(object):
+        def __init__(self, items=()):
+            self.sent = []
+            self.items = list(items)
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.sent.append(json)
+            outer = self
+
+            class R(object):
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"suggestions": outer.items}
+            return R()
+
+    def test_city_is_asked_for_as_a_city_too(self):
+        s = self.Stub()
+        dadata.search_by_name("стоматология", "токен",
+                              region="Новосибирск", session=s)
+        locations = s.sent[0].get("locations")
+        self.assertIn({"city": "Новосибирск"}, locations)
+        self.assertIn({"region": "Новосибирск"}, locations)
+
+    def test_sole_traders_are_not_thrown_away(self):
+        """ИП — тоже компания и тоже покупатель. Фильтр
+        «только юрлица» выбрасывал их молча."""
+        s = self.Stub()
+        dadata.search_by_name("стоматология", "токен", session=s)
+        self.assertNotIn("type", s.sent[0])
+
+    def test_whole_country_asks_without_a_place(self):
+        s = self.Stub()
+        dadata.search_by_name("стоматология", "токен", region="", session=s)
+        self.assertNotIn("locations", s.sent[0])
+
+    def test_empty_answer_is_explained(self):
+        """Здесь ищут по названию юрлица, а не по виду
+        деятельности, и пустой ответ здесь нормален. Без
+        объяснения он читается как поломка источника."""
+        said = []
+        dadata.search_by_name("стоматология", "токен", region="Пермь",
+                              session=self.Stub(),
+                              on_log=lambda t, k="": said.append(t))
+        self.assertTrue(any("по названию юрлица" in t for t in said), said)
 
 
 class StrangeAnswers(unittest.TestCase):
@@ -3859,7 +4135,14 @@ class NoSystemListboxes(unittest.TestCase):
     def test_cities_and_regions_are_buttons(self):
         self.assertNotIn("<select id=\"q-cities\"", self.html)
         self.assertNotIn("<select id=\"f-area\"", self.html)
-        self.assertIn('class="cities"', self.html)
+        self.assertIn('class="chips"', self.html)
+
+    def test_filter_chips_do_not_share_a_class_with_search_cities(self):
+        """Общий класс — общий поиск по странице: кнопка
+        «Россия» из фильтра списка молча числилась выбранным городом
+        поиска — и без названия вовсе."""
+        self.assertNotIn('class="city area', self.html)
+        self.assertIn('$("q-cities").querySelectorAll(".city.is-on")', self.js)
 
     def test_nothing_reads_selection_from_a_listbox(self):
         self.assertNotIn("selectedOptions", self.js)
@@ -3868,7 +4151,7 @@ class NoSystemListboxes(unittest.TestCase):
         """Вместе они значат то же, что «Россия целиком», только дольше."""
         block = self.js[self.js.index('$("q-cities").onclick'):]
         block = block[:block.index("citiesNote();\n};")]
-        self.assertIn("Россия целиком", block)
+        self.assertIn("WHOLE_RU", block)
         self.assertIn("classList.remove", block)
 
     def test_empty_choice_is_called_out(self):

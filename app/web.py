@@ -172,6 +172,8 @@ def create_app():
             last_search=(db.get_setting("last_search", "") or "{}").replace("<", "\\u003c"),
             last_find=(db.get_setting("last_find", "") or "{}").replace("<", "\\u003c"),
             geo_cities=geo.cities(),
+            geo_groups=geo.groups(),
+            geo_whole=geo.WHOLE,
             # Какие источники готовы к работе. Сказать это надо до запуска,
             # а не после: «ничего не нашлось» из-за незаданного ключа —
             # самая обидная из возможных причин.
@@ -474,8 +476,11 @@ def create_app():
         """
         where, args = [], []
         if q:
-            where.append("(name LIKE ? OR director LIKE ? OR inn LIKE ? OR site LIKE ?)")
-            args += ["%%%s%%" % q] * 4
+            # ОГРН ищется наравне с ИНН: в выписке и в договоре стоят оба,
+            # и какой из них под рукой — дело случая.
+            where.append("(name LIKE ? OR director LIKE ? OR inn LIKE ? "
+                         "OR ogrn LIKE ? OR site LIKE ?)")
+            args += ["%%%s%%" % q] * 5
         picked = [int(x) for x in str(ids or "").split(",") if x.strip().isdigit()]
         if picked:
             where.append("id IN (%s)" % ",".join("?" * len(picked)))
@@ -536,9 +541,9 @@ def create_app():
         # письма, и список учредителей: всё это едет в ответе лишь затем,
         # чтобы браузер его выбросил. На сотне строк это половина веса
         # ответа, а ответ приходит заново, пока идёт обход.
-        sql = ("SELECT id, name, inn, site, region, director, director_post, "
-               "score, stage, callcenter, ai_fit, next_step, next_date "
-               "FROM companies")
+        sql = ("SELECT id, name, inn, ogrn, site, region, director, "
+               "director_post, score, stage, callcenter, ai_fit, "
+               "next_step, next_date FROM companies")
         if cond:
             sql += " WHERE " + cond
         # Сколько строк отдавать. Интерфейс просит ровно столько, сколько
