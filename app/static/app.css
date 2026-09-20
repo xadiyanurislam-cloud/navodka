@@ -317,7 +317,6 @@ td.card-cell{padding:0 14px 20px;background:var(--hover)}
 .cc-label.no{color:var(--ink-3);font-weight:400}
 .cc-why{color:var(--ink-3);font-size:11.5px;line-height:1.45}
 
-.detail{display:grid;grid-template-columns:1.4fr 1fr;gap:26px;padding:6px 2px 0}
 .detail h4{margin:0 0 9px;font-size:11px;letter-spacing:.04em;
            text-transform:uppercase;color:var(--ink-3);font-weight:500}
 .detail p{font-size:13px;line-height:1.6;color:var(--ink-2);margin:0 0 16px}
@@ -385,7 +384,6 @@ th.is-sorted[data-dir="up"]::after{content:"↑"}
 
 /* Карточка в три колонки: контакты, профиль, справка. В двух левая
    половина пустовала, а справка жалась в столбик. */
-.detail{grid-template-columns:1fr 1.15fr .9fr}
 .detail section{min-width:0}
 .detail h4.mt{margin-top:18px}
 .detail p.small{font-size:11.5px;color:var(--ink-3);line-height:1.5;margin:0 0 6px}
@@ -524,7 +522,12 @@ select[multiple]{padding:6px;min-height:104px}
 /* Флажок по верху строки, а не по центру: строки разной высоты, и
    посередине он болтается на разных уровнях. */
 tbody tr.row td.c-pick{vertical-align:top;padding-top:15px}
-.danger-link{color:var(--err)!important}
+/* Удаление лежит внизу карточки и красным быть не должно: красный —
+   это предупреждение о том, что уже произошло, а не подпись к кнопке,
+   которую нажимают раз в месяц. Краснеет под курсором. */
+.danger-link{color:var(--ink-3)!important;text-decoration:none;
+  border-bottom:1px dotted var(--line)}
+.danger-link:hover{color:var(--err)!important;border-bottom-color:var(--err)}
 
 /* Состояние обновления. «.closing» гасит интерфейс на те секунды, что
    остались до выхода: живые на вид кнопки, которые уже не отвечают, —
@@ -642,7 +645,6 @@ th{font-weight:550;letter-spacing:.04em;font-size:10.5px;text-transform:uppercas
 
 /* Карточка компании. Приподнята над таблицей тенью, а не рамкой:
    рамка внутри таблицы читается как ещё одна строка. */
-.detail{box-shadow:var(--shadow-lift);border-radius:var(--r-lg)}
 .detail h4{letter-spacing:.04em}
 
 /* Карточки источников. */
@@ -748,7 +750,11 @@ td{padding:10px 14px}
 .tile span{font-size:12px;color:var(--ink-2)}
 .tile.hot b{color:var(--accent)}
 
-.two-col{display:grid;grid-template-columns:1.25fr 1fr;gap:14px;max-width:1180px}
+/* align-items:start — чтобы короткая панель не растягивалась до высоты
+   длинной. «На сегодня» с одной строкой превращалась в пустой ящик на
+   пятьсот пикселей: список из одного дела выглядел как сбой. */
+.two-col{display:grid;grid-template-columns:1.25fr 1fr;gap:14px;
+  max-width:1180px;align-items:start}
 @media (max-width:1000px){.two-col{grid-template-columns:1fr}}
 .panel{
   background:var(--surface);border:1px solid var(--line);
@@ -1048,3 +1054,144 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
   background:var(--surface-2);opacity:1}
 .trade-items .pick.weak:hover{border-color:var(--ink-3);color:var(--ink)}
 #trade-note.warn-note{color:var(--warn)}
+
+
+/* ═════════════════════════════════════════════════════════
+   КАРТОЧКА КОМПАНИИ
+
+   Раньше она разливалась по трём колонкам прямо в теле таблицы: без
+   рамки, без фона, без названия компании внутри — открыв её, человек
+   видел продолжение строки, а не карточку. Разбор балла занимал треть
+   и выталкивал контакты, действия терялись между абзацами текста, а
+   колонки кончались на разной высоте, оставляя внизу пустоту.
+
+   Теперь это отдельная поверхность с собственной шапкой, полосой
+   действий и двумя колонками: слева работа (связь, шаг, заметки),
+   справа справка (что за компания, деньги, оценка).
+   ═════════════════════════════════════════════════════════ */
+.card-cell{padding:0 14px 16px}
+.detail{
+  display:block;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  box-shadow:var(--shadow-card);
+  overflow:hidden;
+}
+
+/* ── Шапка: кто это ─────────────────────────────────────── */
+.card-top{
+  display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:start;
+  padding:18px 22px 16px;
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));
+  border-bottom:1px solid var(--line-2);
+}
+.badge-big{
+  width:58px;height:58px;border-radius:16px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:1px;flex:0 0 58px;
+}
+.badge-big b{font-size:21px;font-weight:650;line-height:1;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.badge-big span{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;
+  opacity:.75}
+.badge-big.hot{background:var(--hot-bg);color:var(--hot)}
+.badge-big.warm{background:var(--warm-bg);color:var(--warm)}
+.badge-big.cold{background:var(--cold-bg);color:var(--cold)}
+
+.ct-id{min-width:0}
+.ct-id h3{font-size:19px;font-weight:650;letter-spacing:-.02em;line-height:1.25}
+.ct-meta{display:flex;flex-wrap:wrap;gap:0 14px;margin-top:5px;
+  font-size:12px;color:var(--ink-3)}
+.ct-meta a{color:var(--accent);text-decoration:none}
+.ct-meta a:hover{text-decoration:underline}
+.ct-boss{margin-top:7px;font-size:13px;color:var(--ink-2)}
+.ct-boss b{color:var(--ink);font-weight:600}
+.ct-right{display:flex;align-items:center;gap:8px}
+.ct-right .stage{min-width:132px}
+
+/* ── Полоса действий ────────────────────────────────────── */
+.card-do{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:12px 22px;border-bottom:1px solid var(--line-2);
+  background:var(--surface-2);
+}
+.do-links{display:flex;gap:14px;margin-left:auto;font-size:12px}
+.do-links a{color:var(--ink-3);text-decoration:none;border-bottom:1px dotted var(--line)}
+.do-links a:hover{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* ── Две колонки: работа и справка ──────────────────────── */
+.card-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);
+  gap:0;align-items:stretch}
+.card-main{padding:18px 22px 20px;min-width:0}
+.card-side{padding:18px 22px 20px;min-width:0;
+  background:var(--surface-2);border-left:1px solid var(--line-2)}
+@media (max-width:1100px){
+  .card-grid{grid-template-columns:1fr}
+  .card-side{border-left:0;border-top:1px solid var(--line-2)}
+}
+
+/* Раздел внутри карточки. Заголовки разной величины были главной
+   причиной того, что карточка читалась как сплошной текст: один
+   уровень — одно оформление. */
+.cs{margin-bottom:20px}
+.cs:last-child{margin-bottom:0}
+.cs > h4{
+  font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:600;margin-bottom:9px;
+  padding-bottom:6px;border-bottom:1px solid var(--line-2);
+}
+.cs-text{font-size:13px;line-height:1.55;color:var(--ink-2)}
+.cs .facts{gap:8px 16px}
+.nobody.sm{font-size:11.5px}
+
+.soc-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.hand-find{margin-top:12px;font-size:11.5px;color:var(--ink-3);
+  display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}
+.hand-find a{color:var(--accent);text-decoration:none}
+
+.cc-line{margin-top:10px;font-size:12.5px;padding:6px 10px;border-radius:8px}
+.cc-line b{font-weight:600}
+.cc-line.yes{background:var(--ok-bg);color:var(--ok)}
+.cc-line.maybe{background:var(--warn-bg);color:var(--warn)}
+.cc-line.no{background:var(--cold-bg);color:var(--cold)}
+
+.risks .risk-list{margin:0;padding-left:16px;font-size:12.5px;line-height:1.6}
+.card-foot{margin-top:18px;padding-top:12px;border-top:1px solid var(--line-2)}
+
+/* ── Разбор балла: свёрнут ──────────────────────────────── */
+details.score-block{padding:0;background:transparent;border:1px solid var(--line-2);
+  border-radius:12px;overflow:hidden;margin-bottom:20px}
+details.score-block > summary{
+  display:flex;align-items:center;gap:10px;cursor:pointer;
+  padding:11px 14px;list-style:none;background:var(--surface);
+  font-size:12px;color:var(--ink-2)}
+details.score-block > summary::-webkit-details-marker{display:none}
+details.score-block > summary:hover{background:var(--hover)}
+details.score-block[open] > summary{border-bottom:1px solid var(--line-2)}
+.sb-h{font-weight:600;color:var(--ink)}
+.sb-sum{margin-left:auto;font-size:11.5px;color:var(--ink-3)}
+details.score-block .score-list,
+details.score-block .score-could,
+details.score-block .score-note,
+details.score-block .score-stale{margin-left:14px;margin-right:14px}
+details.score-block .score-list:first-of-type{margin-top:12px}
+details.score-block .score-note{margin-bottom:12px}
+
+/* ── Города ───────────────────────────────────────────────
+   Системный многострочный список был единственным местом, куда
+   оформление не дотягивалось: белая рамка и синее выделение системы
+   посреди тёмной темы. Плюс «несколько с зажатым Ctrl» знают не все, а
+   промахнувшийся снимал выделение со всего разом. */
+.fld{display:flex;flex-direction:column;gap:5px}
+.cities{display:flex;flex-wrap:wrap;gap:6px}
+.city{
+  border:1px solid var(--line);background:var(--surface);color:var(--ink-2);
+  border-radius:20px;padding:6px 13px;font:inherit;font-size:12.5px;
+  cursor:pointer;transition:all .12s ease}
+.city:hover{border-color:var(--ink-3);color:var(--ink)}
+.city.is-on{background:var(--accent);border-color:var(--accent);color:#fff;
+  font-weight:550}
+.city.wide-one{order:-1;font-style:italic}
+.city.wide-one.is-on{background:var(--warn);border-color:var(--warn);color:#111}
+.warn-note{color:var(--warn)}

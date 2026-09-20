@@ -111,9 +111,15 @@ function showView(name) {
 const STAGE_RU = {"new": "новые", "в работе": "в работе",
                   "написали": "написали", "созвон": "созвон", "отказ": "отказ"};
 
-function scoreBadge(n) {
+function scoreBadge(n, size) {
   const v = Number(n) || 0;
   const cls = v >= 60 ? "hot" : v >= 35 ? "warm" : "cold";
+  // В карточке значок крупный и с подписью: это первое, на что смотрят,
+  // открыв компанию, и число без слова «балл» рядом с названием читается
+  // как что угодно — от числа сотрудников до года основания.
+  if (size === "big") {
+    return `<div class="badge-big ${cls}"><b>${v}</b><span>балл</span></div>`;
+  }
   return `<span class="badge ${cls}">${v}</span>`;
 }
 
@@ -325,7 +331,7 @@ async function run(url, body, what) {
 function findForm() {
   return {
     query: $("q-text").value.trim(),
-    cities: [...$("q-cities").selectedOptions].map((o) => o.value),
+    cities: pickedCities(),
     pages: $("q-pages").value,
     limit: $("q-limit").value,
     osm: $("q-osm").checked,
@@ -345,7 +351,9 @@ function fillFindForm(p) {
   $("q-text").value = p.query;
   const want = (p.cities || []).map(String);
   if (want.length) {
-    [...$("q-cities").options].forEach((o) => { o.selected = want.includes(o.value); });
+    document.querySelectorAll(".city").forEach(
+      (el) => el.classList.toggle("is-on", want.includes(el.dataset.city)));
+    citiesNote();
   }
   if (p.pages) $("q-pages").value = String(p.pages);
   if (p.limit) $("q-limit").value = String(p.limit);
@@ -398,7 +406,7 @@ fillFindForm(window.LAST_FIND);
 function searchForm() {
   return {
     queries: $("f-text").value.split("\n").map((x) => x.trim()).filter(Boolean),
-    areas: [...$("f-area").selectedOptions].map((o) => o.value),
+    areas: pickedAreas(),
     period: $("f-period").value,
     pages: $("f-pages").value,
     in_title: $("f-title").checked,
@@ -414,7 +422,8 @@ function fillSearchForm(p) {
   if (!p || !p.queries) return;
   $("f-text").value = (p.queries || []).join("\n");
   const areas = (p.areas || []).map(String);
-  [...$("f-area").options].forEach((o) => { o.selected = areas.includes(o.value); });
+  document.querySelectorAll(".area").forEach(
+    (el) => el.classList.toggle("is-on", areas.includes(el.dataset.code)));
   if (p.period) $("f-period").value = String(p.period);
   if (p.pages) $("f-pages").value = String(p.pages);
   $("f-title").checked = p.in_title !== false;
@@ -512,6 +521,71 @@ function markTrade() {
     note.classList.remove("warn-note");
   }
 }
+
+// Города выбираются нажатием, а не Ctrl-кликом по системному списку.
+//
+// Тот список был единственным местом, куда интерфейс не дотягивался:
+// белая рамка и синее выделение операционной системы посреди тёмной
+// темы. Плюс сам приём — «несколько с зажатым Ctrl» — знают не все, а
+// промахнувшийся снимал выделение со всего разом и не понимал, почему
+// поиск идёт по одному городу.
+function pickedAreas() {
+  return [...document.querySelectorAll(".area.is-on")].map((el) => el.dataset.code);
+}
+
+$("f-area").onclick = (e) => {
+  const el = e.target.closest(".area");
+  if (!el) return;
+  // «Россия» и отдельные регионы — взаимоисключающие, как и у городов.
+  const all = el.dataset.code === "113";
+  if (all) {
+    const on = !el.classList.contains("is-on");
+    document.querySelectorAll(".area").forEach((x) => x.classList.remove("is-on"));
+    el.classList.toggle("is-on", on);
+  } else {
+    const r = document.querySelector('.area[data-code="113"]');
+    if (r) r.classList.remove("is-on");
+    el.classList.toggle("is-on");
+  }
+};
+
+function pickedCities() {
+  return [...document.querySelectorAll(".city.is-on")].map((el) => el.dataset.city);
+}
+
+function citiesNote() {
+  const picked = pickedCities();
+  const note = $("cities-note");
+  if (!picked.length) {
+    note.innerHTML = `<span class="warn-note">Не выбран ни один город —
+      поиск не пойдёт.</span>`;
+  } else if (picked.includes("Россия целиком")) {
+    note.innerHTML = `<span class="warn-note">«Россия целиком» отключает
+      справочники: они ищут по карте, а не по стране. Останутся ЕГРЮЛ и
+      hh, а карточки выйдут без телефонов и сайтов.</span>`;
+  } else {
+    note.textContent = "Выбрано: " + picked.length + " — поиск обойдёт каждый";
+  }
+}
+
+$("q-cities").onclick = (e) => {
+  const el = e.target.closest(".city");
+  if (!el) return;
+  const all = el.dataset.city === "Россия целиком";
+  if (all) {
+    // «Россия целиком» и города — взаимоисключающие: вместе они значат
+    // то же, что «Россия целиком», только дольше.
+    const on = !el.classList.contains("is-on");
+    document.querySelectorAll(".city").forEach((x) => x.classList.remove("is-on"));
+    el.classList.toggle("is-on", on);
+  } else {
+    document.querySelector('.city[data-city="Россия целиком"]')
+      .classList.remove("is-on");
+    el.classList.toggle("is-on");
+  }
+  citiesNote();
+};
+citiesNote();
 
 $("trade-tabs").onclick = (e) => {
   const tab = e.target.closest(".trade-tab");
@@ -1166,8 +1240,16 @@ function scoreBlock(c, parts, now) {
     got.reduce((a, p) => a + p.points, 0));
   const could = Math.min(miss.reduce((a, p) => a + p.points, 0), 100 - total);
   const stale = c.score != null && c.score !== total;
-  return `<div class="score-block">
-    <h4>Из чего сложился балл <b class="score-total">${total}</b></h4>
+  // Свёрнут по умолчанию. Разбор — справка: её читают один раз, когда
+  // не верят числу, а места он занимал больше, чем контакты и заметки
+  // вместе. Сводка в заголовке отвечает на вопрос сразу.
+  return `<details class="score-block">
+    <summary>
+      <span class="sb-h">Из чего сложился балл</span>
+      <b class="score-total">${total}</b>
+      <span class="sb-sum">${got.length} признак${plural(got.length, "", "а", "ов")}${
+        could ? ` · можно ещё +${could}` : ""}</span>
+    </summary>
     ${stale ? `<p class="score-stale">В таблице ${c.score} — балл с
       прошлого обогащения. Обновится, когда компанию обогатят снова.</p>` : ""}
     <ul class="score-list">${got.map((p) => row(p, true)).join("")}</ul>
@@ -1177,7 +1259,16 @@ function scoreBlock(c, parts, now) {
     <p class="score-note">Балл нужен не для точности, а для порядка
       обзвона: список проходят сверху вниз и до середины обычно не
       доходят. Наведите на строку — объяснение, почему она считается.</p>
-  </div>`;
+  </details>`;
+}
+
+// Окончание по числу: «3 признака», но «5 признаков».
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  if (b === 1) return one;
+  return many;
 }
 
 // Всё сгенерированное помечено и лежит отдельным блоком: смешать его с
@@ -1245,101 +1336,123 @@ async function toggleCard(tr, id) {
   ].filter(Boolean).join("");
 
   holder.querySelector("td").innerHTML = `<div class="detail">
-    <section>
-      <h4>Контакты</h4>
-      ${rest.map(contactRow).join("") || "<span class='nobody'>—</span>"}
-      <h4 class="mt">Соцсети</h4>
-      ${socials.length ? socials.map(contactRow).join("")
-        : `<p class="nobody">Не нашлось ни на сайте, ни в карточках справочников.
-           ${sig.vk_group ? "" : "Сообщество ВК ищется по ссылке, которую компания опубликовала сама, — если её нигде нет, программа не угадывает."}</p>`}
-      ${(d.search || []).length ? `
-        <h4 class="mt">Найти руководителя вручную</h4>
-        <p class="hint-sm">Программа сюда не ходит и ничего не сохраняет:
-           по имени надёжно не найти, однофамильцев в любом городе сотни.</p>
-        <div class="detail-links">${d.search.map(
-          (x) => `<a href="${safeUrl(x.url)}" target="_blank">${esc(x.title)}</a>`).join("")}</div>` : ""}
-    </section>
-
-    <section>
-      <h4>Чем занимается</h4>
-      <p>${c.activity ? esc(c.activity)
-          : "<span class='nobody'>Описание не найдено — сайт не открылся или описания на нём нет.</span>"}</p>
-      <h4 class="mt">Телефонные продажи — ${esc(c.callcenter || "нет данных")}</h4>
-      ${why.length
-        ? `<ul class="why-list">${why.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>`
-        : "<p class='nobody'>Признаков не нашлось. Скорее всего, звонки для компании не основной канал.</p>"}
-
-      <h4 class="mt">Реквизиты и структура</h4>
-      <div class="facts">
-        ${fact(c.founded, "в ЕГРЮЛ с")}
-        ${fact(sig.self_year, "по сайту работает с")}
-        ${fact(c.branches, "филиалов по ЕГРЮЛ")}
-        ${fact(sig.self_branches, "точек по сайту")}
-        ${fact(c.founders_count, "учредителей")}
-        ${fact(sig.hh_open_all, "вакансий всего")}
-        ${fact(c.cms, "движок сайта")}
-        ${fact(ruDate(sig.last_post), "последняя публикация")}
+    <header class="card-top">
+      ${scoreBadge(c.score, "big")}
+      <div class="ct-id">
+        <h3>${esc(c.name)}</h3>
+        <div class="ct-meta">
+          ${c.inn ? `<span>ИНН ${esc(c.inn)}</span>` : ""}
+          ${c.site ? `<a href="${safeUrl(c.site)}" target="_blank">${
+            esc(c.site.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</a>` : ""}
+          ${c.region ? `<span>${esc(c.region)}</span>` : ""}
+          ${c.okved_name ? `<span title="${esc(c.okved || "")}">${esc(c.okved_name)}</span>` : ""}
+        </div>
+        ${c.director ? `<div class="ct-boss"><b>${esc(c.director)}</b>${
+          c.director_post ? ` · ${esc(c.director_post)}` : ""}</div>` : ""}
       </div>
-      ${c.founders ? `<p class="small"><b>Учредители:</b> ${esc(c.founders)}</p>` : ""}
-      <h4 class="mt">Что дальше</h4>
-      <div class="next">
-        <input type="text" class="next-step" data-id="${c.id}"
-               placeholder="позвонить, отправить письмо…"
-               value="${esc(c.next_step || "")}">
-        <input type="date" class="next-date" data-id="${c.id}"
-               value="${esc(c.next_date || "")}">
+      <div class="ct-right">
+        <select class="stage" data-id="${c.id}">
+          ${STAGES.map(([v, t]) =>
+            `<option value="${v}" ${c.stage === v ? "selected" : ""}>${t}</option>`).join("")}
+        </select>
       </div>
-      <div class="detail-links">
-        <button class="btn sm" data-analyze="${c.id}">Разобрать компанию</button>
-        <button class="btn sm" data-letter="${c.id}">Письмо через ИИ</button>
-        <button class="btn sm" data-kp="${c.id}">Коммерческое предложение</button>
-      </div>
-      <div class="letter" data-letter-box="${c.id}" hidden></div>
-      <div class="letter" data-kp-box="${c.id}"${c.ai_kp ? "" : " hidden"}>${
-        c.ai_kp ? `<div class="kp"><p class="kp-title"><b>Составленное КП</b>
-          <span class="ai-mark">ИИ</span></p><pre class="letter-body">${
-          esc(c.ai_kp)}</pre></div>
-        <div class="detail-links">
-          <button class="btn sm" data-copy-saved-kp>Скопировать целиком</button>
-        </div>` : ""}</div>
+    </header>
 
-      <h4 class="mt">Заметки</h4>
-      <div class="notes" data-notes="${c.id}">${notesHtml(d.notes || [])}</div>
-      <textarea class="note-new" data-note="${c.id}" rows="2"
-                placeholder="что сказали, о чём договорились — Ctrl+Enter"></textarea>
+    <div class="card-do">
+      <button class="btn primary sm" data-analyze="${c.id}">Разобрать через ИИ</button>
+      <button class="btn sm" data-letter="${c.id}">Письмо</button>
+      <button class="btn sm" data-kp="${c.id}">Коммерческое предложение</button>
+      <span class="do-links">${links}</span>
+    </div>
 
-      ${sig.sales_model ? `<p class="small"><b>Модель продаж:</b> ${esc(sig.sales_model)}</p>` : ""}
-      ${c.okved_name ? `<p class="small"><b>ОКВЭД:</b> ${esc(c.okved)} ${esc(c.okved_name)}</p>` : ""}
-      ${c.okveds_extra ? `<p class="small">Также: ${esc(c.okveds_extra)}</p>` : ""}
-      ${c.address ? `<p class="small">${esc(c.address)}</p>` : ""}
-    </section>
+    <div class="card-grid">
+      <div class="card-main">
+        <section class="cs">
+          <h4>Как связаться</h4>
+          ${rest.map(contactRow).join("") || "<p class='nobody'>Ни телефона, ни почты не нашлось.</p>"}
+          ${socials.length ? `<div class="soc-row">${socials.map(contactRow).join("")}</div>`
+            : `<p class="nobody sm">Соцсетей не нашлось. Программа берёт только
+               те ссылки, которые компания опубликовала сама.</p>`}
+          ${(d.search || []).length ? `<div class="hand-find">
+            <span>Найти руководителя вручную:</span>
+            ${d.search.map((x) => `<a href="${safeUrl(x.url)}" target="_blank">${
+              esc(x.title)}</a>`).join("")}</div>` : ""}
+        </section>
 
-    <section>
-      <h4>Финансы${c.growth ? ` — <span class="${GROWTH_CLASS(c.growth)}">${esc(c.growth)}</span>` : ""}</h4>
-      ${revenueBars(parseSeries(sig.revenue_series), c.growth) ||
-        `<p class="nobody">${rev ? "Данные за один год: " + rev : "Отчётности в ФНС не нашлось."}</p>`}
-      <div class="facts mt">
-        ${fact(sig.profit ? money(+sig.profit) : "", "прибыль",
-               +sig.profit < 0 ? "bad" : "")}
-        ${fact(sig.size, "размер")}
-        ${fact(c.employees, "сотрудников по ФНС")}
-        ${fact(sig.self_staff, "сотрудников по сайту")}
-        ${fact(c.capital ? c.capital.toLocaleString("ru") + " ₽" : "", "уставный капитал")}
-        ${fact(sig.hh_salary, "зарплаты в вакансиях")}
+        <section class="cs">
+          <h4>Что дальше</h4>
+          <div class="next">
+            <input type="text" class="next-step" data-id="${c.id}"
+                   placeholder="позвонить, отправить письмо…"
+                   value="${esc(c.next_step || "")}">
+            <input type="date" class="next-date" data-id="${c.id}"
+                   value="${esc(c.next_date || "")}">
+          </div>
+        </section>
+
+        <div class="letter" data-letter-box="${c.id}" hidden></div>
+        <div class="letter" data-kp-box="${c.id}"${c.ai_kp ? "" : " hidden"}>${
+          c.ai_kp ? `<div class="kp"><p class="kp-title"><b>Составленное КП</b>
+            <span class="ai-mark">ИИ</span></p><pre class="letter-body">${
+            esc(c.ai_kp)}</pre></div>
+          <div class="detail-links">
+            <button class="btn sm" data-copy-saved-kp>Скопировать целиком</button>
+          </div>` : ""}</div>
+
+        <section class="cs">
+          <h4>Заметки</h4>
+          <div class="notes" data-notes="${c.id}">${notesHtml(d.notes || [])}</div>
+          <textarea class="note-new" data-note="${c.id}" rows="2"
+                    placeholder="что сказали, о чём договорились — Ctrl+Enter"></textarea>
+        </section>
       </div>
 
-      ${scoreBlock(c, d.score_parts || [], d.score_now)}
-      ${aiBlock(c, sig)}
-      ${(() => { const r = risks(c, sig); return r.length ? `
-        <h4 class="mt">На что обратить внимание</h4>
-        <ul class="risk-list">${r.map(
-          ([t, k]) => `<li class="${k}">${esc(t)}</li>`).join("")}</ul>` : ""; })()}
+      <aside class="card-side">
+        ${aiBlock(c, sig)}
 
-      <div class="detail-links mt">${links}</div>
-      <div class="detail-links mt">
-        <a href="#" class="danger-link" data-del="${c.id}">Удалить и больше не показывать</a>
-      </div>
-    </section>
+        <section class="cs">
+          <h4>Чем занимается</h4>
+          <p class="cs-text">${c.activity ? esc(c.activity)
+            : "<span class='nobody'>Описания не нашлось — сайт не открылся или его там нет.</span>"}</p>
+          <div class="cc-line ${CC_CLASS[c.callcenter] || "no"}">
+            <b>Телефонные продажи:</b> ${esc(c.callcenter || "нет данных")}</div>
+          ${why.length ? `<ul class="why-list">${why.map(
+            (w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+          ${sig.sales_model ? `<p class="small">Модель продаж: ${esc(sig.sales_model)}</p>` : ""}
+          ${c.address ? `<p class="small">${esc(c.address)}</p>` : ""}
+        </section>
+
+        <section class="cs">
+          <h4>Финансы${c.growth ? ` <span class="${GROWTH_CLASS(c.growth)}">${
+            esc(c.growth)}</span>` : ""}</h4>
+          ${revenueBars(parseSeries(sig.revenue_series), c.growth) ||
+            `<p class="nobody">${rev ? "Данные за один год: " + rev
+              : "Отчётности в ФНС не нашлось."}</p>`}
+          <div class="facts mt">
+            ${fact(sig.profit ? money(+sig.profit) : "", "прибыль",
+                   +sig.profit < 0 ? "bad" : "")}
+            ${fact(sig.size, "размер")}
+            ${fact(c.employees, "сотрудников по ФНС")}
+            ${fact(c.founded, "в ЕГРЮЛ с")}
+            ${fact(c.branches, "филиалов")}
+            ${fact(sig.hh_salary, "зарплаты в вакансиях")}
+          </div>
+        </section>
+
+        ${(() => { const r = risks(c, sig); return r.length ? `
+        <section class="cs risks">
+          <h4>На что обратить внимание</h4>
+          <ul class="risk-list">${r.map(
+            ([t, k]) => `<li class="${k}">${esc(t)}</li>`).join("")}</ul>
+        </section>` : ""; })()}
+
+        ${scoreBlock(c, d.score_parts || [], d.score_now)}
+
+        <div class="card-foot">
+          <a href="#" class="danger-link" data-del="${c.id}">Удалить и больше не показывать</a>
+        </div>
+      </aside>
+    </div>
   </div>`;
   bindCopy(holder);
   bindWork(holder, c);

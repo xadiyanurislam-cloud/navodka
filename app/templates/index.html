@@ -118,13 +118,16 @@
                 <datalist id="q-hints">
                   {% for r in rubrics %}<option value="{{ r }}">{% endfor %}
                 </datalist>
-                <label>Города
-                  <select id="q-cities" multiple size="6">
-                    {% for c in geo_cities %}<option value="{{ c.name }}"{% if c.name == 'Москва' %} selected{% endif %}>{{ c.name }}</option>{% endfor %}
-                  </select>
-                  <em class="fld-hint">Несколько — с зажатым Ctrl. «Россия целиком»
-                     отключает справочники: они ищут по карте, а не по стране</em>
-                </label>
+                <div class="fld">
+                  <span class="lbl">Города — нажмите, сколько нужно</span>
+                  <div class="cities" id="q-cities">
+                    {% for c in geo_cities %}
+                    <button type="button" class="city{% if c.name == 'Москва' %} is-on{% endif %}{% if c.name == 'Россия целиком' %} wide-one{% endif %}"
+                            data-city="{{ c.name }}">{{ c.name }}</button>
+                    {% endfor %}
+                  </div>
+                  <em class="fld-hint" id="cities-note"></em>
+                </div>
               </div>
 
               <div class="trades">
@@ -259,12 +262,15 @@
                     </div>
                   </div>
                 </div>
-                <label>Регионы
-                  <select id="f-area" multiple size="8">
-                    {% for code, name in areas %}<option value="{{ code }}"{% if code == '113' %} selected{% endif %}>{{ name }}</option>{% endfor %}
-                  </select>
-                  <em class="fld-hint">Несколько — с зажатым Ctrl</em>
-                </label>
+                <div class="fld">
+                  <span class="lbl">Регионы — нажмите, сколько нужно</span>
+                  <div class="cities" id="f-area">
+                    {% for code, name in areas %}
+                    <button type="button" class="city area{% if code == '113' %} is-on{% endif %}{% if code == '113' %} wide-one{% endif %}"
+                            data-code="{{ code }}">{{ name }}</button>
+                    {% endfor %}
+                  </div>
+                </div>
               </div>
             </div>
           </section>

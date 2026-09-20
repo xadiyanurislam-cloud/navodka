@@ -3800,5 +3800,80 @@ class ChainDoesNotStall(unittest.TestCase):
         self.assertNotIn('then_enrich") and added:', src)
 
 
+class CardLooksLikeACard(unittest.TestCase):
+    """Карточка разливалась по трём колонкам прямо в теле таблицы: без
+    рамки, без фона и без названия компании внутри."""
+
+    def setUp(self):
+        self.js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                       "static", "app.js"),
+                          encoding="utf-8").read()
+        self.css = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                        "static", "app.css"),
+                           encoding="utf-8").read()
+
+    def test_company_name_is_inside_the_card(self):
+        self.assertIn('<h3>${esc(c.name)}</h3>', self.js)
+
+    def test_card_has_its_own_surface(self):
+        block = self.css[self.css.index("\n.detail{"):]
+        block = block[:block.index("}")]
+        for prop in ("background", "border", "border-radius", "box-shadow"):
+            self.assertIn(prop, block, "у карточки нет %s" % prop)
+
+    def test_actions_are_a_row_not_prose(self):
+        self.assertIn('class="card-do"', self.js)
+        self.assertIn('data-analyze', self.js)
+        self.assertIn('data-letter', self.js)
+        self.assertIn('data-kp', self.js)
+
+    def test_two_columns_work_and_reference(self):
+        self.assertIn('class="card-main"', self.js)
+        self.assertIn('class="card-side"', self.js)
+        self.assertNotIn('<div class="detail">\n    <section>', self.js)
+
+    def test_score_breakdown_is_collapsed(self):
+        """Справка, которую читают один раз, занимала больше места, чем
+        контакты и заметки вместе."""
+        self.assertIn('<details class="score-block">', self.js)
+        self.assertIn("<summary>", self.js)
+
+    def test_big_badge_says_what_the_number_is(self):
+        self.assertIn('class="badge-big', self.js)
+        self.assertIn("<span>балл</span>", self.js)
+
+
+class NoSystemListboxes(unittest.TestCase):
+    """Системный многострочный список — единственное место, куда
+    оформление не дотягивалось: белая рамка и синее выделение системы
+    посреди тёмной темы. Плюс «несколько с зажатым Ctrl» знают не все."""
+
+    def setUp(self):
+        self.html = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                         "templates", "index.html"),
+                            encoding="utf-8").read()
+        self.js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                       "static", "app.js"),
+                          encoding="utf-8").read()
+
+    def test_cities_and_regions_are_buttons(self):
+        self.assertNotIn("<select id=\"q-cities\"", self.html)
+        self.assertNotIn("<select id=\"f-area\"", self.html)
+        self.assertIn('class="cities"', self.html)
+
+    def test_nothing_reads_selection_from_a_listbox(self):
+        self.assertNotIn("selectedOptions", self.js)
+
+    def test_whole_country_excludes_the_cities(self):
+        """Вместе они значат то же, что «Россия целиком», только дольше."""
+        block = self.js[self.js.index('$("q-cities").onclick'):]
+        block = block[:block.index("citiesNote();\n};")]
+        self.assertIn("Россия целиком", block)
+        self.assertIn("classList.remove", block)
+
+    def test_empty_choice_is_called_out(self):
+        self.assertIn("Не выбран ни один город", self.js)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
