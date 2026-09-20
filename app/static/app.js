@@ -1089,6 +1089,9 @@ function netName(url) {
 // ── Контакты ─────────────────────────────────────────────
 function contactRow(c) {
   const v = esc(c.value);
+  // Показываем в удобочитаемом виде, а копируем как лежит: в чужую CRM
+  // номер вставляют цифрами, и пробелы там только мешают.
+  const shown = c.kind === "phone" ? esc(prettyPhone(c.value)) : v;
   if (c.kind === "social") {
     const host = (c.value.split("/")[2] || "").replace("www.", "");
     const net = HOST_NET[host] || "";
@@ -1102,10 +1105,12 @@ function contactRow(c) {
   }
   if (c.kind !== "email") {
     const lpr = c.owner === "director";
+    const kind = c.kind === "phone" ? phoneKind(c.value) : "";
     return `<div class="ct ${lpr ? "lpr" : ""}">
       <span class="who">${lpr ? "ГД тел" : (c.kind === "phone" ? "тел" : "tg")}</span>
-      <button class="val copyable" data-copy="${v}">${v}</button>
-      ${lpr ? `<span class="mk ok">найден</span>` : ""}</div>`;
+      <button class="val copyable" data-copy="${v}">${shown}</button>
+      ${lpr ? `<span class="mk ok">найден</span>` : ""}
+      ${ctFrom(c, kind)}</div>`;
   }
   // Найденный адрес и выведенный по схеме — вещи разной надёжности, и это
   // должно читаться с первого взгляда.
@@ -1117,8 +1122,95 @@ function contactRow(c) {
   else if (c.owner === "director") mk = `<span class="mk ok">найден</span>`;
   const lpr = c.owner === "director";
   return `<div class="ct ${lpr ? "lpr" : ""} ${guess ? "is-guess" : ""}">
-    <span class="who">${lpr ? "ГД" : esc(c.owner === "unknown" ? "" : c.owner)}</span>
-    <button class="val copyable" data-copy="${v}">${v}</button>${mk}</div>`;
+    <span class="who">${lpr ? "ГД" : esc(OWNER_RU[c.owner] || "")}</span>
+    <button class="val copyable" data-copy="${v}">${v}</button>${mk}
+    ${ctFrom(c, "")}</div>`;
+}
+
+// Список контактов: по группам и без простыни.
+//
+// У агентства недвижимости на сайте висит по номеру на каждого
+// сотрудника — сорок штук, и все они вываливались в карточку подряд.
+// Найти среди них тот, с которого стоит начать, было нельзя: они
+// отличались только цифрами.
+//
+// Поэтому три вещи. Первая: наверх то, что ведёт к решающему —
+// контакты руководителя, потом мобильные, потом всё остальное. Вторая:
+// у каждого написано, какой он и откуда. Третья: показываем пять,
+// остальные под кнопкой — они никуда не делись, но и не мешают.
+const CT_SHOWN = 5;
+
+function contactsBlock(list, id) {
+  if (!list.length) return "<p class='nobody'>Ни телефона, ни почты не нашлось.</p>";
+  const rank = (c) => {
+    if (c.owner === "director") return 0;
+    if (c.kind === "phone" && phoneKind(c.value) === "мобильный") return 1;
+    if (c.kind === "email") return 2;
+    if (c.kind === "phone" && phoneKind(c.value) === "бесплатный") return 4;
+    return 3;
+  };
+  const sorted = list.slice().sort((a, b) => rank(a) - rank(b));
+  const head = sorted.slice(0, CT_SHOWN);
+  const tail = sorted.slice(CT_SHOWN);
+  const count = (n, kind) => {
+    const k = tail.filter((c) => c.kind === kind).length;
+    return k ? `${k} ${kind === "phone"
+      ? "номер" + plural(k, "", "а", "ов")
+      : "почт" + plural(k, "а", "ы", "")}` : "";
+  };
+  return head.map(contactRow).join("") + (tail.length ? `
+    <details class="ct-more">
+      <summary>Ещё ${[count(0, "phone"), count(0, "email")]
+        .filter(Boolean).join(" и ") || tail.length + " контактов"}</summary>
+      <div class="ct-rest">${tail.map(contactRow).join("")}</div>
+    </details>` : "");
+}
+
+// Кому принадлежит контакт — по-русски и коротко. В базе это английские
+// слова, и «general» в строке рядом с номером не объясняет ничего.
+const OWNER_RU = {
+  director: "ГД", sales: "продажи", support: "поддержка",
+  hr: "кадры", person: "сотрудник", general: "общий", unknown: "",
+};
+
+// Номер для чтения глазами и для диктовки вслух.
+//
+// В базе он лежит одной цепочкой цифр — так его вернул разбор, и так
+// его проще сравнивать. Но читать «+79161234567» человек не должен:
+// пока найдёшь границу кода, забудешь начало, а продиктовать по
+// телефону такое не выйдет вовсе.
+function prettyPhone(v) {
+  const d = String(v || "").replace(/\D/g, "");
+  if (d.length !== 11 || (d[0] !== "7" && d[0] !== "8")) return v;
+  return "+7 %s %s-%s-%s".replace("%s", d.slice(1, 4))
+    .replace("%s", d.slice(4, 7)).replace("%s", d.slice(7, 9))
+    .replace("%s", d.slice(9, 11));
+}
+
+// Мобильный, городской или бесплатный.
+//
+// Разница не косметическая, и это единственное, что программа может
+// сказать о принадлежности номера, не выдумывая: мобильный — чей-то
+// личный аппарат, и отвечает на него человек, а не приёмная. У компании
+// с сорока номерами именно это и решает, с какого начинать.
+function phoneKind(v) {
+  const d = String(v || "").replace(/\D/g, "");
+  if (d.length !== 11) return "";
+  const code = d.slice(1, 4);
+  if (code === "800") return "бесплатный";
+  if (code[0] === "9") return "мобильный";
+  return "городской";
+}
+
+// Откуда контакт взялся. «Рядом с ФИО на сайте» и «из справочника» —
+// это разная надёжность, и человек должен видеть разницу до звонка.
+function ctFrom(c, kind) {
+  const bits = [];
+  if (kind) bits.push(kind);
+  const src = (c.source || "").trim();
+  if (src) bits.push(src.replace(/^сайт компании$/, "с сайта"));
+  if (!bits.length) return "";
+  return `<span class="ct-from">${esc(bits.join(" · "))}</span>`;
 }
 
 const CC_CLASS = {"да": "yes", "вероятно": "maybe"};
@@ -1369,7 +1461,7 @@ async function toggleCard(tr, id) {
       <div class="card-main">
         <section class="cs">
           <h4>Как связаться</h4>
-          ${rest.map(contactRow).join("") || "<p class='nobody'>Ни телефона, ни почты не нашлось.</p>"}
+          ${contactsBlock(rest, c.id)}
           ${socials.length ? `<div class="soc-row">${socials.map(contactRow).join("")}</div>`
             : `<p class="nobody sm">Соцсетей не нашлось. Программа берёт только
                те ссылки, которые компания опубликовала сама.</p>`}

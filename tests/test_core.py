@@ -3875,5 +3875,54 @@ class NoSystemListboxes(unittest.TestCase):
         self.assertIn("Не выбран ни один город", self.js)
 
 
+class ManyPhones(unittest.TestCase):
+    """У агентства недвижимости на сайте висит по номеру на каждого
+    сотрудника — сорок штук, и все вываливались в карточку подряд.
+    Отличались они только цифрами."""
+
+    def setUp(self):
+        self.js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                       "static", "app.js"),
+                          encoding="utf-8").read()
+
+    def test_only_five_are_shown_at_once(self):
+        self.assertIn("const CT_SHOWN = 5;", self.js)
+        self.assertIn("contactsBlock", self.js)
+        self.assertIn('details class="ct-more"', self.js)
+
+    def test_the_rest_are_not_thrown_away(self):
+        block = self.js[self.js.index("function contactsBlock"):]
+        block = block[:block.index("\n}")]
+        self.assertIn("tail.map(contactRow)", block)
+
+    def test_what_leads_to_the_boss_goes_first(self):
+        block = self.js[self.js.index("function contactsBlock"):]
+        block = block[:block.index("const sorted")]
+        self.assertIn('c.owner === "director"', block)
+        self.assertIn("мобильный", block)
+
+    def test_number_says_what_kind_it_is(self):
+        """Мобильный — чей-то личный аппарат, и отвечает на него человек,
+        а не приёмная."""
+        self.assertIn("function phoneKind", self.js)
+        for word in ("бесплатный", "мобильный", "городской"):
+            self.assertIn(word, self.js)
+
+    def test_number_says_where_it_came_from(self):
+        self.assertIn("function ctFrom", self.js)
+        self.assertIn('class="ct-from"', self.js)
+
+    def test_owner_is_written_in_russian(self):
+        """«general» в строке рядом с номером не объясняет ничего."""
+        self.assertIn("OWNER_RU", self.js)
+        self.assertIn('director: "ГД"', self.js)
+
+    def test_number_is_readable_but_copies_raw(self):
+        """Показываем по-человечески, копируем цифрами: в чужую CRM
+        номер вставляют без пробелов."""
+        self.assertIn("function prettyPhone", self.js)
+        self.assertIn('data-copy="${v}">${shown}', self.js)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

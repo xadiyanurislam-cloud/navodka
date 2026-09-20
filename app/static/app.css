@@ -1195,3 +1195,22 @@ details.score-block .score-note{margin-bottom:12px}
 .city.wide-one{order:-1;font-style:italic}
 .city.wide-one.is-on{background:var(--warn);border-color:var(--warn);color:#111}
 .warn-note{color:var(--warn)}
+
+/* ── Откуда контакт и какой он ────────────────────────────
+   У компании бывает сорок номеров, и отличались они только цифрами.
+   Подпись говорит единственное, что программа знает наверняка:
+   мобильный это или городской, и откуда он взялся. */
+.ct-from{font-size:10.5px;color:var(--ink-3);white-space:nowrap;
+  margin-left:auto;padding-left:10px}
+.ct{align-items:baseline}
+
+details.ct-more{margin-top:8px}
+details.ct-more > summary{
+  display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+  list-style:none;font-size:12px;color:var(--accent);
+  padding:4px 0}
+details.ct-more > summary::-webkit-details-marker{display:none}
+details.ct-more > summary::after{content:"▾";font-size:10px;opacity:.7}
+details.ct-more[open] > summary::after{content:"▴"}
+details.ct-more > summary:hover{text-decoration:underline}
+.ct-rest{margin-top:4px;padding-top:6px;border-top:1px solid var(--line-2)}
