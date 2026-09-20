@@ -174,6 +174,8 @@ def create_app():
             geo_cities=geo.cities(),
             geo_groups=geo.groups(),
             geo_whole=geo.WHOLE,
+            trade_also=trades.ALSO,
+            trade_max_words=trades.MAX_WORDS,
             # Какие источники готовы к работе. Сказать это надо до запуска,
             # а не после: «ничего не нашлось» из-за незаданного ключа —
             # самая обидная из возможных причин.
@@ -202,8 +204,20 @@ def create_app():
                 "выберите хотя бы один город. «Россия целиком» в списке "
                 "тоже есть, но она отключает справочники — они ищут по "
                 "карте, а не по стране"))
-        params = {
-            "query": query[:120],
+        params = _find_params(d)
+        db.set_setting("last_find", json.dumps(params, ensure_ascii=False))
+        return jsonify(ok=True, task_id=db.create_task("find", params))
+
+    def _find_params(d):
+        """Условия поиска по виду деятельности — как их берёт задача.
+
+        Вынесено отдельно по той же причине, что и у поиска по
+        вакансиям: одни и те же условия запускаются, сохраняются под
+        именем и повторяются по расписанию. Три места, считающие их
+        каждое по-своему, разъезжаются на первой же правке.
+        """
+        return {
+            "query": (d.get("query") or "").strip()[:120],
             "cities": [str(c) for c in (d.get("cities") or [])][:14],
             "pages": num(d.get("pages"), 3, 1, 10),
             "limit": num(d.get("limit"), 200, 10, 5000),
@@ -214,13 +228,12 @@ def create_app():
                 "dadata": bool(d.get("dadata", True)),
                 "hh": bool(d.get("hh", True)),
             },
+            "synonyms": bool(d.get("synonyms", True)),
             "skip_empty": bool(d.get("skip_empty", True)),
             "then_enrich": bool(d.get("then_enrich")),
             "then_zakupki": bool(d.get("then_zakupki")),
             "then_ai": bool(d.get("then_ai")),
         }
-        db.set_setting("last_find", json.dumps(params, ensure_ascii=False))
-        return jsonify(ok=True, task_id=db.create_task("find", params))
 
     def _search_params(d):
         """Условия поиска из формы — в том виде, в каком их берёт задача.
@@ -269,8 +282,37 @@ def create_app():
         name = (d.get("name") or "").strip()
         if not name:
             return jsonify(ok=False, error="без названия набор не найти потом")
-        sid = db.save_search(name, _search_params(d))
+        kind = "find" if (d.get("kind") == "find") else "hh_search"
+        params = _find_params(d) if kind == "find" else _search_params(d)
+        if kind == "find" and not params["query"]:
+            return jsonify(ok=False, error="впишите, кого ищем")
+        if kind == "find" and not params["cities"]:
+            return jsonify(ok=False, error="выберите хотя бы один город")
+        sid = db.save_search(name, params, kind=kind,
+                             every_days=num(d.get("every_days"), 0, 0, 365))
         return jsonify(ok=True, id=sid, rows=db.list_searches())
+
+    @app.post("/api/searches/<int:sid>/plan")
+    def api_searches_plan(sid):
+        """Поменять расписание, не трогая сами условия."""
+        d = request.get_json(silent=True) or {}
+        every = (None if d.get("every_days") is None
+                 else num(d.get("every_days"), 0, 0, 365))
+        on = None if d.get("enabled") is None else bool(d.get("enabled"))
+        row = db.set_search_plan(sid, every_days=every, enabled=on)
+        if row is None:
+            return jsonify(ok=False, error="такого набора уже нет")
+        return jsonify(ok=True, rows=db.list_searches())
+
+    @app.post("/api/searches/<int:sid>/run")
+    def api_searches_run(sid):
+        """Запустить сохранённый набор прямо сейчас."""
+        row = db.get_search(sid)
+        if row is None:
+            return jsonify(ok=False, error="такого набора уже нет")
+        task_id = db.create_task(row["kind"] or "hh_search", row["params"])
+        db.mark_search_run(sid)
+        return jsonify(ok=True, task_id=task_id, rows=db.list_searches())
 
     @app.post("/api/searches/<int:sid>/delete")
     def api_searches_delete(sid):
@@ -498,6 +540,13 @@ def create_app():
         elif only == "lpr_found":
             where.append("id IN (SELECT company_id FROM signals "
                          "WHERE key='lpr_contact' AND value='найден')")
+        elif only == "just_found":
+            # Компании, появившиеся в последнем прогоне поиска. Повторный
+            # поиск по той же теме приносит ту же тысячу компаний, и
+            # десять новых в ней не найти глазами.
+            since = db.get_setting("last_find_at", "")
+            where.append("COALESCE(created_at,0) >= ?")
+            args.append(int(since) if str(since).isdigit() else 0)
         elif only == "ai_fit":
             where.append("ai_fit >= 60")
         elif only == "zakupki":

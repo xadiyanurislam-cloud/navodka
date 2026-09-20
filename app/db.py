@@ -197,13 +197,24 @@ _LATER = {
 }
 
 
+# То же для сохранённых поисков: расписание появилось позже самой
+# таблицы, и база, заведённая прошлой версией, о нём не знает.
+_LATER_SEARCHES = {
+    "every_days": "INTEGER DEFAULT 0",
+    "next_run": "INTEGER",
+    "enabled": "INTEGER DEFAULT 1",
+}
+
+
 def init():
     c = conn()
     c.executescript(SCHEMA)
-    have = {r["name"] for r in c.execute("PRAGMA table_info(companies)")}
-    for col, kind in _LATER.items():
-        if col not in have:
-            c.execute("ALTER TABLE companies ADD COLUMN %s %s" % (col, kind))
+    for table, cols in (("companies", _LATER), ("searches", _LATER_SEARCHES)):
+        have = {r["name"] for r in c.execute("PRAGMA table_info(%s)" % table)}
+        for col, kind in cols.items():
+            if col not in have:
+                c.execute("ALTER TABLE %s ADD COLUMN %s %s"
+                          % (table, col, kind))
     c.commit()
 
 
@@ -493,23 +504,75 @@ def delete_note(note_id, company_id=None):
 
 
 # ── Сохранённые поиски ───────────────────────────────────
-def save_search(name, params, kind="hh_search"):
-    """Сохранить набор условий под именем. Повторное имя — перезапись."""
+def save_search(name, params, kind="hh_search", every_days=0):
+    """Сохранить набор условий под именем. Повторное имя — перезапись.
+
+    every_days — раз во сколько дней повторять сам. Ноль означает «не
+    повторять»: сохранённый набор условий полезен и без расписания,
+    просто чтобы не набирать то же самое заново.
+    """
     name = (name or "").strip()[:80]
     if not name:
         return 0
     c = conn()
     blob = json.dumps(params or {}, ensure_ascii=False)
+    every = max(0, min(365, int(every_days or 0)))
+    # Первый прогон по расписанию — через положенный срок, а не сейчас:
+    # человек только что искал это руками.
+    nxt = (now() + every * 86400) if every else None
     row = c.execute("SELECT id FROM searches WHERE name=? AND kind=?",
                     (name, kind)).fetchone()
     if row:
-        c.execute("UPDATE searches SET params=? WHERE id=?", (blob, row["id"]))
+        c.execute("UPDATE searches SET params=?, every_days=?, next_run=?, "
+                  "enabled=1 WHERE id=?", (blob, every, nxt, row["id"]))
         c.commit()
         return row["id"]
-    cur = c.execute("""INSERT INTO searches (name, kind, params, created_at)
-                       VALUES (?,?,?,?)""", (name, kind, blob, now()))
+    cur = c.execute("""INSERT INTO searches (name, kind, params, created_at,
+                                             every_days, next_run, enabled)
+                       VALUES (?,?,?,?,?,?,1)""",
+                    (name, kind, blob, now(), every, nxt))
     c.commit()
     return cur.lastrowid
+
+
+def set_search_plan(search_id, every_days=None, enabled=None):
+    """Поменять расписание, не трогая сами условия."""
+    c = conn()
+    row = c.execute("SELECT * FROM searches WHERE id=?",
+                    (search_id,)).fetchone()
+    if row is None:
+        return None
+    every = (row["every_days"] or 0) if every_days is None \
+        else max(0, min(365, int(every_days)))
+    on = (1 if (row["enabled"] is None or row["enabled"]) else 0) \
+        if enabled is None else (1 if enabled else 0)
+    nxt = (now() + every * 86400) if (every and on) else None
+    c.execute("UPDATE searches SET every_days=?, enabled=?, next_run=? "
+              "WHERE id=?", (every, on, nxt, search_id))
+    c.commit()
+    return get_search(search_id)
+
+
+def due_searches(at=None):
+    """Наборы, которым пора выполниться.
+
+    Программу выключают на неделю — это норма, и пропущенный срок не
+    должен превращаться в очередь из семи прогонов. Поэтому просроченный
+    набор выполняется один раз, а следующий срок считается от сейчас.
+    """
+    at = int(at if at is not None else now())
+    rows = conn().execute(
+        "SELECT * FROM searches WHERE COALESCE(enabled,1)=1 "
+        "AND COALESCE(every_days,0) > 0 AND COALESCE(next_run,0) <= ? "
+        "ORDER BY id", (at,)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            params = json.loads(r["params"] or "{}")
+        except Exception:
+            params = {}
+        out.append(dict(r, params=params))
+    return out
 
 
 def list_searches():
@@ -540,9 +603,19 @@ def get_search(search_id):
 
 
 def mark_search_run(search_id):
+    """Отметить прогон и отодвинуть следующий срок.
+
+    Срок считается от сейчас, а не от прошлого срока: иначе набор,
+    просроченный за время, пока программа была закрыта, выполнялся бы
+    подряд столько раз, сколько сроков прошло.
+    """
     c = conn()
-    c.execute("UPDATE searches SET runs=runs+1, last_run=? WHERE id=?",
-              (now(), search_id))
+    row = c.execute("SELECT every_days FROM searches WHERE id=?",
+                    (search_id,)).fetchone()
+    every = (row["every_days"] or 0) if row else 0
+    nxt = (now() + int(every) * 86400) if every else None
+    c.execute("UPDATE searches SET runs=runs+1, last_run=?, next_run=? "
+              "WHERE id=?", (now(), nxt, search_id))
     c.commit()
 
 

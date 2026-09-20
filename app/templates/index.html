@@ -159,6 +159,9 @@
                     </div>
                   </div>
                   <em class="fld-hint" id="trade-note"></em>
+                  <label class="also"><input id="q-also" type="checkbox" checked>
+                    <span><b>Искать и близкие слова</b>
+                      <em id="also-note"></em></span></label>
                 </div>
 
                 <div class="fld">
@@ -264,6 +267,30 @@
                     <span>Искать контакты в госзакупках<em>прямой телефон ответственного, но медленно</em></span></label>
                   <label class="opt"><input id="q-then-ai" type="checkbox">
                     <span>Разобрать через ИИ<em>нужен ключ и описание клиента в карточке ниже</em></span></label>
+
+                  <div class="repeat">
+                    <span class="lbl">Повторять этот поиск</span>
+                    <div class="repeat-row">
+                      <input id="q-plan-name" type="text" maxlength="80"
+                             placeholder="Название, например «Стоматологии Перми»">
+                      <select id="q-plan-every">
+                        <option value="0">не повторять</option>
+                        <option value="1">раз в день</option>
+                        <option value="3">раз в 3 дня</option>
+                        <option value="7" selected>раз в неделю</option>
+                        <option value="14">раз в 2 недели</option>
+                        <option value="30">раз в месяц</option>
+                      </select>
+                      <button class="btn" id="btn-plan-save">Сохранить</button>
+                    </div>
+                    <em class="fld-hint">Повтор идёт, только пока программа
+                       открыта: в службы Windows она не ставится и по
+                       будильнику не просыпается. Пропущенный срок наверстает
+                       один раз, а не столько, сколько его не было.
+                       Что нашлось нового — смотреть в «Базе», фильтр
+                       «Только новые»</em>
+                    <div class="plans" id="q-plans"></div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -500,6 +527,7 @@
       <div class="chips" id="chips">
         <button class="chip is-active" data-only="">Все</button>
         <button class="chip" data-only="today">На сегодня</button>
+        <button class="chip" data-only="just_found">Только новые</button>
         <button class="chip" data-only="contactable">Есть чем связаться</button>
         <button class="chip" data-only="social">Есть соцсети</button>
         <button class="chip" data-only="lpr_found">Контакт ГД найден</button>
@@ -719,7 +747,11 @@ window.LAST_FIND = {{ last_find|safe }};
 /* Название строки «весь список» берётся с сервера: скопированная
    в скрипт руками, она разошлась бы с geo.py при первом же
    переименовании, и кнопка молча перестала бы работать. */
-window.WHOLE_RU = {{ geo_whole|tojson }};</script>
+window.WHOLE_RU = {{ geo_whole|tojson }};
+/* Близкие слова к видам деятельности: страница называет их
+   заранее, чтобы человек видел, за что платит временем. */
+window.TRADE_ALSO = {{ trade_also|tojson }};
+window.MAX_WORDS = {{ trade_max_words|tojson }};</script>
 <script src="/static/app.js"></script>
 </body>
 </html>

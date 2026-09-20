@@ -7,6 +7,10 @@ const $ = (id) => document.getElementById(id);
 // зовёт citiesNote() задолго до того места, и const из середины
 // файла ещё не существует: страница ломалась бы у всех, кто уже искал.
 const WHOLE_RU = window.WHOLE_RU || "Россия целиком";
+// Здесь же и по той же причине: восстановление прошлого поиска
+// читает словарь близких слов задолго до самого списка.
+const TRADE_ALSO = window.TRADE_ALSO || {};
+const MAX_WORDS = window.MAX_WORDS || 5;
 const esc = (s) => String(s == null ? "" : s)
   .replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;",
                                 '"': "&quot;", "'": "&#39;"}[c]));
@@ -345,6 +349,7 @@ function findForm() {
     yandex: $("q-yandex").checked,
     dadata: $("q-dadata").checked,
     hh: $("q-hh").checked,
+    synonyms: $("q-also").checked,
     skip_empty: $("q-skip-empty").checked,
     then_enrich: $("q-then").checked,
     then_zakupki: $("q-then-zak").checked,
@@ -369,6 +374,8 @@ function fillFindForm(p) {
   $("q-yandex").checked = src.yandex !== false;
   $("q-dadata").checked = src.dadata !== false;
   $("q-hh").checked = src.hh !== false;
+  $("q-also").checked = p.synonyms !== false;
+  alsoNote();
   $("q-skip-empty").checked = p.skip_empty !== false;
   $("q-then").checked = !!p.then_enrich;
   $("q-then-zak").checked = !!p.then_zakupki;
@@ -723,11 +730,44 @@ function markTrade() {
   }
 }
 
+// Сколько слов уйдёт в поиск и какие именно.
+//
+// Каждое лишнее слово — полный обход всех источников по всем городам
+// заново. Молча умножить время прогона на четыре нельзя: человек
+// решит, что программа зависла. Поэтому слова названы до запуска.
+function alsoWords() {
+  const q = $("q-text").value.trim();
+  if (!q) return [];
+  const extra = TRADE_ALSO[q] || [];
+  return [q, ...extra.filter((w) => w.toLowerCase() !== q.toLowerCase())]
+    .slice(0, MAX_WORDS);
+}
+
+function alsoNote() {
+  const words = alsoWords();
+  const note = $("also-note");
+  const on = $("q-also").checked;
+  if (words.length < 2) {
+    note.textContent = "У этого слова близких в списке нет — "
+      + "поиск пойдёт по нему одному";
+    return;
+  }
+  note.innerHTML = on
+    ? `Найдёт и ${words.slice(1).map((w) => "«" + esc(w) + "»").join(", ")}.
+       Это ${words.length} обхода вместо одного — дольше, но компаний
+       заметно больше`
+    : `Выключено: ищем только «${esc(words[0])}». Мимо пройдут
+       ${words.slice(1).map((w) => "«" + esc(w) + "»").join(", ")}`;
+}
+
+$("q-also").onchange = alsoNote;
+
 $("dd-trade").querySelector(".dd-list").onclick = (e) => {
   const opt = e.target.closest(".dd-opt");
   if (!opt) return;
   $("q-text").value = opt.dataset.q;
   markTrade();
+  alsoNote();
   tradeFilter();
   ddClose($("dd-trade"));
   toast("Вид: " + opt.dataset.q + ". Проверьте города и жмите «Найти компании»");
@@ -737,6 +777,7 @@ $("q-text").onfocus = () => ddOpen($("dd-trade"));
 $("q-text").oninput = () => {
   if (!$("dd-trade").classList.contains("is-open")) ddOpen($("dd-trade"));
   markTrade();
+  alsoNote();
   tradeFilter();
 };
 $("dd-trade").querySelector(".dd-arrow").onclick = () => {
@@ -851,7 +892,109 @@ $("f-area").onclick = (e) => {
 
 themeApply();
 markTrade();
+alsoNote();
 citiesNote();
+
+// ── Повтор поиска по расписанию ──────────────────────────
+//
+// Зачем. Повторный поиск по той же теме приносит ту же тысячу
+// компаний, и десять новых в ней глазами не найти. Программа и так
+// знает, кого добавила в последний прогон, — осталось дать это
+// показать и не заставлять человека нажимать кнопку каждую неделю.
+//
+// Честно про условие: повтор идёт, только пока программа открыта. В
+// службы она не ставится, по будильнику не просыпается, и об этом
+// сказано прямо под выбором срока, а не в справке.
+function planWord(days) {
+  const d = Number(days) || 0;
+  if (!d) return "вручную";
+  if (d === 1) return "раз в день";
+  if (d === 7) return "раз в неделю";
+  if (d === 14) return "раз в 2 недели";
+  if (d === 30) return "раз в месяц";
+  return `раз в ${d} ${plural(d, "день", "дня", "дней")}`;
+}
+
+function whenNext(ts) {
+  if (!ts) return "";
+  const left = ts * 1000 - Date.now();
+  if (left <= 0) return "вот-вот";
+  const h = Math.round(left / 3600000);
+  if (h < 24) return `через ${h} ${plural(h, "час", "часа", "часов")}`;
+  const d = Math.round(h / 24);
+  return `через ${d} ${plural(d, "день", "дня", "дней")}`;
+}
+
+function drawPlans(rows) {
+  const box = $("q-plans");
+  const mine = (rows || []).filter((r) => r.kind === "find");
+  if (!mine.length) { box.innerHTML = ""; return; }
+  box.innerHTML = mine.map((r) => `
+    <div class="plan${r.enabled ? "" : " off"}" data-id="${r.id}">
+      <span class="plan-n">${esc(r.name)}</span>
+      <span class="plan-q">«${esc(r.params.query || "")}» ·
+        ${esc((r.params.cities || []).slice(0, 2).join(", "))}${
+          (r.params.cities || []).length > 2
+            ? " и ещё " + ((r.params.cities || []).length - 2) : ""}</span>
+      <span class="plan-w">${esc(planWord(r.every_days))}${
+        r.enabled && r.every_days && r.next_run
+          ? " · " + esc(whenNext(r.next_run)) : ""}${
+        r.runs ? " · прогонов " + r.runs : ""}</span>
+      <span class="plan-do">
+        <button class="lnk" data-do="run">запустить</button>
+        <button class="lnk" data-do="toggle">${r.enabled ? "выключить" : "включить"}</button>
+        <button class="lnk warn" data-do="del">удалить</button>
+      </span>
+    </div>`).join("");
+}
+
+async function loadPlans() {
+  const d = await (await fetch("/api/searches")).json();
+  if (d.ok) drawPlans(d.rows);
+}
+
+$("btn-plan-save").onclick = async () => {
+  const name = $("q-plan-name").value.trim();
+  if (!name) { $("q-plan-name").focus(); toast("Назовите набор — иначе его не найти потом"); return; }
+  const f = findForm();
+  if (!f.query) { toast("Впишите, кого ищем"); return; }
+  if (!f.cities.length) { toast("Выберите хотя бы один город"); return; }
+  const d = await post("/api/searches", Object.assign({}, f, {
+    name, kind: "find", every_days: $("q-plan-every").value}));
+  if (!d.ok) { toast(d.error || "не вышло"); return; }
+  drawPlans(d.rows);
+  $("q-plan-name").value = "";
+  const every = Number($("q-plan-every").value) || 0;
+  toast(every ? `Сохранено. Повтор ${planWord(every)}, пока программа открыта`
+              : "Сохранено. Повторять само не будет — запускайте кнопкой");
+};
+
+$("q-plans").onclick = async (e) => {
+  const btn = e.target.closest(".lnk");
+  if (!btn) return;
+  const row = btn.closest(".plan");
+  const id = row.dataset.id;
+  if (btn.dataset.do === "del") {
+    if (!confirm("Удалить набор? Найденные компании останутся, уйдёт только повтор.")) return;
+    const d = await post(`/api/searches/${id}/delete`, {});
+    if (d.ok) { drawPlans(d.rows); toast("Набор удалён"); }
+    return;
+  }
+  if (btn.dataset.do === "toggle") {
+    const d = await post(`/api/searches/${id}/plan`,
+                         {enabled: row.classList.contains("off")});
+    if (d.ok) { drawPlans(d.rows); }
+    return;
+  }
+  const d = await post(`/api/searches/${id}/run`, {});
+  if (!d.ok) { toast(d.error || "не вышло"); return; }
+  drawPlans(d.rows);
+  toast("Запустил");
+  showView("base");
+  poll();
+};
+
+loadPlans();
 
 $("btn-socials").onclick = () => run("/api/socials",
   {limit: $("e-limit").value, only_empty: true}, "Поиск соцсетей");

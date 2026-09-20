@@ -17,18 +17,20 @@ from concurrent import futures
 
 import requests
 
-from . import ai, db, enrich, geo, net, profile, score, settings, social, verify
+from . import (ai, db, enrich, geo, net, profile, score, settings, social,
+               trades, verify)
 from .sources import (dadata, fns, gis2, hh, importer, osm,
                       site as site_src, vk, yandex, zakupki)
 
 _thread = None
+_plans = None
 _stop = threading.Event()
 _current = {"task_id": None}
 
 
 # ── Запуск и остановка ───────────────────────────────────
 def start():
-    global _thread, _watch
+    global _thread, _watch, _plans
     if _thread and _thread.is_alive():
         return
     recover()
@@ -39,6 +41,60 @@ def start():
         _watch = threading.Thread(target=_watchdog, name="navodka-watch",
                                   daemon=True)
         _watch.start()
+    if not (_plans and _plans.is_alive()):
+        _plans = threading.Thread(target=_scheduler, name="navodka-plans",
+                                  daemon=True)
+        _plans.start()
+
+
+def _scheduler():
+    """Повторяет сохранённые поиски по расписанию.
+
+    Отдельным потоком, а не внутри сторожа: сторож меряет собственное
+    опоздание, чтобы поймать зависание, и работа с базой внутри него
+    выглядела бы как то самое зависание, которое он ищет.
+
+    Задача не выполняется здесь, а ставится в общую очередь — ту же,
+    куда попадают нажатия кнопок. Иначе два обхода пошли бы разом и
+    подрались за чужие серверы и за базу.
+
+    Честно про условие: расписание работает, только пока программа
+    открыта. Служб в системе она не заводит и по будильнику не
+    просыпается — об этом сказано и в интерфейсе, рядом с выбором
+    срока.
+    """
+    while True:
+        time.sleep(30)
+        try:
+            run_due_plans()
+        except Exception:
+            pass
+
+
+def run_due_plans():
+    """Поставить в очередь один набор, которому пора. Возвращает его id.
+
+    Один, а не все: обход всё равно идёт по одному, а очередь из пяти
+    одинаковых задач человек читает как сбой. Остальные дождутся
+    следующего круга — он через полминуты.
+    """
+    due = db.due_searches()
+    if not due:
+        return None
+    busy = db.conn().execute(
+        "SELECT COUNT(*) n FROM tasks "
+        "WHERE status IN ('queued','running')").fetchone()["n"]
+    # Очередь не пуста — подождём. Повтор по расписанию не настолько
+    # срочен, чтобы лезть вперёд того, что человек запустил руками.
+    if busy:
+        return None
+    row = due[0]
+    tid = db.create_task(row["kind"] or "find", row["params"] or {})
+    db.mark_search_run(row["id"])
+    db.log(tid, "Это повтор по расписанию: набор «%s», %s. Выключить можно "
+                "там же, где сохраняли."
+           % (row["name"], "раз в %d дн." % (row["every_days"] or 0)))
+    return tid
 
 
 _watch = None
@@ -1215,12 +1271,24 @@ def task_find(task_id, params):
     # доходят до первой сотни. Лучше набрать двести и посмотреть, те ли
     # это компании, чем ждать до вечера и выяснить, что запрос был не тот.
     limit = max(10, min(5000, int(params.get("limit") or 200)))
+    # Близкие слова. Одно слово — одна вывеска: «стоматология» не найдёт
+    # «Центр имплантации», хотя это тот же покупатель. Обход по
+    # нескольким словам за прогон даёт вдвое-втрое больший улов без
+    # единого нового источника, а дубли сводятся тем же механизмом,
+    # что и всегда.
+    words = (trades.words_for(query) if params.get("synonyms", True)
+             else [query])
 
     def log(msg, level="info"):
         db.log(task_id, msg, level)
 
     if not query:
         raise RuntimeError("не задано, кого искать")
+
+    # Засечка времени: по ней список умеет показать только тех, кто
+    # появился в этом прогоне. Без неё повторный поиск по той же теме
+    # приносит ту же тысячу компаний, и новые десять в ней не найти.
+    db.set_setting("last_find_at", str(db.now()))
 
     gis_key = db.get_setting("gis_key", "")
     dadata_token = db.get_setting("dadata_token", "")
@@ -1242,6 +1310,9 @@ def task_find(task_id, params):
 
     log("Ищу «%s» по городам: %s"
         % (query, ", ".join(c["name"] for c in cities)))
+    if len(words) > 1:
+        log("Заодно близкие слова: %s — это те же покупатели, просто "
+            "назвавшие себя иначе." % ", ".join("«%s»" % w for w in words[1:]))
 
     # Счётчик на время обхода.
     #
@@ -1252,16 +1323,19 @@ def task_find(task_id, params):
     # Считаем шагами «источник × город»: их число известно заранее.
     steps = 0
     for c in cities:
+        per_city = 0
         if want_osm and c.get("ll"):
-            steps += 1
+            per_city += 1
         if want_gis and c["gis"]:
-            steps += 1
+            per_city += 1
         if want_yandex and c.get("ll"):
-            steps += 1
+            per_city += 1
         if want_egrul:
-            steps += 1
+            per_city += 1
         if want_hh and c["hh"]:
-            steps += 1
+            per_city += 1
+        # Каждое близкое слово — полный обход источников заново.
+        steps += per_city * len(words)
     db.update_task(task_id, total=steps, done=0)
     step = [0]
 
@@ -1362,73 +1436,81 @@ def task_find(task_id, params):
                 "только ЕГРЮЛ и hh — без телефонов и сайтов. Выберите "
                 "города, чтобы получить контакты." % city["name"], "warn")
 
-        if want_osm and city.get("ll") and not full():
-            _say(task_id, log, "OpenStreetMap · %s" % city["name"])
-            for it in osm.search(query, city, session=http, on_log=log,
-                                 should_stop=_should_stop):
-                add({"name": it["name"], "site": it["site"],
-                     "address": it["address"], "okved_name": it["rubric"],
-                     "region": city["name"], "phones": it["phones"],
-                     "emails": it["emails"], "links": it["links"]},
-                    "OpenStreetMap")
-            did("OpenStreetMap · %s" % city["name"])
+        for word in words:
+            if _should_stop() or full():
+                break
+            # Подпись к шагу называет слово, только когда их несколько:
+            # иначе в строке состояния дважды повторяется одно и то же.
+            where = (city["name"] if len(words) == 1
+                     else "%s · %s" % (city["name"], word))
+            if want_osm and city.get("ll") and not full():
+                _say(task_id, log, "OpenStreetMap · %s" % where)
+                for it in osm.search(word, city, session=http, on_log=log,
+                                     should_stop=_should_stop):
+                    add({"name": it["name"], "site": it["site"],
+                         "address": it["address"], "okved_name": it["rubric"],
+                         "region": city["name"], "phones": it["phones"],
+                         "emails": it["emails"], "links": it["links"]},
+                        "OpenStreetMap")
+                did("OpenStreetMap · %s" % where)
 
-        if want_gis and city["gis"] and not full():
-            _say(task_id, log, "2ГИС · %s" % city["name"])
-            for it in gis2.search(query, city["gis"], gis_key, pages=pages,
-                                  session=http, on_log=log,
-                                  should_stop=_should_stop):
-                add({"name": it["name"], "site": it["site"],
-                     "address": it["address"], "okved_name": it["rubric"],
-                     "region": city["name"], "phones": it["phones"],
-                     "emails": it["emails"]}, "2ГИС")
-            did("2ГИС · %s" % city["name"])
+            if want_gis and city["gis"] and not full():
+                _say(task_id, log, "2ГИС · %s" % where)
+                for it in gis2.search(word, city["gis"], gis_key, pages=pages,
+                                      session=http, on_log=log,
+                                      should_stop=_should_stop):
+                    add({"name": it["name"], "site": it["site"],
+                         "address": it["address"], "okved_name": it["rubric"],
+                         "region": city["name"], "phones": it["phones"],
+                         "emails": it["emails"]}, "2ГИС")
+                did("2ГИС · %s" % where)
 
-        if want_yandex and city.get("ll") and not full():
-            _say(task_id, log, "Яндекс · %s" % city["name"])
-            for it in yandex.search(query, city, yandex_key, pages=min(pages, 4),
-                                    session=http, on_log=log,
-                                    should_stop=_should_stop):
-                add({"name": it["name"], "site": it["site"],
-                     "address": it["address"], "okved_name": it["rubric"],
-                     "region": city["name"], "phones": it["phones"],
-                     "emails": [], "links": it["links"]}, "Яндекс")
-            did("Яндекс · %s" % city["name"])
+            if want_yandex and city.get("ll") and not full():
+                _say(task_id, log, "Яндекс · %s" % where)
+                for it in yandex.search(word, city, yandex_key, pages=min(pages, 4),
+                                        session=http, on_log=log,
+                                        should_stop=_should_stop):
+                    add({"name": it["name"], "site": it["site"],
+                         "address": it["address"], "okved_name": it["rubric"],
+                         "region": city["name"], "phones": it["phones"],
+                         "emails": [], "links": it["links"]}, "Яндекс")
+                did("Яндекс · %s" % where)
 
-        if want_egrul and not full():
-            _say(task_id, log, "ЕГРЮЛ · %s" % city["name"])
-            region = "" if city["name"] == "Россия целиком" else city["name"]
-            for it in dadata.search_by_name(query, dadata_token, region=region,
-                                            session=http, on_log=log):
-                add(dict(it, phones=[], emails=[]), "ЕГРЮЛ")
-            did("ЕГРЮЛ · %s" % city["name"])
+            if want_egrul and not full():
+                _say(task_id, log, "ЕГРЮЛ · %s" % where)
+                region = "" if city["name"] == "Россия целиком" else city["name"]
+                for it in dadata.search_by_name(word, dadata_token, region=region,
+                                                session=http, on_log=log,
+                                                explain=(word == words[0])):
+                    add(dict(it, phones=[], emails=[]), "ЕГРЮЛ")
+                did("ЕГРЮЛ · %s" % where)
 
-        if want_hh and city["hh"] and not full():
-            _say(task_id, log, "hh.ru · %s" % city["name"])
-            before = len(errors)
-            part = hh.search_employers_by_text(query, area=city["hh"],
-                                               pages=min(pages, 5), on_log=log,
-                                               should_stop=_should_stop,
-                                               errors=errors)
-            if len(errors) > before:
-                # hh отказал. Повторять перебор способов связи на каждом
-                # следующем городе бессмысленно: ответ будет тот же, а
-                # ждать придётся по минуте на город.
-                want_hh = False
-                log("hh отключён до конца прогона — остальные источники "
-                    "продолжают работу.", "warn")
-            for e in part:
-                detail = hh.employer_details(e["id"], session=http)
-                add({"name": detail.get("name") or e["name"],
-                     "hh_id": e["id"],
-                     "site": site_src.normalize_url(detail.get("site") or ""),
-                     "region": detail.get("area") or e.get("area") or city["name"],
-                     "okved_name": detail.get("industries") or "",
-                     "about": detail.get("about") or "",
-                     "open_vacancies": detail.get("open_vacancies") or 0,
-                     "phones": [], "emails": []}, "hh.ru")
-                time.sleep(0.3)
-            did("hh.ru · %s" % city["name"])
+            if want_hh and city["hh"] and not full():
+                _say(task_id, log, "hh.ru · %s" % where)
+                before = len(errors)
+                part = hh.search_employers_by_text(word, area=city["hh"],
+                                                   pages=min(pages, 5), on_log=log,
+                                                   should_stop=_should_stop,
+                                                   errors=errors)
+                if len(errors) > before:
+                    # hh отказал. Повторять перебор способов связи на каждом
+                    # следующем городе бессмысленно: ответ будет тот же, а
+                    # ждать придётся по минуте на город.
+                    want_hh = False
+                    log("hh отключён до конца прогона — остальные источники "
+                        "продолжают работу.", "warn")
+                for e in part:
+                    detail = hh.employer_details(e["id"], session=http)
+                    add({"name": detail.get("name") or e["name"],
+                         "hh_id": e["id"],
+                         "site": site_src.normalize_url(detail.get("site") or ""),
+                         "region": detail.get("area") or e.get("area") or city["name"],
+                         "okved_name": detail.get("industries") or "",
+                         "about": detail.get("about") or "",
+                         "open_vacancies": detail.get("open_vacancies") or 0,
+                         "phones": [], "emails": []}, "hh.ru")
+                    time.sleep(0.3)
+                did("hh.ru · %s" % where)
 
     if not rows:
         # Молчаливый ноль — худший исход: непонятно, то ли таких компаний

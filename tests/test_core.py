@@ -1198,6 +1198,342 @@ class RunLimit(unittest.TestCase):
             osm.search = was
 
 
+class RepeatOnSchedule(unittest.TestCase):
+    """Повторный поиск по той же теме приносит ту же тысячу
+    компаний, и десять новых в ней глазами не найти."""
+
+    def setUp(self):
+        db.init()
+        c = db.conn()
+        c.execute("DELETE FROM searches")
+        c.execute("DELETE FROM tasks")
+        c.execute("DELETE FROM companies")
+        c.commit()
+
+    def test_a_fresh_plan_does_not_fire_at_once(self):
+        """Человек только что искал это руками — повторять сразу
+        значит сходить по чужим серверам дважды за минуту."""
+        db.save_search("Стоматологии", {"query": "стоматология"},
+                       kind="find", every_days=7)
+        self.assertEqual(db.due_searches(), [])
+        self.assertIsNone(worker.run_due_plans())
+
+    def test_it_fires_when_the_day_comes(self):
+        sid = db.save_search("Стоматологии", {"query": "стоматология"},
+                             kind="find", every_days=7)
+        c = db.conn()
+        c.execute("UPDATE searches SET next_run=? WHERE id=?",
+                  (db.now() - 10, sid))
+        c.commit()
+        tid = worker.run_due_plans()
+        self.assertIsNotNone(tid)
+        row = c.execute("SELECT kind, status FROM tasks WHERE id=?",
+                        (tid,)).fetchone()
+        self.assertEqual(row["kind"], "find")
+        self.assertEqual(row["status"], "queued")
+
+    def test_a_long_absence_is_not_a_queue_of_missed_runs(self):
+        """Программу выключают на месяц — это норма. Четыре
+        пропущенных срока не должны превратиться в четыре обхода
+        подряд при первом же запуске."""
+        sid = db.save_search("Стоматологии", {"query": "стоматология"},
+                             kind="find", every_days=7)
+        c = db.conn()
+        c.execute("UPDATE searches SET next_run=? WHERE id=?",
+                  (db.now() - 40 * 86400, sid))
+        c.commit()
+        self.assertIsNotNone(worker.run_due_plans())
+        # Следующий срок — через неделю от сейчас, а не от прошлого.
+        row = db.get_search(sid)
+        self.assertGreater(row["next_run"], db.now() + 6 * 86400)
+        self.assertEqual(db.due_searches(), [])
+
+    def test_a_busy_queue_is_not_pushed_aside(self):
+        """Повтор по расписанию не настолько срочен, чтобы лезть
+        вперёд того, что человек запустил руками."""
+        sid = db.save_search("Стоматологии", {"query": "стоматология"},
+                             kind="find", every_days=7)
+        c = db.conn()
+        c.execute("UPDATE searches SET next_run=? WHERE id=?",
+                  (db.now() - 10, sid))
+        c.commit()
+        db.create_task("enrich", {})
+        self.assertIsNone(worker.run_due_plans())
+
+    def test_switched_off_means_off(self):
+        sid = db.save_search("Стоматологии", {"query": "стоматология"},
+                             kind="find", every_days=7)
+        c = db.conn()
+        c.execute("UPDATE searches SET next_run=? WHERE id=?",
+                  (db.now() - 10, sid))
+        c.commit()
+        db.set_search_plan(sid, enabled=False)
+        self.assertEqual(db.due_searches(), [])
+        self.assertIsNone(worker.run_due_plans())
+
+    def test_without_a_period_it_never_fires_by_itself(self):
+        """Сохранённый набор полезен и без расписания — просто
+        чтобы не набирать то же самое заново."""
+        db.save_search("Разовый", {"query": "стоматология"},
+                       kind="find", every_days=0)
+        self.assertEqual(db.due_searches(db.now() + 400 * 86400), [])
+
+    def test_only_new_shows_what_the_last_run_added(self):
+        """Главный вопрос после повторного прогона — «что из этого
+        новое». Без ответа на него расписание бессмысленно."""
+        c = db.conn()
+        old_id, _ = db.upsert_company({"name": "Старая", "inn": "1"})
+        c.execute("UPDATE companies SET created_at=? WHERE id=?",
+                  (db.now() - 3600, old_id))
+        c.commit()
+        db.set_setting("last_find_at", str(db.now() - 60))
+        new_id, _ = db.upsert_company({"name": "Новая", "inn": "2"})
+        cl = web.create_app().test_client()
+        names = [r["name"] for r in
+                 cl.get("/api/companies?only=just_found").get_json()["rows"]]
+        self.assertEqual(names, ["Новая"])
+        names = [r["name"] for r in
+                 cl.get("/api/companies").get_json()["rows"]]
+        self.assertEqual(sorted(names), ["Новая", "Старая"])
+
+    def test_the_run_marks_the_moment_it_started(self):
+        """Засечка ставится в начале прогона, а не в конце:
+        иначе всё найденное окажется «старше» засечки и ни одна
+        компания в «только новые» не попадёт."""
+        with io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "worker.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        body = src[src.index("def task_find("):]
+        mark = body.index('set_setting("last_find_at"')
+        first_source = min(body.index("osm.search("), body.index("dadata.search_by_name("))
+        self.assertLess(mark, first_source)
+
+    def test_the_page_says_it_only_works_while_open(self):
+        """Расписание, которое молча не срабатывает ночью, хуже
+        отсутствующего расписания."""
+        html = web.create_app().test_client().get("/").get_data(as_text=True)
+        self.assertIn("пока программа\n                       открыта", html.replace("\r", ""))
+
+    def test_the_scheduler_is_its_own_thread(self):
+        """Сторож меряет собственное опоздание, чтобы поймать
+        зависание. Работа с базой внутри него выглядела бы как
+        то самое зависание, которое он ищет."""
+        with io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "worker.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        watch = src[src.index("def _watchdog("):src.index("def recover(")]
+        self.assertNotIn("due_searches", watch)
+        self.assertIn("target=_scheduler", src)
+
+
+class MapCeilingIsLifted(unittest.TestCase):
+    """Ответ, упёршийся в предел, — это обрезанный ответ.
+
+    Overpass отдаёт не больше заданного числа объектов, и в
+    миллионнике предел наступал раньше, чем кончались компании.
+    По виду ответа это было неотличимо от «больше и нет»."""
+
+    CITY = {"name": "Москва", "ll": "37.6173,55.7558", "spn": "1.12,0.63"}
+
+    def setUp(self):
+        # Без этого каждый тест честно ждёт по секунде на запрос.
+        from app.sources import osm
+        self._pause, osm.PAUSE = osm.PAUSE, 0
+
+    def tearDown(self):
+        from app.sources import osm
+        osm.PAUSE = self._pause
+
+    def fake(self, per_box):
+        """Заглушка сервера: сколько отдать на каждый прямоугольник."""
+        import re as _re
+        from app.sources import osm
+        asked = []
+
+        def ask(q, session=None, on_log=None, should_stop=None):
+            # Именно прямоугольник, а не первые скобки запроса: первые
+            # скобки у всех запросов одинаковые, и заглушка не различала
+            # город и его четверти.
+            box = _re.search(r"\(([-0-9.,]+)\)", q).group(1)
+            asked.append(box)
+            n = per_box(box, len(asked))
+            return {"elements": [{"tags": {"name": "%s-%d" % (box, i),
+                                           "amenity": "cafe"}}
+                                 for i in range(n)]}
+        return osm, ask, asked
+
+    def test_a_full_answer_makes_it_ask_by_quarters(self):
+        osm, ask, asked = self.fake(lambda box, n: 10 if n == 1 else 2)
+        was, osm.ask = osm.ask, ask
+        try:
+            got = osm.search("кафе", self.CITY, limit=10)
+        finally:
+            osm.ask = was
+        self.assertEqual(len(asked), 5, "город и четыре его четверти")
+        self.assertEqual(len(got), 10 + 4 * 2)
+
+    def test_a_short_answer_costs_one_request(self):
+        """Где компаний мало, лишних запросов к чужому серверу
+        быть не должно."""
+        osm, ask, asked = self.fake(lambda box, n: 3)
+        was, osm.ask = osm.ask, ask
+        try:
+            osm.search("кафе", self.CITY, limit=10)
+        finally:
+            osm.ask = was
+        self.assertEqual(len(asked), 1)
+
+    def test_the_budget_is_never_exceeded(self):
+        """Каждая четверть — запрос к общему бесплатному
+        серверу. Без потолка густой город выстроил бы очередь
+        из десятков запросов и получил бы отказ целиком."""
+        osm, ask, asked = self.fake(lambda box, n: 10)
+        was, osm.ask = osm.ask, ask
+        try:
+            osm.search("кафе", self.CITY, limit=10)
+        finally:
+            osm.ask = was
+        self.assertLessEqual(len(asked), osm.MAX_CALLS)
+
+    def test_one_company_is_not_counted_twice(self):
+        """Четверти касаются краями, и одна и та же компания
+        приходит из двух запросов."""
+        from app.sources import osm as osm_mod
+        def ask(q, session=None, on_log=None, should_stop=None):
+            return {"elements": [{"tags": {"name": "Ромашка",
+                                           "amenity": "cafe"}}] * 10}
+        was, osm_mod.ask = osm_mod.ask, ask
+        try:
+            got = osm_mod.search("кафе", self.CITY, limit=10)
+        finally:
+            osm_mod.ask = was
+        self.assertEqual([g["name"] for g in got], ["Ромашка"])
+
+    def test_silence_and_emptiness_are_told_apart(self):
+        """«Таких компаний в карте нет» и «сервер не ответил» —
+        разные беды: в первом случае надо менять слово, во втором
+        — подождать."""
+        from app.sources import osm as osm_mod
+        said = []
+        was = osm_mod.ask
+        try:
+            osm_mod.ask = lambda *a, **k: {"elements": []}
+            osm_mod.search("кафе", self.CITY,
+                           on_log=lambda t, lvl="info": said.append(t))
+            self.assertFalse(any("не ответило" in t for t in said), said)
+
+            said[:] = []
+            osm_mod.ask = lambda *a, **k: None
+            osm_mod.search("кафе", self.CITY,
+                           on_log=lambda t, lvl="info": said.append(t))
+            self.assertTrue(any("не ответило" in t for t in said), said)
+        finally:
+            osm_mod.ask = was
+
+    def test_quarters_cover_the_whole_city(self):
+        """Четверти, не сходящиеся по краям, оставили бы
+        полосу города необойдённой — и никто бы не заметил."""
+        from app.sources import osm as osm_mod
+        box = osm_mod.bbox(self.CITY)
+        s0, w0, n0, e0 = [float(x) for x in box.split(",")]
+        parts = [[float(x) for x in q.split(",")] for q in osm_mod.quarters(box)]
+        self.assertEqual(len(parts), 4)
+        self.assertAlmostEqual(min(p[0] for p in parts), s0, places=4)
+        self.assertAlmostEqual(min(p[1] for p in parts), w0, places=4)
+        self.assertAlmostEqual(max(p[2] for p in parts), n0, places=4)
+        self.assertAlmostEqual(max(p[3] for p in parts), e0, places=4)
+        # Средние края совпадают попарно: дыры между четвертями нет.
+        self.assertAlmostEqual(parts[0][2], parts[2][0], places=4)
+        self.assertAlmostEqual(parts[0][3], parts[1][1], places=4)
+
+
+class CloseWordsAreSearchedToo(unittest.TestCase):
+    """Одно слово — одна вывеска.
+
+    «Стоматология» не находит «Центр имплантации», хотя это тот
+    же покупатель: в вывеске люди пишут не то слово, которое ищет
+    продавец."""
+
+    def test_every_close_word_is_asked_for(self):
+        from app.sources import osm
+        asked = []
+        was = osm.search
+        try:
+            osm.search = lambda q, city, **kw: asked.append(q) or []
+            db.init()
+            tid = db.create_task("find", {})
+            try:
+                worker.task_find(tid, {
+                    "query": "стоматология", "cities": ["Москва"],
+                    "sources": {"osm": True, "gis": False, "yandex": False,
+                                "dadata": False, "hh": False}})
+            except RuntimeError:
+                pass  # ничего не нашлось — здесь важен сам перебор
+            self.assertIn("стоматология", asked)
+            self.assertIn("имплантация зубов", asked)
+            self.assertEqual(asked[0], "стоматология",
+                             "своё слово должно идти первым")
+        finally:
+            osm.search = was
+
+    def test_the_switch_really_switches_it_off(self):
+        from app.sources import osm
+        asked = []
+        was = osm.search
+        try:
+            osm.search = lambda q, city, **kw: asked.append(q) or []
+            db.init()
+            tid = db.create_task("find", {})
+            try:
+                worker.task_find(tid, {
+                    "query": "стоматология", "cities": ["Москва"],
+                    "synonyms": False,
+                    "sources": {"osm": True, "gis": False, "yandex": False,
+                                "dadata": False, "hh": False}})
+            except RuntimeError:
+                pass
+            self.assertEqual(asked, ["стоматология"])
+        finally:
+            osm.search = was
+
+    def test_own_word_is_not_invented_for(self):
+        """Придумывать близкие слова к чужому запросу нечем — и
+        не надо: человек написал именно то, что имел в виду."""
+        self.assertEqual(trades.words_for("ракетостроение"),
+                         ["ракетостроение"])
+
+    def test_the_run_never_explodes_in_length(self):
+        """Каждое слово — полный обход всех источников по всем
+        городам заново. Без потолка десять слов по десяти городам
+        стали бы пятьюстами запросов к чужим серверам."""
+        for word in trades.all_words():
+            self.assertLessEqual(len(trades.words_for(word)), trades.MAX_WORDS,
+                                 word)
+
+    def test_a_close_word_is_never_the_same_word(self):
+        """Слово, повторяющее само себя, — это лишний обход
+        источников ради того же самого ответа."""
+        for word, close in trades.ALSO.items():
+            self.assertNotIn(word.lower(), [c.lower() for c in close], word)
+            self.assertEqual(len(close), len(set(close)), word)
+
+    def test_the_page_names_the_words_before_the_run(self):
+        """Молча умножить время прогона на четыре нельзя:
+        человек решит, что программа зависла."""
+        db.init()
+        html = web.create_app().test_client().get("/").get_data(as_text=True)
+        self.assertIn('id="q-also"', html)
+        self.assertIn("window.TRADE_ALSO", html)
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8").read()
+        self.assertIn("function alsoNote", js)
+        # Константы читаются при восстановлении прошлого поиска —
+        # объявленные ниже, они уронили бы страницу целиком.
+        for name in ("WHOLE_RU", "TRADE_ALSO", "MAX_WORDS"):
+            self.assertLess(js.index("const %s" % name),
+                            js.index("fillFindForm(window.LAST_FIND)"), name)
+
+
 class JunkPhones(unittest.TestCase):
     """Заглушки из вёрстки. Продавец тратит на каждую по звонку и
     начинает не верить всему списку."""

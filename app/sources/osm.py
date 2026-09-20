@@ -524,7 +524,27 @@ def bbox(city):
                                     lat + dlat / 2, lon + dlon / 2)
 
 
-def build_query(query, city, limit=400):
+def quarters(box):
+    """Прямоугольник на четыре — для обхода города по частям.
+
+    Overpass отвечает на один запрос не больше чем заданным числом
+    объектов, и в миллионнике этот предел наступает раньше, чем
+    кончаются компании. Обойти город четвертями — единственный способ
+    забрать остальных: сервер отдаёт столько же, но четыре раза по
+    меньшей площади.
+    """
+    try:
+        s, w, n, e = [float(x) for x in box.split(",")]
+    except Exception:
+        return []
+    mid_lat = (s + n) / 2.0
+    mid_lon = (w + e) / 2.0
+    return ["%.4f,%.4f,%.4f,%.4f" % (a, b, c, d) for a, b, c, d in (
+        (s, w, mid_lat, mid_lon), (s, mid_lon, mid_lat, e),
+        (mid_lat, w, n, mid_lon), (mid_lat, mid_lon, n, e))]
+
+
+def build_query(query, city, limit=400, box=None):
     """Запрос на языке Overpass.
 
     Ищем двумя способами сразу: по тегам вида деятельности, если он нам
@@ -532,7 +552,7 @@ def build_query(query, city, limit=400):
     никак не назвали себя в названии («Дента-Люкс» — стоматология),
     второе — те, у кого тег не проставлен, а в названии всё написано.
     """
-    box = bbox(city)
+    box = box or bbox(city)
     if not box:
         return ""
     low = (query or "").lower()
@@ -578,21 +598,17 @@ def build_query(query, city, limit=400):
             % ("".join(parts), int(limit)))
 
 
-def search(query, city, pages=1, session=None, on_log=None, should_stop=None,
-           limit=400):
-    """Организации по виду деятельности в городе. Ключ не нужен."""
-    q = build_query(query, city, limit=limit)
-    if not q:
-        if on_log:
-            on_log("OSM: для «%s» нет координат — пропускаю"
-                   % (city or {}).get("name", "?"), "warn")
-        return []
+def ask(q, session=None, on_log=None, should_stop=None):
+    """Один запрос к Overpass с перебором зеркал и одним повтором.
 
+    Зеркала бесплатные и перегружаются пачками, но отпускает их быстро.
+    Повтор через полминуты спасает большую часть прогонов; без него
+    город просто выпадал из поиска.
+    """
     s = session or requests.Session()
-    data = None
     for url in MIRRORS:
         if should_stop and should_stop():
-            return []
+            return None
         try:
             r = s.post(url, data={"data": q}, timeout=70,
                        headers={"User-Agent": settings.USER_AGENT})
@@ -612,68 +628,137 @@ def search(query, city, pages=1, session=None, on_log=None, should_stop=None,
                 on_log("OSM: %s ответил %s" % (_host(url), r.status_code), "warn")
             continue
         try:
-            data = r.json()
-            break
+            return r.json()
         except Exception:
             continue
 
-    if data is None and not (should_stop and should_stop()):
-        # Зеркала бесплатные и перегружаются пачками, но отпускает их
-        # быстро. Один повтор через полминуты спасает большую часть
-        # прогонов; без него город просто выпадал из поиска.
-        if on_log:
-            on_log("OSM: все зеркала заняты, жду полминуты и пробую ещё раз",
-                   "warn")
-        time.sleep(30)
-        for url in MIRRORS:
-            if should_stop and should_stop():
-                break
-            try:
-                r = s.post(url, data={"data": q}, timeout=70,
-                           headers={"User-Agent": settings.USER_AGENT})
-                if r.status_code == 200:
-                    data = r.json()
-                    break
-            except Exception:
-                continue
+    if should_stop and should_stop():
+        return None
+    if on_log:
+        on_log("OSM: все зеркала заняты, жду полминуты и пробую ещё раз", "warn")
+    time.sleep(30)
+    for url in MIRRORS:
+        if should_stop and should_stop():
+            break
+        try:
+            r = s.post(url, data={"data": q}, timeout=70,
+                       headers={"User-Agent": settings.USER_AGENT})
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            continue
+    return None
 
-    if data is None:
+
+def _org(t):
+    """Организация из тегов OSM, или None, если это не организация."""
+    name = (t.get("name") or "").strip()
+    if not name:
+        return None
+    phones = []
+    for key in ("phone", "contact:phone", "contact:mobile"):
+        for p in (t.get(key) or "").split(";"):
+            p = p.strip()
+            if p and p not in phones:
+                phones.append(p)
+    links = [t[k].strip() for k in LINK_TAGS if (t.get(k) or "").strip()]
+    return {
+        "name": name,
+        "address": _address(t),
+        "site": (t.get("website") or t.get("contact:website") or "").strip(),
+        "phones": phones[:4],
+        "links": [_full(l) for l in links][:6],
+        "rubric": rubric_ru(t),
+        "emails": [e.strip() for e in (t.get("email") or
+                                       t.get("contact:email") or "").split(";")
+                   if e.strip()][:2],
+    }
+
+
+# Сколько запросов к карте тратим на один город за раз.
+#
+# Обход четвертями снимает потолок, но каждая четверть — это отдельный
+# запрос к бесплатному общему серверу. Целый город плюс четыре его
+# четверти плюс четыре четверти самой густой из них — девять запросов,
+# и это предел приличия: дальше начинается отказ по превышению.
+MAX_CALLS = 9
+
+# Пауза между запросами по частям города: сервер общий и
+# бесплатный, и очередь из девяти запросов подряд он справедливо
+# считает злоупотреблением.
+PAUSE = 1.2
+
+
+def search(query, city, pages=1, session=None, on_log=None, should_stop=None,
+           limit=400):
+    """Организации по виду деятельности в городе. Ключ не нужен.
+
+    Про потолок. Overpass отдаёт не больше `limit` объектов на запрос, и
+    в миллионнике этот предел наступал раньше, чем кончались компании:
+    выдача молча обрывалась, а по виду ответа это было неотличимо от
+    «больше и нет». Теперь ответ, упёршийся в предел, считается
+    обрезанным, и та же площадь переспрашивается четвертями — там, где
+    густо, и только там. Где компаний мало, всё остаётся как было:
+    один запрос, один ответ.
+    """
+    if not bbox(city):
+        if on_log:
+            on_log("OSM: для «%s» нет координат — пропускаю"
+                   % (city or {}).get("name", "?"), "warn")
+        return []
+
+    http = session or requests.Session()
+    out, seen, calls, split, answered = [], set(), [0], [0], [False]
+
+    def take(data):
+        """Разобрать ответ и сказать, был ли он обрезан пределом."""
+        els = [el for el in (data.get("elements") or []) if isinstance(el, dict)]
+        for el in els:
+            org = _org(el.get("tags") or {})
+            if not org or org["name"].lower() in seen:
+                continue
+            seen.add(org["name"].lower())
+            out.append(org)
+        return len(els) >= limit
+
+    def walk(box, level):
+        if should_stop and should_stop():
+            return
+        if calls[0] >= MAX_CALLS:
+            return
+        q = build_query(query, city, limit=limit, box=box)
+        if not q:
+            return
+        if calls[0] and PAUSE:
+            time.sleep(PAUSE)
+        calls[0] += 1
+        data = ask(q, session=http, on_log=on_log, should_stop=should_stop)
+        if data is None:
+            return
+        answered[0] = True
+        if not take(data) or level >= 2:
+            return
+        # Ответ упёрся в предел — значит, за ним было ещё.
+        split[0] += 1
+        for part in quarters(box):
+            walk(part, level + 1)
+
+    walk(bbox(city), 0)
+
+    # Пустой ответ и молчание сервера — разные беды, и путать их нельзя:
+    # в первом случае таких компаний в карте нет, во втором они есть, но
+    # их не отдали. Человеку это решает, менять слово или подождать.
+    if not answered[0] and not (should_stop and should_stop()):
         if on_log:
             on_log("OSM: ни одно зеркало не ответило и со второго раза. "
                    "Это проходит само — попробуйте через несколько минут.",
                    "warn")
         return []
-
-    out, seen = [], set()
-    for el in (data.get("elements") or []):
-        if not isinstance(el, dict):
-            continue
-        t = el.get("tags") or {}
-        name = (t.get("name") or "").strip()
-        if not name or name.lower() in seen:
-            continue
-        seen.add(name.lower())
-        phones = []
-        for key in ("phone", "contact:phone", "contact:mobile"):
-            for p in (t.get(key) or "").split(";"):
-                p = p.strip()
-                if p and p not in phones:
-                    phones.append(p)
-        site = (t.get("website") or t.get("contact:website") or "").strip()
-        links = [t[k].strip() for k in LINK_TAGS if (t.get(k) or "").strip()]
-        out.append({
-            "name": name,
-            "address": _address(t),
-            "site": site,
-            "phones": phones[:4],
-            "links": [_full(l) for l in links][:6],
-            "rubric": rubric_ru(t),
-            "emails": [e.strip() for e in (t.get("email") or
-                                           t.get("contact:email") or "").split(";")
-                       if e.strip()][:2],
-        })
     if on_log:
-        on_log("OSM: найдено организаций %d" % len(out))
+        on_log("OSM: найдено организаций %d%s"
+               % (len(out),
+                  (" (город обошёл по частям — в одном запросе они не "
+                   "помещались)" if split[0] else "")))
     return out
 
 
