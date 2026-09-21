@@ -687,17 +687,17 @@ def task_enrich(task_id, params):
             verdicts = {}
             if do_verify:
                 verdicts = verify.check([a for a, _ in cands[:6]])
-            for addr, conf in cands:
+            keep, why = enrich.keep_candidates(cands, verdicts)
+            for addr, conf in keep:
                 v = verdicts.get(addr, "unchecked")
-                # Домен-приёмник всего подряд: адрес не подтверждён, а просто
-                # не опровергнут. Хранить его как найденный — самообман.
-                if v == "bad":
-                    continue
                 if db.add_contact(cid, "email", addr, "director",
-                                  conf if v != "ok" else 95, v,
-                                  "выведен по схеме домена"):
+                                  conf if v != "ok" else 95, v, why):
                     guessed_lpr = True
-            log("   кандидатов в почту руководителя: %d" % len(cands))
+            if keep:
+                log("   кандидатов в почту руководителя: %d, оставили %d — %s"
+                    % (len(cands), len(keep), why))
+            else:
+                log("   все кандидаты в почту руководителя отвергнуты сервером")
 
         # 5. ФНС: выручка и размер. Отсеивает и микробизнес без бюджета,
         #    и корпорации с полугодовым согласованием — оба одинаково
@@ -917,8 +917,13 @@ def task_gis_search(task_id, params):
     """
     key = db.get_setting("gis_key", "")
     query = (params.get("query") or "").strip()
-    region = int(params.get("region") or 32)
     pages = max(1, min(10, int(params.get("pages") or 2)))
+    # Город называется по имени: номер региона в справочнике 2ГИС есть
+    # не у каждого, и для остальных поиск идёт по координатам.
+    name = (params.get("city") or "").strip()
+    city = next((c for c in geo.cities() if c["name"] == name), None)
+    region = city["gis"] if city else int(params.get("region") or 32)
+    point = (city or {}).get("ll") or ""
 
     def log(msg, level="info"):
         db.log(task_id, msg, level)
@@ -931,9 +936,9 @@ def task_gis_search(task_id, params):
         log("Не выбрана рубрика.", "error")
         return
 
-    log("2ГИС: ищу «%s»" % query)
+    log("2ГИС: ищу «%s»%s" % (query, (" · " + name) if name else ""))
     items = gis2.search(query, region, key, pages=pages, on_log=log,
-                        should_stop=_should_stop)
+                        should_stop=_should_stop, point=point)
     if not items:
         log("Ничего не нашлось.", "warn")
         return
@@ -1382,7 +1387,7 @@ def task_find(task_id, params):
         per_city = 0
         if want_osm and c.get("ll"):
             per_city += 1
-        if want_gis and c["gis"]:
+        if want_gis and (c["gis"] or c.get("ll")):
             per_city += 1
         if want_yandex and c.get("ll"):
             per_city += 1
@@ -1435,6 +1440,12 @@ def task_find(task_id, params):
         return len(rows) >= limit
 
     def add(row, source):
+        # Справочники отдают сайт так, как его вписала сама компания:
+        # с чужими метками перехода («?utm_source=yandex&utm_medium=maps»)
+        # и иногда со страницей внутри. В карточке нужен адрес компании,
+        # а не след того, откуда мы пришли.
+        if row.get("site"):
+            row["site"] = site_src.normalize_url(row["site"])
         ks = keys_of(row)
         if not ks:
             return False
@@ -1510,11 +1521,12 @@ def task_find(task_id, params):
                         "OpenStreetMap")
                 did("OpenStreetMap · %s" % where)
 
-            if want_gis and city["gis"] and not full():
+            if want_gis and (city["gis"] or city.get("ll")) and not full():
                 _say(task_id, log, "2ГИС · %s" % where)
                 for it in gis2.search(word, city["gis"], gis_key, pages=pages,
                                       session=http, on_log=log,
-                                      should_stop=_should_stop):
+                                      should_stop=_should_stop,
+                                      point=city.get("ll") or ""):
                     add({"name": it["name"], "site": it["site"],
                          "address": it["address"], "okved_name": it["rubric"],
                          "region": city["name"], "phones": it["phones"],

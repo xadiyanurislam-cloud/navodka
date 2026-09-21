@@ -313,11 +313,15 @@ select.stage{width:auto;min-width:104px;padding:5px 8px;font-size:12px;
    Она стояла поверх кнопок «Проверить связь» и «Показать доступные
    модели» — то есть ровно тех, что нужны при настройке ключа ИИ, — и
    нажать по ним было нельзя вовсе, даже прокрутив страницу до конца.
-   Запас снизу даёт содержимому подняться над панелью. */
+   Место даёт отступ у карточек выше: панель стоит последней в потоке
+   и в самом низу прокрутки оказывается под ними, а не поверх.
+
+   Заливка сплошная, а не растяжкой: полупрозрачный верх наполовину
+   стирал строку, которая под него заехала, и читать её приходилось
+   сквозь фон. Отделяет панель тонкая линия, а не туман. */
 .save-bar{position:sticky;bottom:0;display:flex;align-items:center;gap:10px;
-  padding:14px 0 4px;margin-top:18px;max-width:1180px;
-  background:linear-gradient(to top,var(--bg) 62%,transparent)}
-#view-settings{padding-bottom:96px}
+  padding:13px 0 12px;margin-top:18px;max-width:1180px;
+  background:var(--bg);border-top:1px solid var(--line-2)}
 #save-note{font-size:12px;color:var(--ok)}
 
 @media (max-width:900px){
@@ -559,6 +563,9 @@ tbody tr.row td.c-pick{vertical-align:top;padding-top:15px}
    остались до выхода: живые на вид кнопки, которые уже не отвечают, —
    худшее, что можно показать человеку. */
 .hint{font-size:11.5px;color:var(--ink-3)}
+/* Часть источников отмечена, но без ключа: не ошибка — просто
+   их в этом прогоне не будет. */
+.hint.warn{color:var(--warn)}
 .muted{color:var(--ink-3)}
 body.closing{pointer-events:none;opacity:.55;transition:opacity .4s ease}
 
@@ -1128,8 +1135,10 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
 /* Галочка близких слов. Стоит под видом деятельности, потому что
    относится к нему, а не к источникам: это то же слово, сказанное
    иначе, а не ещё один справочник. */
-.also{display:flex;align-items:flex-start;gap:8px;margin-top:2px;
-  cursor:pointer;font-size:12.5px;line-height:1.45}
+/* flex-direction обязателен: общий label выше ставит column, и без
+   этой строки галочка оказывалась над подписью, а не перед ней. */
+.also{display:flex;flex-direction:row;align-items:flex-start;gap:8px;
+  margin-top:2px;cursor:pointer;font-size:12.5px;line-height:1.45}
 .also input{margin-top:2px;flex:0 0 auto}
 .also b{font-weight:550;display:block}
 .also em{font-style:normal;color:var(--ink-3);font-size:11.5px;
@@ -1393,3 +1402,18 @@ details.ct-more > summary:hover{text-decoration:underline}
   color:var(--ink-2)}
 .first-note b{color:var(--ink)}
 .tiles[hidden],.two-col[hidden]{display:none}
+
+
+/* Кнопка «показать» у полей с ключами. Маленькая и тихая: её замечают,
+   когда ищут, и не замечают, когда не ищут. */
+.peek{position:absolute;right:10px;top:50%;transform:translateY(-50%);
+  border:0;background:none;padding:2px 4px;font:inherit;font-size:11px;
+  color:var(--ink-3);cursor:pointer;border-radius:5px}
+.peek:hover{color:var(--accent);background:var(--accent-soft)}
+.peek.is-on{color:var(--accent)}
+.secret-wrap{position:relative;display:block}
+/* Цепочка :not() повторяет общее правило полей ввода — без неё оно
+   весит больше и отступ справа не применяется, а «показать» ложится
+   поверх текста ключа. */
+.secret-wrap input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]){
+  width:100%;padding-right:76px}

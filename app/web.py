@@ -16,7 +16,7 @@ from flask import (Flask, Response, jsonify, render_template, request,
 
 from . import (ai, db, diag, export, geo, score, settings, trades,
                update, worker)
-from .sources import gis2, hh
+from .sources import hh
 
 
 def _open_outside(url, is_path=False):
@@ -148,7 +148,6 @@ def create_app():
             app_name=settings.APP_NAME, version=settings.VERSION,
             areas=hh.AREAS, presets=hh.PRESETS,
             rubrics=trades.all_words(), trades=trades.catalog(),
-            cities=gis2.CITIES,
             dadata_token=db.get_setting("dadata_token", ""),
             gis_key=db.get_setting("gis_key", ""),
             ai_key=db.get_setting("ai_key", ""),
@@ -324,7 +323,9 @@ def create_app():
         d = request.get_json(silent=True) or {}
         task_id = db.create_task("gis_search", {
             "query": (d.get("query") or "").strip(),
-            "region": num(d.get("region"), 32, 1, 999999),
+            # Город приходит названием: номер региона есть не у всех, и
+            # для остальных нужны координаты — искать по ним 2ГИС умеет.
+            "city": (d.get("region") or "").strip(),
             "pages": num(d.get("pages"), 2, 1, 10),
         })
         return jsonify(ok=True, task_id=task_id)

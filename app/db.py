@@ -216,6 +216,50 @@ def init():
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s"
                           % (table, col, kind))
     c.commit()
+    _repair(c)
+
+
+# Две ошибки успели попасть в уже собранные базы: в «чем занимается»
+# заезжал кусок разметки, а сайт сохранялся с чужими метками перехода.
+# Разбор и то и другое чинит для новых компаний, но старые карточки от
+# этого сами собой не исправятся — поэтому чиним их один раз здесь.
+_JUNK = ("http-equiv", "charset=", "content-type", "<meta")
+
+
+def _host_only(url):
+    url = (url or "").strip()
+    if "//" not in url:
+        return url.split("/")[0].split("?")[0]
+    scheme, rest = url.split("//", 1)
+    return "%s//%s" % (scheme, rest.split("/")[0].split("?")[0])
+
+
+def _clean_activity(text):
+    """Отрезать разметку, прилипшую спереди, и оставить живой текст."""
+    tail = text
+    for mark in ('/>', '">', "'>"):
+        pos = tail.rfind(mark)
+        if pos >= 0:
+            tail = tail[pos + len(mark):]
+    tail = tail.strip(' "\'>/')
+    return tail if len(tail) >= 25 else ""
+
+
+def _repair(c):
+    fixes = []
+    for row in c.execute("SELECT id, site, activity FROM companies "
+                         "WHERE (site IS NOT NULL AND site <> '') "
+                         "   OR (activity IS NOT NULL AND activity <> '')"):
+        site, act = row["site"] or "", row["activity"] or ""
+        new_site = _host_only(site)
+        low = act.lower()
+        new_act = _clean_activity(act) if any(j in low for j in _JUNK) else act
+        if new_site != site or new_act != act:
+            fixes.append((new_site, new_act, row["id"]))
+    if fixes:
+        c.executemany("UPDATE companies SET site=?, activity=? WHERE id=?",
+                      fixes)
+        c.commit()
 
 
 def now():

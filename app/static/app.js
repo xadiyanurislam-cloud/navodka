@@ -455,16 +455,36 @@ function fillFindForm(p) {
   $("q-then-ai").checked = !!p.then_ai;
 }
 
+// Есть ли ключ прямо сейчас. Поле настроек — источник правды: оно
+// заполнено при загрузке страницы и меняется сразу после сохранения,
+// так что перезагружать ничего не нужно.
+function hasKey(what) {
+  const el = $({gis: "s-gis", yandex: "s-yandex", dadata: "s-dadata"}[what]);
+  return !!(el && el.value.trim());
+}
+
 // Сколько источников реально готово — видно до нажатия, а не после.
+//
+// Отмеченный источник без ключа поиск молча пропускает, и человек
+// узнаёт об этом только из журнала. Поэтому в строке готовности такие
+// источники не перечисляются как рабочие, а называются отдельно.
 function findReady() {
   const f = findForm();
-  const on = [f.osm && "OSM", f.gis && "2ГИС", f.yandex && "Яндекс",
-              f.dadata && "ЕГРЮЛ", f.hh && "hh.ru"].filter(Boolean);
+  const all = [[f.osm, "OSM", true], [f.gis, "2ГИС", hasKey("gis")],
+               [f.yandex, "Яндекс", hasKey("yandex")],
+               [f.dadata, "ЕГРЮЛ", hasKey("dadata")], [f.hh, "hh.ru", true]];
+  const on = all.filter((s) => s[0] && s[2]).map((s) => s[1]);
+  const off = all.filter((s) => s[0] && !s[2]).map((s) => s[1]);
   const box = $("find-ready");
+  const tail = off.length ? ` · без ключа, пропустим: ${off.join(", ")}` : "";
   box.textContent = on.length
-    ? `ищем в: ${on.join(", ")}`
-    : "ни один источник не выбран";
+    ? `ищем в: ${on.join(", ")}${tail}`
+    : (off.length
+       ? `у выбранных источников нет ключей: ${off.join(", ")}`
+       : "ни один источник не выбран");
   box.classList.toggle("bad", !on.length);
+  box.classList.toggle("warn", !!on.length && !!off.length);
+  return on.length;
 }
 ["q-osm", "q-gis", "q-yandex", "q-dadata", "q-hh"].forEach((id) => { $(id).onchange = findReady; });
 findReady();
@@ -474,6 +494,10 @@ $("btn-find").onclick = async () => {
   if (!f.query) { $("q-text").focus(); toast("Впишите, кого ищем"); return; }
   if (!f.osm && !f.gis && !f.yandex && !f.dadata && !f.hh) {
     toast("Выберите хотя бы один источник"); return; }
+  // Отмечены только те, у кого нет ключа, — поиск вернётся пустым.
+  if (!findReady()) {
+    toast("У выбранных источников нет ключей — впишите их в «Ключи» "
+          + "или отметьте OSM и hh.ru"); return; }
   const d = await post("/api/find", f);
   if (!d.ok) { toast(d.error || "не вышло"); return; }
   toast(`Ищу «${f.query}» — ${f.cities.length || 1} город(ов)`);
@@ -1242,6 +1266,38 @@ $("btn-clear").onclick = async () => {
 };
 
 // ── Настройки ────────────────────────────────────────────
+// Ключи и пароли закрыты точками, пока их не попросят показать.
+//
+// Половина полей была открытым текстом, половина — точками, без всякой
+// причины: токен справочника такой же ключ, как ключ модели, а в строке
+// прокси стоит логин с паролем. Достаточно снять экран настроек — и всё
+// это уходит вместе со снимком. Показать по-прежнему можно: набранный
+// ключ надо чем-то проверить, и «покажите, что я ввёл» — законная
+// просьба.
+document.querySelectorAll("[data-secret]").forEach((inp) => {
+  // Обёртка ставится здесь, а не в разметке: поля с ключами лежат в
+  // карточках разного устройства, и полагаться на то, что соседним
+  // элементом окажется нужный, нельзя — кнопка уезжала под поле и
+  // накрывала подсказку.
+  const wrap = document.createElement("span");
+  wrap.className = "secret-wrap";
+  inp.parentNode.insertBefore(wrap, inp);
+  wrap.appendChild(inp);
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "peek";
+  btn.textContent = "показать";
+  btn.title = "Показать и снова скрыть";
+  btn.onclick = () => {
+    const open = inp.type === "text";
+    inp.type = open ? "password" : "text";
+    btn.textContent = open ? "показать" : "скрыть";
+    btn.classList.toggle("is-on", !open);
+  };
+  wrap.appendChild(btn);
+});
+
 $("s-save").onclick = async () => {
   await post("/api/settings", {
     dadata_token: $("s-dadata").value, gis_key: $("s-gis").value,
@@ -1266,6 +1322,18 @@ function markKeys() {
     const el = $(tag);
     el.classList.toggle("ready", ready);
     el.textContent = ready ? "ключ есть" : "нужен ключ";
+  }
+  // Карточки источников на «Поиске» — там же, где человек их отмечает.
+  for (const [what, yes, no] of [["gis", "ключ есть", "нет ключа"],
+                                 ["yandex", "ключ есть", "нет ключа"],
+                                 ["dadata", "токен есть", "нет токена"]]) {
+    const ready = hasKey(what), badge = $("src-key-" + what);
+    const hint = $("src-hint-" + what);
+    if (badge) {
+      badge.textContent = ready ? yes : no;
+      badge.className = ready ? "ok" : "need";
+    }
+    if (hint) hint.innerHTML = ready ? hint.dataset.yes : hint.dataset.no;
   }
 }
 markKeys();

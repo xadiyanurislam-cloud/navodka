@@ -62,6 +62,43 @@ class EmailGuess(unittest.TestCase):
         self.assertEqual(enrich.candidates("Иванов Иван", ""), [])
 
 
+class OneGuessIsNotFive(unittest.TestCase):
+    """В карточке стояло пять «почт руководителя» подряд — все выведены
+    по схеме домена, все на одном домене. Одна догадка — одна строка."""
+
+    CANDS = [("i.ivanov@c.ru", 75), ("ivanov@c.ru", 45),
+             ("iivanov@c.ru", 42), ("ivan.ivanov@c.ru", 39),
+             ("ivanov.i@c.ru", 36)]
+
+    def test_unchecked_keeps_only_the_best(self):
+        keep, why = enrich.keep_candidates(self.CANDS, {})
+        self.assertEqual([a for a, _ in keep], ["i.ivanov@c.ru"])
+        self.assertEqual(why, "выведен по схеме домена")
+
+    def test_catch_all_keeps_one_and_says_so(self):
+        verdicts = {a: "catch_all" for a, _ in self.CANDS}
+        keep, why = enrich.keep_candidates(self.CANDS, verdicts)
+        self.assertEqual(len(keep), 1)
+        self.assertIn("любой адрес", why)
+
+    def test_confirmed_addresses_all_stay(self):
+        verdicts = {"i.ivanov@c.ru": "ok", "ivanov@c.ru": "ok",
+                    "iivanov@c.ru": "unknown"}
+        keep, why = enrich.keep_candidates(self.CANDS, verdicts)
+        self.assertEqual([a for a, _ in keep],
+                         ["i.ivanov@c.ru", "ivanov@c.ru"])
+        self.assertIn("подтверждён", why)
+
+    def test_rejected_addresses_never_stay(self):
+        verdicts = {"i.ivanov@c.ru": "bad"}
+        keep, _ = enrich.keep_candidates(self.CANDS, verdicts)
+        self.assertEqual([a for a, _ in keep], ["ivanov@c.ru"])
+
+    def test_everything_rejected_leaves_nothing(self):
+        verdicts = {a: "bad" for a, _ in self.CANDS}
+        self.assertEqual(enrich.keep_candidates(self.CANDS, verdicts), ([], ""))
+
+
 class DirectorContact(unittest.TestCase):
     """Контакт первого лица — то, ради чего всё затевалось."""
 
@@ -222,6 +259,26 @@ class SiteProfile(unittest.TestCase):
     def test_tags_stripped_from_description(self):
         self.assertEqual(site._squash("<b>Окна</b>  и\n двери"), "Окна и двери")
 
+    def test_meta_does_not_leak_neighbouring_tags(self):
+        # Разбор «от content до name» перепрыгивал через соседние теги, и
+        # в описание попадала кодировка вместе с заголовком страницы.
+        html = ('<meta content="text/html; charset=utf-8" '
+                'http-equiv="content-type"/>'
+                "<title>Сухие строительные смеси Старатели</title>"
+                '<meta content="Производство сухих смесей с 1992 года" '
+                'name="description"/>')
+        self.assertEqual(site._meta(html, "description"),
+                         "Производство сухих смесей с 1992 года")
+
+    def test_meta_keeps_angle_bracket_inside_value(self):
+        html = '<meta name="description" content="Рост 2024 -> 2025">'
+        self.assertEqual(site._meta(html, "description"), "Рост 2024 -> 2025")
+
+    def test_meta_skips_empty_and_takes_next(self):
+        html = ('<meta name="description" content="">'
+                '<meta name="description" content="Второй, непустой">')
+        self.assertEqual(site._meta(html, "description"), "Второй, непустой")
+
 
 class Storage(unittest.TestCase):
     def setUp(self):
@@ -245,6 +302,36 @@ class Storage(unittest.TestCase):
         db.upsert_company({"name": "Х", "inn": "1", "director": "Кто-то другой"})
         row = db.conn().execute("SELECT director FROM companies WHERE id=?", (cid,)).fetchone()
         self.assertEqual(row["director"], "Иванов И.")
+
+    def test_old_rows_repaired_on_start(self):
+        """Метки перехода в адресе сайта и разметка в «чем занимается»
+        успели попасть в собранные базы — обновление их чинит."""
+        cid, _ = db.upsert_company({"name": "ДНКом", "inn": "7712345678"})
+        db.conn().execute(
+            "UPDATE companies SET site=?, activity=? WHERE id=?",
+            ("dnkom.ru/?utm_campaign=knopka&utm_medium=maps&utm_source=yandex",
+             'text/html; charset=utf-8" http-equiv="content-type"/> '
+             "Сухие строительные смеси Старатели", cid))
+        db.conn().commit()
+        db.init()
+        row = db.conn().execute("SELECT site, activity FROM companies "
+                                "WHERE id=?", (cid,)).fetchone()
+        self.assertEqual(row["site"], "dnkom.ru")
+        self.assertEqual(row["activity"], "Сухие строительные смеси Старатели")
+
+    def test_repair_leaves_clean_rows_alone(self):
+        cid, _ = db.upsert_company({"name": "Хелен", "inn": "7798765432"})
+        db.conn().execute(
+            "UPDATE companies SET site=?, activity=? WHERE id=?",
+            ("https://helenmedia.ru", "Клиника эстетической медицины "
+             "в центре Москвы", cid))
+        db.conn().commit()
+        db.init()
+        row = db.conn().execute("SELECT site, activity FROM companies "
+                                "WHERE id=?", (cid,)).fetchone()
+        self.assertEqual(row["site"], "https://helenmedia.ru")
+        self.assertEqual(row["activity"],
+                         "Клиника эстетической медицины в центре Москвы")
 
     def test_new_columns_added_to_old_database(self):
         """Обновление программы не должно ронять базу, заведённую прошлой
@@ -1332,13 +1419,36 @@ class NothingCoversWhatYouClick(unittest.TestCase):
     """Липкая панель «Сохранить» стояла поверх кнопок
     «Проверить связь» и «Показать доступные модели» — то есть
     ровно тех, что нужны при настройке ключа ИИ, — и нажать по
-    ним было нельзя даже прокрутив страницу до конца."""
+    ним было нельзя даже прокрутив страницу до конца.
 
-    def test_the_settings_page_leaves_room_under_the_sticky_bar(self):
+    Место под панелью даёт она сама: панель стоит последней в потоке,
+    и в самом низу прокрутки оказывается на своём обычном месте, ниже
+    всего остального. Запас снизу у страницы был лишним и вдобавок
+    отрывал панель от края окна."""
+
+    def test_the_save_bar_is_last_in_the_settings_flow(self):
+        html = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                    "templates", "index.html"),
+                       encoding="utf-8").read()
+        tail = html[html.index('<div class="save-bar">'):]
+        self.assertNotIn("<article", tail, "после панели ещё есть карточки")
+        self.assertIn("</main>", tail)
+
+    def test_the_save_bar_is_opaque(self):
+        """Растяжка до прозрачного наполовину стирала строку под собой."""
         css = TheFirstRunIsNotAVoid.read("app.css")
-        self.assertIn("#view-settings{padding-bottom:", css)
-        m = re.search(r"#view-settings\{padding-bottom:(\d+)px", css)
-        self.assertTrue(m and int(m.group(1)) >= 64,
+        block = css[css.index(".save-bar{"):]
+        block = block[:block.index("}")]
+        self.assertIn("background:var(--bg)", block)
+        self.assertNotIn("gradient", block)
+
+    def test_room_under_the_bar_comes_from_the_cards(self):
+        """Запас снизу держат карточки: свой отступ у страницы отрывал
+        панель от края окна на ту же величину."""
+        css = TheFirstRunIsNotAVoid.read("app.css")
+        self.assertIn("#view-settings{padding-bottom:0}", css)
+        m = re.search(r"#view-settings \.cards\{margin-bottom:(\d+)px", css)
+        self.assertTrue(m and int(m.group(1)) >= 48,
                         "запаса под панелью не хватит")
 
 
@@ -2508,6 +2618,42 @@ class Sources(unittest.TestCase):
         """Ключа нет — источник молчит, а не падает посреди обхода."""
         self.assertEqual(gis2.search("стоматология", 32, ""), [])
 
+    def test_gis_searches_by_point_when_the_city_has_no_region(self):
+        """Номер региона у 2ГИС есть меньше чем у половины городов из
+        списка. Для остальных поиск идёт по координатам, а не молчит."""
+        seen = {}
+
+        class Stub(object):
+            headers = {}
+
+            def get(self, url, params=None, timeout=None):
+                seen.update(params or {})
+                raise RuntimeError("дальше не идём")
+
+        gis2.search("стоматология", 0, "ключ", session=Stub(),
+                    point="37.6173,55.7558")
+        self.assertEqual(seen.get("point"), "37.6173,55.7558")
+        self.assertEqual(seen.get("radius"), gis2.POINT_RADIUS)
+        self.assertNotIn("region_id", seen)
+
+    def test_gis_prefers_the_region_number_when_there_is_one(self):
+        seen = {}
+
+        class Stub(object):
+            headers = {}
+
+            def get(self, url, params=None, timeout=None):
+                seen.update(params or {})
+                raise RuntimeError("дальше не идём")
+
+        gis2.search("стоматология", 32, "ключ", session=Stub(),
+                    point="37.6173,55.7558")
+        self.assertEqual(seen.get("region_id"), 32)
+        self.assertNotIn("point", seen)
+
+    def test_gis_without_region_and_point_is_skipped(self):
+        self.assertEqual(gis2.search("стоматология", 0, "ключ"), [])
+
 
 class Financials(unittest.TestCase):
     """Динамика говорит о компании больше, чем цифра за один год."""
@@ -2921,7 +3067,16 @@ class SearchScreen(unittest.TestCase):
     def test_sources_are_tiles_with_key_state(self):
         """Видно с первого взгляда, что отработает, а что молча пропустят."""
         self.assertEqual(self.html.count('class="src"'), 5)
-        self.assertIn('class="need"', self.html)
+        self.assertIn("else 'need'", self.html)
+        # Значок и подсказка обновляются сразу после сохранения ключа —
+        # для этого у них есть и свой id, и оба варианта текста.
+        for what in ("gis", "yandex", "dadata"):
+            self.assertIn('id="src-key-%s"' % what, self.html)
+            self.assertIn('id="src-hint-%s"' % what, self.html)
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8").read()
+        self.assertIn("src-key-", js)
+        self.assertIn("пропустим", js)
 
     def test_all_search_fields_survived(self):
         for fid in ("q-text", "q-cities", "q-osm", "q-gis", "q-yandex",
@@ -4938,6 +5093,18 @@ class SameNameDifferentCompanies(unittest.TestCase):
         db.upsert_company({"name": "Группа Б", "inn": "7702222222",
                            "site": "https://g.ru", "source": "тест"})
         self.assertEqual(db.find_duplicates(), [])
+
+
+class SearchSiteClean(unittest.TestCase):
+    """Сайт из справочника приходит с метками перехода — в карточке
+    должен оказаться адрес компании, а не след того, откуда мы пришли."""
+
+    def test_add_normalizes_site(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        block = src[src.index("    def add(row, source):"):]
+        block = block[:block.index("    def merge_into(")]
+        self.assertIn("site_src.normalize_url(row[\"site\"])", block)
 
 
 class VacancyCount(unittest.TestCase):

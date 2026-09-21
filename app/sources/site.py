@@ -300,13 +300,35 @@ def _tag(html, name):
     return _squash(m.group(1)) if m else ""
 
 
+# Тег целиком, вместе с кавычками: значение атрибута может содержать
+# «>», и без учёта кавычек тег «кончится» посреди описания.
+META_TAG_RE = re.compile(r'''<meta\b(?:[^>"\']|"[^"]*"|\'[^\']*\')*>''', re.I)
+ATTR_RE = re.compile(r'''([\w:.-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'>]+))''')
+
+
+def _attrs(tag):
+    out = {}
+    for m in ATTR_RE.finditer(tag):
+        val = m.group(2) if m.group(2) is not None else (
+            m.group(3) if m.group(3) is not None else (m.group(4) or ""))
+        out[m.group(1).lower()] = val
+    return out
+
+
 def _meta(html, name):
-    """Содержимое meta — порядок атрибутов в разметке произвольный."""
-    for pat in (r'<meta[^>]*(?:name|property)=["\']%s["\'][^>]*content=["\'](.*?)["\']',
-                r'<meta[^>]*content=["\'](.*?)["\'][^>]*(?:name|property)=["\']%s["\']'):
-        m = re.search(pat % re.escape(name), html, re.S | re.I)
-        if m:
-            return _squash(m.group(1))
+    """Содержимое meta — порядок атрибутов в разметке произвольный.
+
+    Разбираем по одному тегу, а не одним выражением на всю страницу:
+    выражение «от content до name» охотно перепрыгивало через соседние
+    теги и складывало в описание кодировку, заголовок и кусок разметки.
+    """
+    want = name.lower()
+    for tag in META_TAG_RE.findall(html or ""):
+        attrs = _attrs(tag)
+        if attrs.get("name", "").lower() == want or \
+                attrs.get("property", "").lower() == want:
+            if attrs.get("content", "").strip():
+                return _squash(attrs["content"])
     return ""
 
 

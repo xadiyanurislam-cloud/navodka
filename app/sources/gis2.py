@@ -33,10 +33,36 @@ CITIES = [
 ]
 
 
+# Докуда искать вокруг точки, когда номера региона нет.
+#
+# Сорок километров — потолок, который принимает сам справочник. Он же
+# примерно равен охвату миллионника с пригородами, так что запас брать
+# некуда и незачем.
+POINT_RADIUS = 40000
+
+
 def search(query, region_id, key, pages=2, page_size=50, pause=0.4,
-           session=None, on_log=None, should_stop=None):
-    """Организации по рубрике в городе: название, сайт, телефоны, адрес."""
+           session=None, on_log=None, should_stop=None, point=""):
+    """Организации по рубрике в городе: название, сайт, телефоны, адрес.
+
+    Город задаётся одним из двух способов, и это не роскошь.
+
+    Номер региона знает только сам справочник, и в программе их
+    двенадцать — те, что удалось выписать. Для остальных ста тридцати
+    городов источник просто пропускался: у Перми, Тюмени и Владивостока
+    2ГИС не работал вовсе, хотя в самом справочнике эти города есть.
+
+    Поэтому второй способ — точка и радиус. Координаты у программы есть
+    для всех городов: по ним и так ищет карта. Номер региона, если он
+    известен, остаётся первым: он точнее очерчивает город, чем круг в
+    сорок километров.
+    """
     if not key:
+        return []
+    if not region_id and not point:
+        if on_log:
+            on_log("2ГИС: для этого города нет ни номера региона, ни "
+                   "координат — пропускаю", "warn")
         return []
     s = session or requests.Session()
     s.headers.update({"User-Agent": settings.USER_AGENT})
@@ -45,11 +71,16 @@ def search(query, region_id, key, pages=2, page_size=50, pause=0.4,
         if should_stop and should_stop():
             break
         params = {
-            "q": query, "region_id": region_id, "key": key,
+            "q": query, "key": key,
             "page": page, "page_size": page_size,
             "fields": "items.contact_groups,items.address,items.external_content,"
                       "items.rubrics,items.org",
         }
+        if region_id:
+            params["region_id"] = region_id
+        else:
+            params["point"] = point
+            params["radius"] = POINT_RADIUS
         try:
             r = s.get(API, params=params, timeout=20)
             data = r.json()

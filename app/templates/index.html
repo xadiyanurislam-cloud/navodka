@@ -223,23 +223,26 @@
                     <b class="ok">без ключа</b>
                     <em>По названию и отрасли — вакансии не нужны</em>
                   </span></label>
-                <label class="src"><input id="q-gis" type="checkbox" checked>
+                <label class="src" data-src="gis"><input id="q-gis" type="checkbox" checked>
                   <span class="src-b">
                     <span class="src-h">Справочник 2ГИС</span>
-                    {% if has_gis %}<b class="ok">ключ есть</b>{% else %}<b class="need">нет ключа</b>{% endif %}
-                    <em>{% if has_gis %}Главный источник: вывески, телефоны, сайты{% else %}Будет пропущен — <a href="https://dev.2gis.ru/">взять ключ бесплатно</a>{% endif %}</em>
+                    <b id="src-key-gis" class="{{ 'ok' if has_gis else 'need' }}">{{ 'ключ есть' if has_gis else 'нет ключа' }}</b>
+                    <em id="src-hint-gis" data-yes="Главный источник: вывески, телефоны, сайты"
+                        data-no='Будет пропущен — <a href="https://dev.2gis.ru/">взять ключ бесплатно</a>'>{% if has_gis %}Главный источник: вывески, телефоны, сайты{% else %}Будет пропущен — <a href="https://dev.2gis.ru/">взять ключ бесплатно</a>{% endif %}</em>
                   </span></label>
-                <label class="src"><input id="q-yandex" type="checkbox" checked>
+                <label class="src" data-src="yandex"><input id="q-yandex" type="checkbox" checked>
                   <span class="src-b">
                     <span class="src-h">Яндекс.Организации</span>
-                    {% if has_yandex %}<b class="ok">ключ есть</b>{% else %}<b class="need">нет ключа</b>{% endif %}
-                    <em>{% if has_yandex %}У него и 2ГИС разные пробелы — вместе шире{% else %}Будет пропущен — <a href="https://developer.tech.yandex.ru/services/">взять ключ бесплатно</a>{% endif %}</em>
+                    <b id="src-key-yandex" class="{{ 'ok' if has_yandex else 'need' }}">{{ 'ключ есть' if has_yandex else 'нет ключа' }}</b>
+                    <em id="src-hint-yandex" data-yes="У него и 2ГИС разные пробелы — вместе шире"
+                        data-no='Будет пропущен — <a href="https://developer.tech.yandex.ru/services/">взять ключ бесплатно</a>'>{% if has_yandex %}У него и 2ГИС разные пробелы — вместе шире{% else %}Будет пропущен — <a href="https://developer.tech.yandex.ru/services/">взять ключ бесплатно</a>{% endif %}</em>
                   </span></label>
-                <label class="src"><input id="q-dadata" type="checkbox" checked>
+                <label class="src" data-src="dadata"><input id="q-dadata" type="checkbox" checked>
                   <span class="src-b">
                     <span class="src-h">ЕГРЮЛ</span>
-                    {% if has_dadata %}<b class="ok">токен есть</b>{% else %}<b class="need">нет токена</b>{% endif %}
-                    <em>{% if has_dadata %}Сразу отдаёт ИНН и ФИО руководителя{% else %}Будет пропущен — <a href="https://dadata.ru/api/suggest/party/">взять токен бесплатно</a>{% endif %}</em>
+                    <b id="src-key-dadata" class="{{ 'ok' if has_dadata else 'need' }}">{{ 'токен есть' if has_dadata else 'нет токена' }}</b>
+                    <em id="src-hint-dadata" data-yes="Сразу отдаёт ИНН и ФИО руководителя"
+                        data-no='Будет пропущен — <a href="https://dadata.ru/api/suggest/party/">взять токен бесплатно</a>'>{% if has_dadata %}Сразу отдаёт ИНН и ФИО руководителя{% else %}Будет пропущен — <a href="https://dadata.ru/api/suggest/party/">взять токен бесплатно</a>{% endif %}</em>
                   </span></label>
               </div>
             </div>
@@ -420,7 +423,7 @@
             <select id="g-query">{% for r in rubrics %}<option>{{ r }}</option>{% endfor %}</select>
           </label>
           <label>Город
-            <select id="g-region">{% for name, rid in cities %}<option value="{{ rid }}">{{ name }}</option>{% endfor %}</select>
+            <select id="g-region">{% for g in geo_groups %}<optgroup label="{{ g.title }}">{% for c in g["items"] %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}</optgroup>{% endfor %}</select>
           </label>
           <label>Глубина
             <input id="g-pages" type="number" min="1" max="10" value="2">
@@ -625,39 +628,39 @@
         <div class="keys">
 
     <label>DaData
-      <input id="s-dadata" type="text" value="{{ dadata_token }}" placeholder="токен">
+      <input id="s-dadata" type="password" data-secret value="{{ dadata_token }}" placeholder="токен">
       <em>ФИО руководителей из ЕГРЮЛ. Бесплатного тарифа хватает на
           тысячи запросов в сутки.
           <a href="https://dadata.ru/api/suggest/party/">где взять ключ</a></em>
     </label>
     <label>2ГИС Places API
-      <input id="s-gis" type="text" value="{{ gis_key }}" placeholder="ключ">
+      <input id="s-gis" type="password" data-secret value="{{ gis_key }}" placeholder="ключ">
       <em>Вывески, телефоны, сайты. Ключ типа <b>Places API</b> — не
           перепутайте с картами и маршрутами.
           <a href="https://dev.2gis.ru/">где взять ключ</a></em>
     </label>
     <label>Ключ Яндекс.Карт (Геопоиск)
-      <input id="s-yandex" type="text" value="{{ yandex_key }}" placeholder="ключ">
+      <input id="s-yandex" type="password" data-secret value="{{ yandex_key }}" placeholder="ключ">
       <em>Второй справочник рядом с 2ГИС, отдаёт ещё и соцсети компаний.
           Нужен сервис <b>«Поиск по организациям»</b>.
           <a href="https://developer.tech.yandex.ru/services/">где взять ключ</a></em>
     </label>
     <label>Сервисный ключ ВКонтакте
-      <input id="s-vk" type="password" value="{{ vk_token }}" placeholder="сервисный ключ">
+      <input id="s-vk" type="password" data-secret value="{{ vk_token }}" placeholder="сервисный ключ">
       <em>Выход на руководителя: в разделе «Контакты» сообщества владелец
           сам указывает профили живых людей с должностями. Нужен именно
           <b>сервисный</b> ключ — он бессрочный.
           <a href="https://vk.com/apps?act=manage">где взять ключ</a></em>
     </label>
     <label>Токен hh.ru
-      <input id="s-hh-token" type="password" value="{{ hh_token }}"
+      <input id="s-hh-token" type="password" data-secret value="{{ hh_token }}"
              placeholder="нужен, только если hh отвечает 403">
       <em>Обычно не нужен: программа сама подбирает способ связи. Если hh
           отвечает 403 всем способам — зарегистрируйте приложение.
           <a href="https://dev.hh.ru/admin">кабинет разработчика hh</a></em>
     </label>
     <label>Ключ ИИ
-      <input id="s-ai-key" type="password" value="{{ ai_key }}" placeholder="sk-…">
+      <input id="s-ai-key" type="password" data-secret value="{{ ai_key }}" placeholder="sk-…">
       <em>Подойдёт OpenAI, Claude и любой посредник. Ключ хранится только
           на этом компьютере и уходит лишь по адресу ниже.
           <a href="https://platform.openai.com/api-keys">ключи OpenAI</a></em>
@@ -681,7 +684,7 @@
         <datalist id="ai-models"></datalist>
       </label>
       <label class="wide">Прокси — если провайдер рвёт соединение
-        <input id="s-proxy" type="text" value="{{ proxy_url }}"
+        <input id="s-proxy" type="password" data-secret value="{{ proxy_url }}"
                placeholder="http://логин:пароль@адрес:порт">
         <em class="fld-hint">Пусто — ходим напрямую. Годится и
            <b>socks5://</b>. Через него пойдут все запросы программы, не
@@ -711,7 +714,7 @@
                placeholder="владелец/название">
       </label>
       <label>Токен GitHub
-        <input id="s-upd-token" type="password" value="{{ update_token }}"
+        <input id="s-upd-token" type="password" data-secret value="{{ update_token }}"
                placeholder="если репозиторий закрытый">
       </label>
     </div>
