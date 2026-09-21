@@ -387,14 +387,7 @@ def create_app():
         got = tg.parse_account(d.get("text") or "")
         if not got.get("ok"):
             return jsonify(got)
-        if got.get("api_id"):
-            db.set_setting("tg_api_id", got["api_id"])
-        if got.get("api_hash"):
-            db.set_setting("tg_api_hash", got["api_hash"])
-        if got.get("phone"):
-            db.set_setting("tg_phone", got["phone"])
-        if got.get("device"):
-            db.set_setting("tg_device", json.dumps(got["device"]))
+        _keep_account(got)
         if not got.get("session"):
             # JSON без строки сессии идёт в паре с файлом .session:
             # сам по себе он только настраивает подключение.
@@ -414,20 +407,85 @@ def create_app():
                        phone=db.get_setting("tg_phone", ""))
         return jsonify(res)
 
-    @app.post("/api/tg/session-file")
-    def api_tg_session_file():
-        """Готовый файл .session — кладётся на место нашего."""
-        raw = request.get_data() or b""
-        if len(raw) > 8 * 1024 * 1024:
-            return jsonify(ok=False, error="Файл слишком большой для сессии")
-        got = tg.save_session_bytes(settings.data_dir(), raw)
-        if not got.get("ok"):
-            return jsonify(got)
+    def _keep_account(got):
+        """Сохранить разобранное: ключи, номер и признаки устройства."""
+        for key, name in (("api_id", "tg_api_id"), ("api_hash", "tg_api_hash"),
+                          ("phone", "tg_phone")):
+            if got.get(key):
+                db.set_setting(name, got[key])
+        if got.get("device"):
+            db.set_setting("tg_device", json.dumps(got["device"]))
+
+    @app.post("/api/tg/import")
+    def api_tg_import():
+        """Аккаунт двумя файлами: .session и .json от продавца.
+
+        Вписывать api_id и api_hash руками не нужно — они лежат в том
+        же JSON, который к сессии и прилагается. Файлы принимаются в
+        любом порядке и по одному: JSON разбирается первым, потому что
+        именно он говорит, как подключаться.
+        """
+        files = request.files.getlist("files")
+        if not files:
+            return jsonify(ok=False, error="Файлы не выбраны")
+        if len(files) > 4:
+            return jsonify(ok=False, error="Больше четырёх файлов за раз не "
+                                           "нужно: хватит .session и .json")
+        texts, blobs, skipped = [], [], []
+        for f in files:
+            raw = f.read() or b""
+            name = (f.filename or "").lower()
+            if len(raw) > 8 * 1024 * 1024:
+                skipped.append("%s — слишком большой" % (f.filename or "файл"))
+                continue
+            if raw.startswith(b"SQLite format 3"):
+                blobs.append((f.filename or "сессия", raw))
+            elif raw.lstrip()[:1] in (b"{", b"["):
+                texts.append(raw.decode("utf-8", "replace"))
+            elif name.endswith(".json"):
+                texts.append(raw.decode("utf-8", "replace"))
+            else:
+                skipped.append("%s — не JSON и не файл сессии"
+                               % (f.filename or "файл"))
+        if not texts and not blobs:
+            return jsonify(ok=False,
+                           error="Ни JSON, ни файла сессии не нашлось. "
+                                 + ("Пропущено: " + "; ".join(skipped)
+                                    if skipped else ""))
+
+        session_line = ""
+        for text in texts:
+            got = tg.parse_account(text)
+            if not got.get("ok"):
+                return jsonify(got)
+            _keep_account(got)
+            session_line = session_line or got.get("session") or ""
+
+        for name, raw in blobs:
+            got = tg.save_session_bytes(settings.data_dir(), raw)
+            if not got.get("ok"):
+                return jsonify(ok=False,
+                               error="%s: %s" % (name, got["error"]))
+
         api_id, api_hash = _tg_keys()
         if not api_id or not api_hash:
-            return jsonify(ok=True, error="Файл принят, но нужны ещё api_id "
-                                          "и api_hash того же аккаунта")
-        return jsonify(tg.whoami(tg.conf_from_db()))
+            return jsonify(ok=False,
+                           error="В JSON не нашлось app_id и app_hash — без "
+                                 "них подключиться нельзя. Попросите их у "
+                                 "того, кто дал аккаунт, или войдите по коду "
+                                 "ниже")
+        if session_line and not blobs:
+            res = tg.import_session(tg.conf_from_db(), session_line)
+        elif blobs:
+            res = tg.whoami(tg.conf_from_db())
+        else:
+            return jsonify(ok=False,
+                           error="Ключи приняты, но самой сессии нет: нужен "
+                                 "файл .session или строка сессии в JSON")
+        if res.get("ok"):
+            res.update(phone=db.get_setting("tg_phone", ""),
+                       skipped="; ".join(skipped))
+        return jsonify(res)
 
     @app.post("/api/tg/proxy")
     def api_tg_proxy():

@@ -2927,19 +2927,134 @@ class TelegramAccount(unittest.TestCase):
             self.assertFalse(got["ok"], text)
             self.assertIn(part, got["error"], text)
 
-    def test_only_a_real_session_file_is_accepted(self):
-        """Файл сессии Telethon — база SQLite. Файлы tdata от
-        настольного Telegram прошли бы молча и упали бы при первой
-        проверке номеров."""
+    @staticmethod
+    def _real_session(tmp):
+        """Настоящий файл сессии Telethon — с ключом авторизации."""
+        from telethon.crypto import AuthKey
+        from telethon.sessions import SQLiteSession
+        path = os.path.join(tmp, "real")
+        sess = SQLiteSession(path)
+        sess.set_dc(2, "149.154.167.51", 443)
+        sess.auth_key = AuthKey(bytes(256))
+        sess.save()
+        sess.close()
+        with io.open(path + ".session", "rb") as fh:
+            return fh.read()
+
+    def test_tdata_and_empty_files_are_refused(self):
+        """Файлы tdata от настольного Telegram и пустышки прошли бы
+        молча и упали бы при первой проверке номеров."""
         import tempfile
         d = tempfile.mkdtemp()
         self.assertFalse(tg.save_session_bytes(d, b"")["ok"])
         bad = tg.save_session_bytes(d, b"TDF$ tdata garbage")
         self.assertFalse(bad["ok"])
         self.assertIn("tdata", bad["error"])
-        good = tg.save_session_bytes(d, b"SQLite format 3\x00" + b"0" * 64)
-        self.assertTrue(good["ok"])
+
+    def test_a_stranger_sqlite_is_refused_by_what_is_inside(self):
+        """Подписи SQLite мало: база бывает и чужая. Без таблицы
+        sessions файл откроется, а упадёт потом, посреди проверки,
+        словами про «no such table»."""
+        import sqlite3
+        import tempfile
+        d = tempfile.mkdtemp()
+        other = os.path.join(d, "other.db")
+        con = sqlite3.connect(other)
+        con.execute("CREATE TABLE notes (a)")
+        con.commit()
+        con.close()
+        with io.open(other, "rb") as fh:
+            got = tg.save_session_bytes(d, fh.read())
+        self.assertFalse(got["ok"])
+        self.assertIn("sessions", got["error"])
+
+    def test_a_real_session_is_accepted(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        got = tg.save_session_bytes(d, self._real_session(tempfile.mkdtemp()))
+        self.assertTrue(got["ok"], got)
         self.assertTrue(tg.logged_in(d))
+
+    def test_a_failed_import_does_not_take_away_the_working_account(self):
+        """Неудачная попытка не должна отбирать рабочий аккаунт: до сих
+        пор файл писался на место прежнего и только потом проверялся."""
+        import tempfile
+        d = tempfile.mkdtemp()
+        tg.save_session_bytes(d, self._real_session(tempfile.mkdtemp()))
+        before = io.open(tg.session_path(d), "rb").read()
+        self.assertFalse(tg.save_session_bytes(d, b"TDF$ tdata")["ok"])
+        self.assertEqual(io.open(tg.session_path(d), "rb").read(), before)
+
+
+class TelegramImportsTwoFiles(unittest.TestCase):
+    """Аккаунт отдают двумя файлами: .session и .json. Вписывать api_id
+    и api_hash руками не нужно — они лежат в том же JSON."""
+
+    SELLER = ('{"app_id": 2040, "app_hash": "b18441a1ff607e10", '
+              '"sdk": "Windows 10", "device": "Desktop", '
+              '"phone": "79991234567"}')
+
+    def setUp(self):
+        db.init()
+        for key in ("tg_api_id", "tg_api_hash", "tg_phone", "tg_device"):
+            db.set_setting(key, "")
+        self.cl = web.create_app().test_client()
+        self._whoami, self._import = tg.whoami, tg.import_session
+        tg.whoami = lambda c: {"ok": True, "who": "Босс · @boss"}
+        tg.import_session = lambda c, line: {"ok": True, "who": "из строки"}
+
+    def tearDown(self):
+        tg.whoami, tg.import_session = self._whoami, self._import
+
+    def send(self, *files):
+        return self.cl.post("/api/tg/import", data={"files": [
+            (io.BytesIO(body), name) for name, body in files]},
+            content_type="multipart/form-data").get_json()
+
+    def real_session(self):
+        import tempfile
+        return TelegramAccount._real_session(tempfile.mkdtemp())
+
+    def test_json_and_session_together_need_nothing_typed(self):
+        got = self.send(("acc.json", self.SELLER.encode("utf-8")),
+                        ("acc.session", self.real_session()))
+        self.assertTrue(got["ok"], got)
+        self.assertEqual(db.get_setting("tg_api_id"), "2040")
+        self.assertEqual(db.get_setting("tg_api_hash"), "b18441a1ff607e10")
+        self.assertEqual(db.get_setting("tg_phone"), "79991234567")
+
+    def test_order_of_files_does_not_matter(self):
+        got = self.send(("acc.session", self.real_session()),
+                        ("acc.json", self.SELLER.encode("utf-8")))
+        self.assertTrue(got["ok"], got)
+        self.assertEqual(db.get_setting("tg_api_id"), "2040")
+
+    def test_an_extra_file_is_skipped_not_fatal(self):
+        got = self.send(("acc.json", self.SELLER.encode("utf-8")),
+                        ("acc.session", self.real_session()),
+                        ("readme.txt", b"lorem ipsum"))
+        self.assertTrue(got["ok"], got)
+        self.assertIn("readme.txt", got["skipped"])
+
+    def test_a_session_without_keys_says_what_is_missing(self):
+        got = self.send(("acc.session", self.real_session()))
+        self.assertFalse(got["ok"])
+        self.assertIn("app_id", got["error"])
+
+    def test_a_json_without_a_session_says_what_is_missing(self):
+        got = self.send(("acc.json", self.SELLER.encode("utf-8")))
+        self.assertFalse(got["ok"])
+        self.assertIn(".session", got["error"])
+
+    def test_nothing_useful_is_named(self):
+        got = self.send(("readme.txt", b"lorem ipsum"))
+        self.assertFalse(got["ok"])
+        self.assertIn("readme.txt", got["error"])
+
+    def test_no_files_at_all(self):
+        got = self.cl.post("/api/tg/import", data={},
+                           content_type="multipart/form-data").get_json()
+        self.assertFalse(got["ok"])
 
 
 class TelegramProxy(unittest.TestCase):
@@ -2986,6 +3101,19 @@ class TelegramProxy(unittest.TestCase):
         opts = tg._opts(tg.conf())
         self.assertLessEqual(opts["connection_retries"], 2)
         self.assertLessEqual(opts["timeout"], 20)
+
+    def test_there_is_a_deadline_over_everything(self):
+        """Таймаутов внутри Telethon мало: при живом файле сессии и
+        закрытой сети он честно соединяется, перебирает адреса и
+        повторяет запрос — измерено больше двух минут молчания."""
+        self.assertLessEqual(tg.DEADLINE, 60)
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "sources", "tg.py"),
+                      encoding="utf-8").read()
+        self.assertIn("asyncio.wait_for", src)
+        # И задачи Telethon гасятся до закрытия цикла, иначе в журнал
+        # сыплется полотно «Event loop is closed».
+        self.assertIn("task.cancel()", src)
 
 
 class TelegramRun(unittest.TestCase):

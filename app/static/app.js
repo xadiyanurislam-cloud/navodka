@@ -637,14 +637,14 @@ async function tgState() {
   const d = await get("/api/tg/state");
   if (!d || !d.ok) return null;
   const tag = $("tag-tg"), tag2 = $("tag-tg2");
-  let label = "вход не выполнен", ready = false;
+  let label = "аккаунт не подключён", ready = false;
   if (!d.lib) label = "библиотека не установлена";
-  else if (!d.keys) label = "нужны api_id и api_hash";
-  else if (!d.logged) label = "вход не выполнен";
-  else { label = "вход выполнен"; ready = true; }
+  else if (!d.logged) label = "аккаунт не подключён";
+  else if (!d.keys) label = "нет app_id и app_hash";
+  else { label = "аккаунт подключён"; ready = true; }
   for (const el of [tag, tag2]) {
     if (!el) continue;
-    el.textContent = ready ? "вход выполнен" : label;
+    el.textContent = ready ? "аккаунт подключён" : label;
     el.classList.toggle("ready", ready);
   }
   return d;
@@ -743,24 +743,33 @@ if ($("btn-tg-account")) {
     tgState();
   };
 
-  $("s-tg-file").onchange = async () => {
-    const file = $("s-tg-file").files[0];
-    if (!file) return;
-    note.textContent = "читаю файл…";
-    const buf = await file.arrayBuffer();
-    const r = await fetch("/api/tg/session-file", {
-      method: "POST", headers: {"Content-Type": "application/octet-stream"},
-      body: buf});
-    const d = await r.json().catch(() => null);
-    $("s-tg-file").value = "";
+}
+
+// Оба файла аккаунта уходят одним запросом: .session и .json — это не
+// два действия, а одно. Порядок и расширения неважны — что есть что,
+// видно по самому содержимому.
+if ($("s-tg-files")) {
+  const note = $("tg-imp-state");
+  $("s-tg-files").onchange = async () => {
+    const files = [...$("s-tg-files").files];
+    if (!files.length) return;
+    note.textContent = files.length > 1
+      ? `читаю ${files.length} файла…` : "читаю файл…";
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f, f.name));
+    $("s-tg-files").value = "";
+    let d = null;
+    try {
+      const r = await fetch("/api/tg/import", {method: "POST", body: form});
+      d = await r.json();
+    } catch (e) { d = null; }
     if (!d || !d.ok) {
       note.innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
       return;
     }
-    note.innerHTML = d.error
-      ? `<span class="bad">${esc(d.error)}</span>`
-      : `файл принят: ${esc(d.who || "")}`;
-    if (!d.error) toast("Telegram подключён");
+    note.textContent = `аккаунт подключён: ${d.who || ""}`;
+    if (d.skipped) note.textContent += ` · пропущено: ${d.skipped}`;
+    toast("Telegram подключён");
     tgState();
   };
 }

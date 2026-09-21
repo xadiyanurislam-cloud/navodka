@@ -169,12 +169,40 @@ def parse_account(text):
     return out
 
 
+def session_fault(path):
+    """Чего не хватает файлу, чтобы быть сессией Telethon.
+
+    Подписи SQLite мало: база бывает и чужая. Внутри сессии лежит
+    таблица sessions с ключом авторизации — без неё файл откроется, а
+    упадёт потом, посреди проверки номеров, словами про «no such
+    table». Лучше сказать это сразу и по-человечески.
+    """
+    import sqlite3
+    try:
+        con = sqlite3.connect(path)
+        try:
+            names = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "sessions" not in names:
+                return ("внутри нет таблицы sessions — это база SQLite, но "
+                        "не сессия Telethon")
+            row = con.execute("SELECT auth_key FROM sessions "
+                              "LIMIT 1").fetchone()
+            if not row or not row[0]:
+                return "сессия пустая: в ней нет ключа авторизации"
+        finally:
+            con.close()
+    except Exception as e:
+        return "файл не читается как база: %s" % str(e)[:100]
+    return ""
+
+
 def save_session_bytes(data_dir, raw):
     """Положить готовый файл .session на место нашего.
 
-    Файл сессии Telethon — это база SQLite. Чужой файл другого формата
+    Файл сессии Telethon — это база SQLite особого вида. Чужой файл
     прошёл бы молча и упал бы только при первой проверке номеров,
-    поэтому смотрим на подпись сразу.
+    поэтому смотрим внутрь сразу.
     """
     if not raw:
         return {"ok": False, "error": "Файл пустой"}
@@ -184,10 +212,22 @@ def save_session_bytes(data_dir, raw):
                          "SQLite; файлы tdata от настольного Telegram не "
                          "подходят"}
     path = session_path(data_dir)
+    tmp = path + ".part"
     try:
-        tmp = path + ".part"
         with open(tmp, "wb") as fh:
             fh.write(raw)
+    except OSError as e:
+        return {"ok": False, "error": "Не удалось записать файл: %s" % e}
+    fault = session_fault(tmp)
+    if fault:
+        # Прежнюю сессию не трогаем: неудачный импорт не должен
+        # отбирать рабочий аккаунт.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "error": "Это не файл сессии Telethon: %s" % fault}
+    try:
         shutil.move(tmp, path)
     except OSError as e:
         return {"ok": False, "error": "Не удалось записать файл: %s" % e}
@@ -313,7 +353,14 @@ def prepare(numbers, landlines=False, limit=DAY_LIMIT):
 
 
 # ── Асинхронное в синхронном ─────────────────────────────
-def _run(coro):
+# Общий предел на операцию. Таймаутов внутри Telethon недостаточно:
+# при живом файле сессии и закрытой сети он честно соединяется,
+# перебирает адреса и повторяет запрос — измерено, больше двух минут
+# без единого слова на экране. Здесь стоит будильник поверх всего.
+DEADLINE = 45
+
+
+def _run(coro, deadline=DEADLINE):
     """Telethon живёт на asyncio, задачи программы — на потоке.
 
     Свой цикл на каждый вызов, а не общий на процесс: общий пришлось бы
@@ -322,8 +369,24 @@ def _run(coro):
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
+        if deadline:
+            coro = asyncio.wait_for(coro, timeout=deadline)
         return loop.run_until_complete(coro)
     finally:
+        # Telethon держит свои петли отправки и приёма отдельными
+        # задачами. Закрыть цикл, пока они живы, — значит получить
+        # полотно трассировок «Event loop is closed» на ровном месте,
+        # особенно после срабатывания будильника. Поэтому сначала
+        # отменяем и дожидаемся, потом закрываем.
+        try:
+            rest = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for task in rest:
+                task.cancel()
+            if rest:
+                loop.run_until_complete(
+                    asyncio.gather(*rest, return_exceptions=True))
+        except Exception:
+            pass
         try:
             loop.run_until_complete(loop.shutdown_asyncgens())
         except Exception:
@@ -554,7 +617,7 @@ def _who(me):
     return ("%s%s" % (name, " · @" + tag if tag else "")).strip() or "аккаунт"
 
 
-def _guard(make_coro):
+def _guard(make_coro, deadline=DEADLINE):
     """Ошибки Telegram — словами, а не трассировкой.
 
     Их немного, и каждая означает для человека своё действие: подождать,
@@ -562,7 +625,7 @@ def _guard(make_coro):
     говорит ни одного из них.
     """
     try:
-        return _run(make_coro())
+        return _run(make_coro(), deadline=deadline)
     except Exception as e:
         return {"ok": False, "error": explain(e)}
 
@@ -591,10 +654,14 @@ def explain(e):
         return "api_id или api_hash не подходят — проверьте их на my.telegram.org"
     if name == "AuthKeyUnregisteredError":
         return "Сеанс больше не действует — войдите снова"
+    if name in ("OperationalError", "DatabaseError"):
+        return ("Файл сессии не читается — похоже, он повреждён или не от "
+                "Telethon. Попробуйте импортировать заново")
     if name in ("ConnectionError", "TimeoutError", "OSError",
-                "asyncio.TimeoutError", "CancelledError"):
-        return ("Не удалось соединиться с Telegram. Проверьте связь, а если "
-                "задан прокси — его адрес и доступность")
+                "CancelledError", "IncompleteReadError", "gaierror"):
+        return ("Не удалось соединиться с Telegram за %d секунд. Проверьте "
+                "связь, а если задан прокси — его адрес и доступность"
+                % DEADLINE)
     return "%s: %s" % (name, text[:200]) if text else name
 
 
@@ -690,8 +757,9 @@ def check(c, pairs, on_log=None, should_stop=None,
         finally:
             await client.disconnect()
 
+    rounds = (len(pairs) + batch - 1) // batch
     try:
-        return _run(go())
+        return _run(go(), deadline=DEADLINE + rounds * (pause + 20))
     except Exception as e:
         return {"ok": False, "error": explain(e)}
 

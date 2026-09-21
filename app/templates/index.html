@@ -743,72 +743,84 @@
           Telegram «кто может найти меня по номеру телефона», не найдётся,
           даже если аккаунт у него есть.
         </div>
-        <div class="fields">
-          <div class="row2 wide pair">
-            <label>api_id
-              <input id="s-tg-id" type="text" value="{{ tg_api_id }}"
-                     placeholder="числовой">
-              <em class="fld-hint">Берётся один раз на
-                <a href="https://my.telegram.org/apps">my.telegram.org</a>,
-                раздел «API development tools»</em>
+        <div class="tg-imp">
+          <h3>Импорт аккаунта</h3>
+          <p class="hint-sm">Выберите <b>файл .session</b> и <b>файл .json</b>
+             от продавца — оба сразу, порядок неважен. Ключи
+             <code>app_id</code> и <code>app_hash</code> программа возьмёт из
+             JSON сама, вписывать их руками не нужно. Оттуда же берутся
+             признаки устройства: аккаунт, заведённый «телефоном» и
+             продолженный «компьютером другой версии», Telegram
+             разлогинивает как угнанный.</p>
+          <div class="upd-line">
+            <label class="btn primary file-btn">Выбрать файлы аккаунта
+              <input id="s-tg-files" type="file" multiple hidden
+                     accept=".session,.json,.sqlite,.db">
             </label>
-            <label>api_hash
-              <input id="s-tg-hash" type="password" data-secret
-                     value="{{ tg_api_hash }}" placeholder="строка из букв и цифр">
-              <em class="fld-hint">Оттуда же, рядом с api_id</em>
-            </label>
+            <button class="btn quiet" id="btn-tg-forget">Забыть аккаунт</button>
+            <span class="upd-state" id="tg-imp-state"></span>
           </div>
-          <div class="row2 wide pair">
-            <label>Номер аккаунта
-              <input id="s-tg-phone" type="text" value="{{ tg_phone }}"
-                     placeholder="+7 999 123-45-67">
-              <em class="fld-hint">С этого номера пойдут запросы. Заведите
-                 отдельный</em>
-            </label>
-            <label>Код из Telegram
-              <input id="s-tg-code" type="text" placeholder="придёт в приложение"
-                     autocomplete="one-time-code">
-              <em class="fld-hint">Код приходит сообщением в сам Telegram,
-                 не по SMS</em>
-            </label>
-          </div>
-          <label class="wide" id="tg-pass-wrap" hidden>Пароль облака
-            <input id="s-tg-pass" type="password" data-secret
-                   placeholder="двухэтапная проверка">
-            <em class="fld-hint">Нужен, только если у аккаунта включена
-               двухэтапная проверка</em>
-          </label>
+          <details class="tg-paste">
+            <summary>Вставить текстом, без файлов</summary>
+            <div class="fields">
+              <label class="wide">JSON целиком или строка сессии
+                <textarea id="s-tg-account" rows="4" spellcheck="false"
+                  placeholder='{"app_id": 2040, "app_hash": "…", "device": "Desktop", "sdk": "Windows 10", "phone": "79991234567"}&#10;— или —&#10;1BVtsOHwBu4…'></textarea>
+                <em class="fld-hint">Строка сессии начинается с единицы и
+                   идёт одним куском без пробелов</em>
+              </label>
+            </div>
+            <div class="upd-line">
+              <button class="btn" id="btn-tg-account">Принять</button>
+              <span class="upd-state" id="tg-acc-state"></span>
+            </div>
+          </details>
         </div>
-        <footer class="upd-line">
-          <button class="btn" id="btn-tg-code">Прислать код</button>
-          <button class="btn primary" id="btn-tg-signin">Войти</button>
-          <button class="btn quiet" id="btn-tg-forget">Забыть аккаунт</button>
-          <span class="upd-state" id="tg-state"></span>
-        </footer>
 
-        <div class="tg-alt">
-          <h3>Аккаунт уже есть</h3>
-          <p class="hint-sm">Входить по коду нужно не всегда: готовый
-             аккаунт приходит строкой сессии или связкой «JSON плюс файл
-             .session». Признаки устройства из JSON переносятся как есть —
-             аккаунт, заведённый «телефоном» и продолженный «компьютером
-             другой версии», Telegram разлогинивает как угнанный.</p>
+        <details class="tg-alt tg-more">
+          <summary>Аккаунта нет — войти по номеру и коду</summary>
+          <p class="hint-sm">Этот путь нужен, только если аккаунт вы
+             заводите сами. Тогда api_id и api_hash берутся один раз на
+             <a href="https://my.telegram.org/apps">my.telegram.org</a>,
+             раздел «API development tools».</p>
           <div class="fields">
-            <label class="wide">JSON от продавца или строка сессии
-              <textarea id="s-tg-account" rows="4" spellcheck="false"
-                placeholder='{"app_id": 2040, "app_hash": "…", "device": "Desktop", "sdk": "Windows 10", "phone": "79991234567"}&#10;— или —&#10;1BVtsOHwBu4…'></textarea>
-              <em class="fld-hint">Вставляется целиком. Строка сессии
-                 начинается с единицы и идёт одним куском</em>
+            <div class="row2 wide pair">
+              <label>api_id
+                <input id="s-tg-id" type="text" value="{{ tg_api_id }}"
+                       placeholder="числовой">
+              </label>
+              <label>api_hash
+                <input id="s-tg-hash" type="password" data-secret
+                       value="{{ tg_api_hash }}" placeholder="строка из букв и цифр">
+              </label>
+            </div>
+            <div class="row2 wide pair">
+              <label>Номер аккаунта
+                <input id="s-tg-phone" type="text" value="{{ tg_phone }}"
+                       placeholder="+7 999 123-45-67">
+                <em class="fld-hint">С этого номера пойдут запросы. Заведите
+                   отдельный</em>
+              </label>
+              <label>Код из Telegram
+                <input id="s-tg-code" type="text" placeholder="придёт в приложение"
+                       autocomplete="one-time-code">
+                <em class="fld-hint">Код приходит сообщением в сам Telegram,
+                   не по SMS</em>
+              </label>
+            </div>
+            <label class="wide" id="tg-pass-wrap" hidden>Пароль облака
+              <input id="s-tg-pass" type="password" data-secret
+                     placeholder="двухэтапная проверка">
+              <em class="fld-hint">Нужен, только если у аккаунта включена
+                 двухэтапная проверка</em>
             </label>
           </div>
           <div class="upd-line">
-            <button class="btn" id="btn-tg-account">Принять аккаунт</button>
-            <label class="btn file-btn">Выбрать файл .session
-              <input id="s-tg-file" type="file" accept=".session,.sqlite,.db" hidden>
-            </label>
-            <span class="upd-state" id="tg-acc-state"></span>
+            <button class="btn" id="btn-tg-code">Прислать код</button>
+            <button class="btn primary" id="btn-tg-signin">Войти</button>
+            <span class="upd-state" id="tg-state"></span>
           </div>
-        </div>
+        </details>
 
         <div class="tg-alt">
           <h3>Прокси для Telegram</h3>
