@@ -788,6 +788,59 @@ def set_setting(key, value):
     c.commit()
 
 
+# Поля, которые приходят из реестров. Названия среди них нет намеренно:
+# см. fill_company.
+REGISTRY_FIELDS = (
+    "inn", "ogrn", "director", "director_post", "okved", "okved_name",
+    "address", "region", "status", "employees", "capital", "branches",
+    "okveds_extra", "founders_count", "founders", "founded",
+)
+
+
+def fill_company(company_id, patch, over=False):
+    """Дописать в известную строку то, чего в ней ещё нет.
+
+    Почему не upsert. Компания уже выбрана — обогащение идёт именно по
+    ней, — и искать её заново по содержимому ответа нельзя. Из ЕГРЮЛ
+    приходит юридическое название: «ПАО ДВМП» вместо вывески «Fesco»,
+    «ООО Стоматология плюс» вместо «Дента-Люкс». Ни ИНН, ни домена, ни
+    номера работодателя в этом ответе может не быть, и тогда upsert не
+    узнавал исходную строку и заводил вторую. Исходная оставалась
+    пустой навсегда: обогащение шло по ней, а данные ложились в дубль,
+    и в списке появлялась вторая компания с тем же телефоном.
+
+    Название не трогаем совсем. Человек искал «грузоперевозки» и нашёл
+    «Fesco» — под этим именем он компанию и помнит. Юридическое имя
+    важно в договоре, а в списке на обзвон мешает узнаванию; ИНН и ОГРН
+    рядом в карточке говорят о юрлице всё, что нужно.
+
+    over=True перезаписывает и заполненное: так нужно, когда ответ
+    пришёл по ИНН, то есть надёжнее того, что стояло раньше.
+    """
+    c = conn()
+    row = c.execute("SELECT * FROM companies WHERE id=?",
+                    (company_id,)).fetchone()
+    if row is None:
+        return {}
+    ready = {}
+    for key in REGISTRY_FIELDS:
+        val = (patch or {}).get(key)
+        if val in (None, "", 0):
+            continue
+        if not over and (row[key] not in (None, "", 0)):
+            continue
+        ready[key] = val
+    if not ready:
+        return {}
+    ready["updated_at"] = now()
+    sets = ", ".join("%s=?" % k for k in ready)
+    c.execute("UPDATE companies SET %s WHERE id=?" % sets,
+              tuple(ready.values()) + (company_id,))
+    c.commit()
+    ready.pop("updated_at", None)
+    return ready
+
+
 def update_company_fields(company_id, patch):
     """Правки из интерфейса: стадия работы и заметка."""
     allowed = {k: v for k, v in (patch or {}).items()

@@ -61,6 +61,66 @@ BOSS_POSTS = ("генеральный директор", "коммерчески
 # менял смысл молча: стоило дописать должность в начало — и
 # «управляющий» переставал считаться первым лицом, без единого признака,
 # что что-то изменилось.
+# Реквизиты в подвале сайта.
+#
+# Зачем это здесь. Без ИНН программа не может спросить ни ЕГРЮЛ, ни ФНС:
+# карточка остаётся без руководителя, без выручки, без численности и без
+# года регистрации — то есть без всего, ради чего её открывают. А искать
+# по названию получается не всегда: в справочнике стоит вывеска «Fesco»,
+# а в ЕГРЮЛ — ПАО «ДВМП», и по бренду юрлицо не находится.
+#
+# При этом сам ИНН лежит на виду: российские компании публикуют
+# реквизиты в подвале главной или на странице «Реквизиты», а её мы и так
+# скачиваем. Оставалось прочитать.
+INN_RE = re.compile(r"ИНН[\s:№\-–—/]{0,4}(\d{12}|\d{10})(?!\d)", re.I)
+OGRN_RE = re.compile(r"ОГРН(?:ИП)?[\s:№\-–—/]{0,4}(\d{15}|\d{13})(?!\d)", re.I)
+
+
+def inn_ok(value):
+    """Проверка контрольной суммы ИНН.
+
+    Не перестраховка. Неверный ИНН — это не пустая карточка, а чужая:
+    по нему из ЕГРЮЛ придёт другая компания, с другим руководителем и
+    другой выручкой, и отличить её будет нельзя. Лучше не знать ИНН,
+    чем знать неправильный.
+    """
+    d = [int(x) for x in (value or "") if x.isdigit()]
+    if len(d) == 10:
+        w = (2, 4, 10, 3, 5, 9, 4, 6, 8)
+        return sum(a * b for a, b in zip(d, w)) % 11 % 10 == d[9]
+    if len(d) == 12:
+        w1 = (7, 2, 4, 10, 3, 5, 9, 4, 6, 8)
+        w2 = (3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8)
+        return (sum(a * b for a, b in zip(d, w1)) % 11 % 10 == d[10]
+                and sum(a * b for a, b in zip(d, w2)) % 11 % 10 == d[11])
+    return False
+
+
+def ogrn_ok(value):
+    """Проверка контрольной суммы ОГРН: остаток от деления на 11 (для
+    ОГРНИП — на 13) совпадает с последней цифрой."""
+    v = "".join(x for x in (value or "") if x.isdigit())
+    if len(v) == 13:
+        return int(v[:12]) % 11 % 10 == int(v[12])
+    if len(v) == 15:
+        return int(v[:14]) % 13 % 10 == int(v[14])
+    return False
+
+
+def requisites(text):
+    """ИНН и ОГРН из текста страницы — только прошедшие проверку."""
+    out = {}
+    for m in INN_RE.finditer(text):
+        if inn_ok(m.group(1)):
+            out["inn"] = m.group(1)
+            break
+    for m in OGRN_RE.finditer(text):
+        if ogrn_ok(m.group(1)):
+            out["ogrn"] = m.group(1)
+            break
+    return out
+
+
 BOSS = frozenset((
     "генеральный директор", "коммерческий директор",
     "исполнительный директор", "директор", "руководитель", "владелец",
@@ -357,6 +417,7 @@ def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None, budget=25):
               "tech": {}, "pages": 0, "error": "", "text": [],
               "description": "", "title": "", "cms": "", "tollfree": [],
               "callback": False, "hours": "", "socials": {},
+              "inn": "", "ogrn": "",
               "self_year": None, "self_staff": None, "self_branches": None,
               "shop": False, "prices": False, "no_prices": False,
               "app": False, "last_post": ""}
@@ -513,6 +574,14 @@ def crawl(site, timeout=10, pause=0.4, max_pages=12, session=None, budget=25):
         # для продавца бесполезно, ссылка на группу — нет.
         from .. import social as _social
         _self_facts(html, low_text=None, result=result)
+
+        # Реквизиты: ИНН и ОГРН из подвала или со страницы «Реквизиты».
+        # Первый найденный и выигрывает — на странице партнёров бывают
+        # чужие, но стоят они ниже собственных.
+        if not (result["inn"] and result["ogrn"]):
+            for key, val in requisites(_squash_full(html)).items():
+                if not result[key]:
+                    result[key] = val
 
         for net, slugs in _social.from_text(html).items():
             bag = result["socials"].setdefault(net, [])

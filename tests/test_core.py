@@ -1198,6 +1198,183 @@ class RunLimit(unittest.TestCase):
             osm.search = was
 
 
+class EnrichmentFillsTheRowItWasGiven(unittest.TestCase):
+    """Обогащение заводило вторую компанию вместо той, которую
+    обогащало.
+
+    Из ЕГРЮЛ приходит юридическое название — «ПАО ДВМП» вместо
+    вывески «Fesco». Ни ИНН, ни домена, ни номера работодателя в
+    этом ответе может не быть — и запись по содержимому не узнавала
+    исходную строку. Исходная оставалась пустой навсегда."""
+
+    def setUp(self):
+        db.init()
+        c = db.conn()
+        for t in ("contacts", "signals", "notes", "companies"):
+            c.execute("DELETE FROM %s" % t)
+        c.commit()
+
+    def test_the_registry_answer_lands_in_the_same_company(self):
+        cid, _ = db.upsert_company({"name": "Fesco", "site": "fesco.ru"})
+        db.fill_company(cid, {"name": 'ПАО «ДВМП»', "inn": "2540016961",
+                              "director": "Иванов Иван Иванович",
+                              "founded": 1992, "capital": 2949257000})
+        rows = list(db.conn().execute("SELECT * FROM companies"))
+        self.assertEqual(len(rows), 1, "завелся дубль")
+        self.assertEqual(rows[0]["inn"], "2540016961")
+        self.assertEqual(rows[0]["director"], "Иванов Иван Иванович")
+        self.assertEqual(rows[0]["founded"], 1992)
+
+    def test_the_name_the_person_searched_by_is_kept(self):
+        """Человек искал «грузоперевозки» и нашёл «Fesco» — под
+        этим именем он компанию и помнит. Юридическое имя важно в
+        договоре, а в списке на обзвон мешает узнаванию."""
+        cid, _ = db.upsert_company({"name": "Fesco"})
+        db.fill_company(cid, {"name": 'ПАО «ДВМП»', "inn": "2540016961"})
+        row = db.conn().execute("SELECT name FROM companies WHERE id=?",
+                                (cid,)).fetchone()
+        self.assertEqual(row["name"], "Fesco")
+
+    def test_what_is_already_known_is_not_overwritten(self):
+        cid, _ = db.upsert_company({"name": "Ромашка",
+                                    "director": "Найден на сайте"})
+        db.fill_company(cid, {"director": "Из реестра"})
+        row = db.conn().execute("SELECT director FROM companies WHERE id=?",
+                                (cid,)).fetchone()
+        self.assertEqual(row["director"], "Найден на сайте")
+
+    def test_an_answer_by_inn_may_overwrite(self):
+        """Ответ по ИНН надёжнее того, что стояло по названию."""
+        cid, _ = db.upsert_company({"name": "Ромашка", "director": "Кто-то"})
+        db.fill_company(cid, {"director": "Из реестра по ИНН"}, over=True)
+        row = db.conn().execute("SELECT director FROM companies WHERE id=?",
+                                (cid,)).fetchone()
+        self.assertEqual(row["director"], "Из реестра по ИНН")
+
+    def test_the_worker_never_upserts_a_registry_answer(self):
+        """Именно этот вызов и заводил дубли."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8")
+        with src as fh:
+            text = fh.read()
+        body = text[text.index("def task_enrich("):text.index("def task_gis_search(")]
+        self.assertNotIn("db.upsert_company(dict(info", body)
+        self.assertIn("db.fill_company(cid, info", body)
+
+    def test_a_field_outside_the_list_is_not_dropped_silently(self):
+        """update_company_fields молча выбрасывает чужие поля, и
+        запись ИНН через неё не делала ничего вовсе. Для реестровых
+        полей есть своя функция, и в ней ИНН есть."""
+        self.assertIn("inn", db.REGISTRY_FIELDS)
+        self.assertIn("ogrn", db.REGISTRY_FIELDS)
+        self.assertIn("director", db.REGISTRY_FIELDS)
+        cid, _ = db.upsert_company({"name": "Ромашка"})
+        db.update_company_fields(cid, {"inn": "7707083893"})
+        row = db.conn().execute("SELECT inn FROM companies WHERE id=?",
+                                (cid,)).fetchone()
+        self.assertFalse(row["inn"], "update_company_fields теперь пишет ИНН — "
+                                     "проверьте, не разошлись ли два пути записи")
+
+
+class RequisitesComeFromTheSite(unittest.TestCase):
+    """Без ИНН программа не спросит ни ЕГРЮЛ, ни ФНС, и карточка
+    остаётся без руководителя, выручки, численности и года — то есть
+    без всего, ради чего её открывают.
+
+    По названию ищется не всегда: в справочнике стоит вывеска
+    «Fesco», а в реестре — ПАО «ДВМП». Зато сам ИНН лежит в подвале
+    сайта, который программа и так скачивает."""
+
+    def test_a_footer_gives_the_numbers(self):
+        got = site.requisites("ПАО «ДВМП» ИНН 2540016961 "
+                              "ОГРН 1022502256127 КПП 254001001")
+        self.assertEqual(got.get("inn"), "2540016961")
+        self.assertEqual(got.get("ogrn"), "1022502256127")
+
+    def test_a_sole_trader_is_read_too(self):
+        got = site.requisites("ИНН 500100732259 ОГРНИП 304500116000157")
+        self.assertEqual(got.get("inn"), "500100732259")
+        self.assertEqual(got.get("ogrn"), "304500116000157")
+
+    def test_a_broken_number_is_refused(self):
+        """Неверный ИНН — это не пустая карточка, а чужая: по нему
+        из ЕГРЮЛ придёт другая компания, с другим руководителем и
+        другой выручкой, и отличить её будет нельзя."""
+        self.assertEqual(site.requisites("ИНН 1234567890 ОГРН 1234567890123"), {})
+
+    def test_a_longer_number_is_not_cut_to_fit(self):
+        self.assertEqual(site.requisites("ИНН 77070838931234"), {})
+
+    def test_the_checksums_are_real(self):
+        self.assertTrue(site.inn_ok("7707083893"))
+        self.assertTrue(site.inn_ok("500100732259"))
+        self.assertFalse(site.inn_ok("7707083894"))
+        self.assertFalse(site.inn_ok("12345"))
+        self.assertTrue(site.ogrn_ok("1027700132195"))
+        self.assertFalse(site.ogrn_ok("1027700132196"))
+
+    def test_the_crawl_carries_them_out(self):
+        """Найденное должно дойти до того, кто спрашивает реестры."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "sources", "site.py"), encoding="utf-8")
+        with src as fh:
+            text = fh.read()
+        self.assertIn('"inn": "", "ogrn": ""', text)
+        self.assertIn("requisites(_squash_full(html))", text)
+
+    def test_the_worker_asks_the_registry_again(self):
+        """Ради этого всё и затевалось: ИНН с сайта — это второй
+        заход в ЕГРЮЛ, уже по номеру, а не по вывеске."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8")
+        with src as fh:
+            text = fh.read()
+        body = text[text.index("def task_enrich("):]
+        mark = body.index('res.get("inn")')
+        fns_call = body.index("fns.by_inn(")
+        self.assertLess(mark, fns_call,
+                        "ИНН с сайта надо узнать до того, как спрашивать ФНС")
+
+
+class TheCardTellsWhatIsKnown(unittest.TestCase):
+    """Карточка крупной компании выглядела так, будто о ней не
+    известно ничего: статус, год, капитал, учредители и филиалы
+    лежали в базе, но на глаза не попадали."""
+
+    def setUp(self):
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8")
+        with js as fh:
+            self.js = fh.read()
+
+    def test_there_is_a_block_for_registry_facts(self):
+        self.assertIn("function aboutBlock", self.js)
+        for what in ('"статус в ЕГРЮЛ"', '"в ЕГРЮЛ с"',
+                     '"уставный капитал"', '"учредителей"',
+                     '"филиалов"', '"сотрудников по ФНС"'):
+            self.assertIn(what, self.js, what)
+
+    def test_an_empty_block_says_why_it_is_empty(self):
+        """«Данных нет» и «их не спрашивали» — разные сообщения:
+        в первом человек думает, что компания такая, во втором
+        понимает, что надо запустить обогащение."""
+        self.assertIn("ИНН не известен", self.js)
+        self.assertIn("в реестрах ещё не спрашивали", self.js)
+
+    def test_missing_reporting_is_not_held_against_an_unknown_inn(self):
+        """Компания без известного ИНН ни в чём не провинилась:
+        её просто не о чем было спросить."""
+        self.assertIn('if (c.inn && !sig.revenue) out.push(["Отчётности в ФНС нет"',
+                      self.js)
+        self.assertIn("ИНН не известен — в ФНС не спрашивали", self.js)
+
+    def test_billions_are_called_billions(self):
+        """«172000.0 млн ₽» заставляло считать нули глазами — а
+        именно у крупных компаний эта цифра и решает."""
+        self.assertIn('" млрд ₽"', self.js)
+        self.assertNotIn("(sig.revenue / 1e6).toFixed(1)", self.js)
+
+
 class TodaySuggestsWhomToCall(unittest.TestCase):
     """Главный экран при полной базе сообщал «ничего не
     назначено» и оставлял человека одного. Кому звонить первым,

@@ -461,7 +461,11 @@ def task_enrich(task_id, params):
             if info.get("status") and info["status"] != "ACTIVE":
                 log("   ВНИМАНИЕ: статус в ЕГРЮЛ — %s" % info["status"], "warn")
             if info:
-                db.upsert_company(dict(info, hh_id=row["hh_id"], source=row["source"]))
+                # Именно в эту строку, а не upsert по содержимому ответа.
+                # Из ЕГРЮЛ приходит юридическое название — «ПАО ДВМП»
+                # вместо вывески «Fesco», — и upsert не узнавал исходную
+                # компанию: заводил вторую, а первая оставалась пустой.
+                db.fill_company(cid, info)
                 row = db.conn().execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
             else:
                 log("   в ЕГРЮЛ по названию не нашлось", "warn")
@@ -556,6 +560,42 @@ def task_enrich(task_id, params):
                     if same:
                         db.add_signal(cid, "director_on_site", "да")
                         log("   ФИО из ЕГРЮЛ подтверждено на сайте")
+
+        # 2.5. Реквизиты с сайта — и второй заход в ЕГРЮЛ.
+        #
+        # Это самый частый случай пустой карточки. В справочнике стоит
+        # вывеска — «Fesco», «Дента-Люкс», — а в ЕГРЮЛ та же компания
+        # записана как ПАО «ДВМП» или ООО «Стоматология плюс», и по
+        # вывеске юрлицо не находится. Без ИНН дальше не спросить ни
+        # ЕГРЮЛ, ни ФНС: карточка остаётся без руководителя, без
+        # выручки, без численности и без года — то есть без всего, ради
+        # чего её открывают.
+        #
+        # Сам ИНН при этом лежит в подвале сайта, который мы только что
+        # прочитали. Берём его оттуда и переспрашиваем — теперь по
+        # номеру, а не по названию.
+        if res.get("inn") and not (row["inn"] or "").strip():
+            db.fill_company(cid, {"inn": res["inn"], "ogrn": res.get("ogrn")})
+            row = db.conn().execute("SELECT * FROM companies WHERE id=?",
+                                    (cid,)).fetchone()
+            log("   ИНН с сайта: %s" % res["inn"])
+            if token:
+                info = dadata.by_inn(res["inn"], token, session=http)
+                info.pop("opf", None)
+                if info:
+                    if info.get("status") and info["status"] != "ACTIVE":
+                        log("   ВНИМАНИЕ: статус в ЕГРЮЛ — %s"
+                            % info["status"], "warn")
+                    # over=True: ответ пришёл по ИНН, то есть надёжнее
+                    # того, что могло стоять раньше по названию.
+                    db.fill_company(cid, info, over=True)
+                    row = db.conn().execute(
+                        "SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
+                    log("   ЕГРЮЛ по ИНН с сайта: %s%s"
+                        % (info.get("name") or "",
+                           (" · " + info["director"]) if info.get("director") else ""))
+                else:
+                    log("   ЕГРЮЛ по ИНН с сайта ничего не дал", "warn")
 
         # 3. Профиль: чем занимается и есть ли телефонные продажи.
         #    Второй вопрос важнее: компания, которая не продаёт по телефону,

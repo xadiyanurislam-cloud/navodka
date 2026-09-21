@@ -1683,7 +1683,7 @@ function signalChips(sig) {
   for (const k of ["tech_crm", "tech_telephony", "gis_rubric"])
     if (sig[k]) out.push([esc(sig[k]), false]);
   if (sig.size) out.push([esc(sig.size), ["малый", "средний"].includes(sig.size)]);
-  if (sig.revenue) out.push([(sig.revenue / 1e6).toFixed(1) + " млн ₽", false]);
+  if (sig.revenue) out.push([money(sig.revenue), false]);
   if (sig.zakupki_person) out.push(["в закупках", true]);
   if (sig.found_by) out.push([`найдено по «${esc(sig.found_by)}»`, false]);
   return out.map(([t, hot]) => `<span class="sig ${hot ? "hot" : ""}">${t}</span>`).join("");
@@ -1715,7 +1715,20 @@ function fact(value, label, cls) {
                   <span>${label}</span></div>` : "";
 }
 
-const money = (v) => (v / 1e6).toFixed(v >= 1e8 ? 0 : 1) + " млн ₽";
+// Деньги в том порядке величины, в каком их называют вслух.
+//
+// Всё считалось в миллионах, и выручка крупной компании выглядела как
+// «172000.0 млн ₽»: чтобы понять, что это сто семьдесят два миллиарда,
+// надо было считать нули глазами. А именно у крупных компаний эта
+// цифра и решает, звонить ли вообще.
+function money(v) {
+  const n = Number(v) || 0;
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(a >= 1e10 ? 0 : 1) + " млрд ₽";
+  if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e8 ? 0 : 1) + " млн ₽";
+  if (a >= 1e3) return Math.round(n / 1e3) + " тыс ₽";
+  return n + " ₽";
+}
 // Заметка хранит время числом, а не строкой: по нему они и
 // упорядочиваются.
 const ruStamp = (ts) => {
@@ -1829,6 +1842,68 @@ function aiBlock(c, sig) {
 
 // Риски — то, из-за чего звонок окажется потраченным впустую. Лучше
 // увидеть это до разговора, чем узнать в нём.
+// Что известно о компании из реестров.
+//
+// Раньше этого блока не было вовсе: статус, год регистрации, уставный
+// капитал, число учредителей и филиалов лежали в базе, но на глаза не
+// попадались, а численность и выручка прятались в «Финансах» и
+// исчезали вместе с ним, когда выручки не нашлось. Карточка крупной
+// компании выглядела так, будто о ней не известно ничего.
+//
+// Пустой блок тоже говорит — но не «данных нет», а почему их нет. Это
+// разные сообщения: в первом случае человек думает, что компания
+// такая, во втором понимает, что надо запустить обогащение.
+function aboutBlock(c, sig) {
+  const bad = c.status && c.status !== "ACTIVE";
+  const extra = String(c.okveds_extra || "").split(";")
+    .map((x) => x.trim()).filter(Boolean).length;
+  const facts = [
+    fact(c.status ? (c.status === "ACTIVE" ? "действующая" : c.status) : "",
+         "статус в ЕГРЮЛ", bad ? "bad" : "ok"),
+    fact(c.founded, "в ЕГРЮЛ с"),
+    fact(c.capital ? money(+c.capital) : "", "уставный капитал"),
+    fact(c.employees, "сотрудников по ФНС"),
+    fact(sig.self_staff, "сотрудников по сайту"),
+    fact(c.founders_count, "учредителей"),
+    fact(c.branches, "филиалов"),
+  ].filter(Boolean).join("");
+
+  const ids = [
+    c.inn ? `<span class="copyable" data-copy="${esc(c.inn)}"
+      title="Нажмите, чтобы скопировать">ИНН ${esc(c.inn)}</span>` : "",
+    c.ogrn ? `<span class="copyable" data-copy="${esc(c.ogrn)}"
+      title="Нажмите, чтобы скопировать">ОГРН ${esc(c.ogrn)}</span>` : "",
+  ].filter(Boolean).join("");
+
+  let blank = "";
+  if (!c.inn) {
+    // Самая частая причина пустой карточки, и она поправима.
+    blank = `<p class="nobody">ИНН не известен — без него ни ЕГРЮЛ, ни ФНС
+      не спросить. Так бывает, когда в справочнике стоит вывеска
+      («Fesco»), а в реестре компания записана иначе (ПАО «ДВМП»).
+      Запустите обогащение: программа прочитает реквизиты в подвале
+      сайта и переспросит реестры по номеру.</p>`;
+  } else if (!facts && !c.director) {
+    blank = `<p class="nobody">ИНН есть, но в реестрах ещё не спрашивали.
+      Запустите обогащение — придут руководитель, статус, год, капитал и
+      выручка.</p>`;
+  }
+
+  return `<section class="cs">
+    <h4>О компании</h4>
+    ${ids ? `<div class="ids">${ids}</div>` : ""}
+    ${c.director ? `<p class="cs-boss"><b>${esc(c.director)}</b>${
+      c.director_post ? ` · ${esc(c.director_post)}` : ""}</p>` : ""}
+    ${c.okved_name || c.okved ? `<p class="small">${
+      esc(c.okved_name || "")}${c.okved ? ` <span class="dim">(ОКВЭД ${
+      esc(c.okved)})</span>` : ""}${extra ? ` <span class="dim">и ещё ${
+      extra} ${plural(extra, "вид", "вида", "видов")}</span>` : ""}</p>` : ""}
+    ${c.address ? `<p class="small">${esc(c.address)}</p>` : ""}
+    ${facts ? `<div class="facts mt">${facts}</div>` : ""}
+    ${blank}
+  </section>`;
+}
+
 function risks(c, sig) {
   const out = [];
   if (c.status && c.status !== "ACTIVE")
@@ -1836,7 +1911,10 @@ function risks(c, sig) {
   if ((c.growth || "").indexOf("спад") >= 0)
     out.push(["Выручка падает: " + c.growth, "warn"]);
   if (sig.size === "микро") out.push(["Микробизнес — бюджета может не быть", "warn"]);
-  if (!sig.revenue) out.push(["Отчётности в ФНС нет", "warn"]);
+  // Отсутствие отчётности — признак, только если её искали. Компания
+  // без известного ИНН ни в чём не провинилась: её просто не о чем было
+  // спросить, и ставить ей это в минус — значит врать в карточке.
+  if (c.inn && !sig.revenue) out.push(["Отчётности в ФНС нет", "warn"]);
   if (c.founders_count > 3)
     out.push([`Учредителей ${c.founders_count} — решение согласовывают`, "warn"]);
   if (sig.last_post && sig.last_post < "2024-01-01")
@@ -1862,7 +1940,7 @@ async function toggleCard(tr, id) {
   if (!d || !d.ok || !holder.isConnected) { holder.remove(); return; }
   const c = d.company, sig = d.signals || {};
   const why = (sig.cc_why || "").split(", ").filter(Boolean);
-  const rev = sig.revenue ? (sig.revenue / 1e6).toFixed(1) + " млн ₽" : "";
+  const rev = sig.revenue ? money(sig.revenue) : "";
   const cts = d.contacts || [];
   const socials = cts.filter((x) => x.kind === "social");
   const rest = cts.filter((x) => x.kind !== "social");
@@ -1951,6 +2029,8 @@ async function toggleCard(tr, id) {
       <aside class="card-side">
         ${aiBlock(c, sig)}
 
+        ${aboutBlock(c, sig)}
+
         <section class="cs">
           <h4>Чем занимается</h4>
           <p class="cs-text">${c.activity ? esc(c.activity)
@@ -1968,14 +2048,12 @@ async function toggleCard(tr, id) {
             esc(c.growth)}</span>` : ""}</h4>
           ${revenueBars(parseSeries(sig.revenue_series), c.growth) ||
             `<p class="nobody">${rev ? "Данные за один год: " + rev
-              : "Отчётности в ФНС не нашлось."}</p>`}
+              : (c.inn ? "Отчётности в ФНС не нашлось."
+                       : "ИНН не известен — в ФНС не спрашивали.")}</p>`}
           <div class="facts mt">
             ${fact(sig.profit ? money(+sig.profit) : "", "прибыль",
                    +sig.profit < 0 ? "bad" : "")}
             ${fact(sig.size, "размер")}
-            ${fact(c.employees, "сотрудников по ФНС")}
-            ${fact(c.founded, "в ЕГРЮЛ с")}
-            ${fact(c.branches, "филиалов")}
             ${fact(sig.hh_salary, "зарплаты в вакансиях")}
           </div>
         </section>

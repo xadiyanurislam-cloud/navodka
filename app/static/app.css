@@ -1313,3 +1313,15 @@ details.ct-more > summary:hover{text-decoration:underline}
 .due-tel{margin-left:auto;font-size:12px;white-space:nowrap;
   font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .due-tel .val{font-size:12px}
+
+
+/* ── О компании ───────────────────────────────────────────
+   Реквизиты и факты из реестров. Раньше они лежали в базе, но на глаза
+   не попадались, и карточка крупной компании выглядела так, будто о
+   ней не известно ничего. */
+.ids{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  color:var(--ink-2);margin-bottom:7px}
+.cs-boss{margin:0 0 6px;font-size:13px;color:var(--ink-2)}
+.cs-boss b{color:var(--ink);font-weight:600}
+.dim{color:var(--ink-3)}
