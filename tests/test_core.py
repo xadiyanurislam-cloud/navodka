@@ -1276,6 +1276,52 @@ class EnrichmentFillsTheRowItWasGiven(unittest.TestCase):
                                      "проверьте, не разошлись ли два пути записи")
 
 
+class TheCatalogueIsBig(unittest.TestCase):
+    """Список, в котором нет вашего дела, бесполезен ровно так
+    же, как пустое поле."""
+
+    def test_it_covers_industry_not_only_shops(self):
+        titles = {t for t, _ in trades.GROUPS}
+        for must in ("Металл и металлообработка", "Спецтехника",
+                     "Упаковка и тара", "Сельское хозяйство",
+                     "ВЭД и международная логистика", "Безопасность"):
+            self.assertIn(must, titles, must)
+
+    def test_a_hidden_activity_says_where_it_lives(self):
+        """Самая обидная подпись — «такого нет» про то, что
+        есть. Человек набирает «лазерная резка», тема стоит
+        «Медицина» с прошлого раза — и список честно пуст. С
+        полусотней тем это случалось бы постоянно."""
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8")
+        with js as fh:
+            text = fh.read()
+        self.assertIn("data-all-themes", text)
+        self.assertIn("есть, но в теме", text)
+
+    def test_the_theme_says_how_it_is_searched(self):
+        db.init()
+        html = web.create_app().test_client().get("/").get_data(as_text=True)
+        self.assertIn('data-kind="бизнес"', html)
+        self.assertIn('data-kind="места"', html)
+        self.assertIn("· по названию", html)
+
+    def test_close_words_never_repeat_inside_one_list(self):
+        for word, close in trades.ALSO.items():
+            self.assertEqual(len(close), len(set(close)), word)
+
+    def test_a_close_word_may_also_be_an_activity_of_its_own(self):
+        """Это не ошибка, и проверять здесь надо обратное.
+
+        «Фитнес-клуб» и «тренажёрный зал» стоят и отдельными видами,
+        и близкими словами друг к другу. Похоже на дубль, но им
+        не является: это разные вывески и разные компании — «Фитнес-клуб
+        Атлант» и «Тренажёрный зал № 1». Выбравший любое из двух
+        должен получить обе — ради этого близкие слова и затевались."""
+        self.assertIn("тренажерный зал", trades.words_for("фитнес-клуб"))
+        self.assertIn("фитнес-клуб", trades.words_for("тренажерный зал"))
+
+
 class RequisitesComeFromTheSite(unittest.TestCase):
     """Без ИНН программа не спросит ни ЕГРЮЛ, ни ФНС, и карточка
     остаётся без руководителя, выручки, численности и года — то есть
@@ -3466,13 +3512,46 @@ class TradeCatalog(unittest.TestCase):
         self.assertTrue(trades.tagged("грузоперевозки"))
         self.assertFalse(trades.tagged("совершенно небывалое занятие"))
 
-    def test_almost_everything_is_searchable_by_tags(self):
+    def test_place_themes_are_searchable_by_tags(self):
         """Список без тегов — это список слов, по которым ничего не
-        найдётся у компаний с выдуманными названиями."""
-        items = [it for g in trades.catalog() for it in g["items"]]
-        weak = [it["q"] for it in items if not it["tagged"]]
-        self.assertLessEqual(len(weak), len(items) // 10,
-                             "без тегов слишком много: %s" % weak)
+        найдётся у компаний с выдуманными названиями: «Дента-Люкс»
+        стоматологией себя не называет.
+
+        Требование только к темам про места. OpenStreetMap описывает
+        то, куда заходят, и металлобазы в нём нет ни одной. Требовать
+        тегов от промышленных тем значило бы либо выкинуть их из
+        каталога, либо привязать к ним тег пошире — и солгать о
+        точности поиска."""
+        for g in trades.catalog():
+            if g["kind"] != "места":
+                continue
+            weak = [it["q"] for it in g["items"] if not it["tagged"]]
+            share = 100 * g["on_map"] // max(1, len(g["items"]))
+            # Большинство — а не число, подобранное под нынешний
+            # список. Несколько услуг без тега в теме про места — норма
+            # (вывоза мусора в карте нет), а вот тема, где по карте не
+            # ищется треть слов, помечена неверно.
+            self.assertGreaterEqual(
+                share, 70,
+                "тема «%s» помечена как «места», но по карте ищется только "
+                "%d%%: %s" % (g["title"], share, weak))
+
+    def test_every_theme_says_how_it_is_searched(self):
+        """Тема без пометки молча считается «бизнесом», и тема
+        про места, забытая в списке, потеряла бы проверку выше —
+        без единого признака, что что-то не так."""
+        for title, _items in trades.GROUPS:
+            self.assertIn(title, trades.KIND, title)
+        self.assertEqual(set(trades.KIND) - {t for t, _ in trades.GROUPS}, set(),
+                         "в KIND есть темы, которых нет в каталоге")
+        for kind in trades.KIND.values():
+            self.assertIn(kind, ("места", "бизнес"), kind)
+
+    def test_every_activity_has_close_words(self):
+        """Одно слово — одна вывеска. Вид без близких слов ищется
+        вдвое хуже соседнего по списку, а почему — не видно."""
+        no = [w for w in trades.all_words() if not trades.ALSO.get(w)]
+        self.assertFalse(no, "без близких слов: %s" % no[:20])
 
     def test_every_word_builds_a_real_query(self):
         from app.sources import osm
@@ -3659,8 +3738,8 @@ class TagsDoNotOverreach(unittest.TestCase):
     def test_the_catalogue_is_wide_now(self):
         """Список из семидесяти слов не покрывал большинства
         занятий, и человек возвращался к пустому полю."""
-        self.assertGreaterEqual(len(trades.GROUPS), 18)
-        self.assertGreaterEqual(len(trades.all_words()), 250)
+        self.assertGreaterEqual(len(trades.GROUPS), 40)
+        self.assertGreaterEqual(len(trades.all_words()), 550)
 
 
 class SearchIsThreeDropdowns(unittest.TestCase):

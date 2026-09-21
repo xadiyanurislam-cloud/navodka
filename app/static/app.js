@@ -681,18 +681,56 @@ function themeApply() {
   tradeFilter();
 }
 
+// Название темы по её номеру — чтобы сказать, где лежит спрятанное.
+function themeTitle(idx) {
+  const opt = $("dd-theme").querySelector(`.dd-opt[data-v="${cssq(idx)}"]`);
+  return opt ? opt.textContent.trim().split("\n")[0].trim() : "";
+}
+
 function tradeFilter() {
   const box = $("dd-trade");
   const q = $("q-text").value.trim().toLowerCase();
   let shown = 0;
+  let elsewhere = null;
   box.querySelectorAll(".dd-opt").forEach((o) => {
-    const hit = !o.dataset.off
-      && (!q || o.dataset.q.toLowerCase().includes(q));
+    const match = !q || o.dataset.q.toLowerCase().includes(q);
+    const hit = !o.dataset.off && match;
     o.hidden = !hit;
     if (hit) shown += 1;
+    else if (match && o.dataset.off && !elsewhere) elsewhere = o;
   });
-  box.querySelector(".dd-none").hidden = shown > 0;
+  const none = box.querySelector(".dd-none");
+  none.hidden = shown > 0;
+  if (shown) return;
+  // Вид есть, но спрятан выбранной темой.
+  //
+  // Самая обидная из возможных подписей — «такого нет» про то, что
+  // есть. Человек набирает «лазерная резка», тема стоит «Медицина» с
+  // прошлого раза, и список честно пуст. С полусотней тем это
+  // случалось бы постоянно, поэтому говорим, где слово лежит, и даём
+  // снять тему одним нажатием.
+  if (elsewhere) {
+    none.innerHTML = `«${esc(elsewhere.dataset.q)}» есть, но в теме
+      «${esc(themeTitle(elsewhere.dataset.theme))}» —
+      <button type="button" class="lnk" data-all-themes>показать все темы</button>`;
+  } else {
+    none.textContent = "Такого вида в списке нет — ищите по своему слову, "
+      + "оно тоже работает";
+  }
 }
+
+// Снять тему, не теряя набранного.
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("[data-all-themes]")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  themePick = "";
+  $("dd-theme").querySelectorAll(".dd-opt").forEach(
+    (o) => o.classList.toggle("is-on", !o.dataset.v));
+  $("dd-theme").querySelector(".dd-val").textContent = "Все темы";
+  themeNote(null);
+  themeApply();
+});
 
 $("dd-theme").querySelector(".dd-list").onclick = (e) => {
   const opt = e.target.closest(".dd-opt");
@@ -703,6 +741,7 @@ $("dd-theme").querySelector(".dd-list").onclick = (e) => {
   $("dd-theme").querySelector(".dd-val").textContent =
     opt.textContent.trim().split("\n")[0].trim();
   themeApply();
+  themeNote(opt);
   ddClose($("dd-theme"));
   // Тему выбрали, а поле вида осталось от прошлого раза — и это та самая
   // путаница, из-за которой «выбрал строительство, а ищет дизайн».
@@ -714,6 +753,38 @@ $("dd-theme").querySelector(".dd-list").onclick = (e) => {
   }
   ddOpen($("dd-trade"));
 };
+
+// Чем ищется выбранная тема — картой или названием.
+//
+// OpenStreetMap описывает места, куда заходят: магазин, клинику,
+// автосервис. Металлобаз, цехов и оптовых поставщиков в карте нет и не
+// будет — их ищут по названию, и в таком деле название как раз всё и
+// говорит: «Уралметаллопрокат» не назовёт себя иначе.
+//
+// Сказать это надо до запуска. Иначе человек выбирает «Металл и
+// металлообработку», получает вдвое меньше, чем по «стоматологии», и
+// решает, что программа стала хуже искать.
+function themeNote(opt) {
+  const note = $("theme-note");
+  if (!opt || !opt.dataset.v) {
+    note.textContent = "Только сужает список ниже. Можно не выбирать — "
+      + "тогда доступны все виды сразу";
+    note.classList.remove("warn-note");
+    return;
+  }
+  if (opt.dataset.kind === "бизнес") {
+    note.innerHTML = `Эта тема ищется <b>по названию</b>: производства и
+      оптовых поставщиков в карте нет. Работают справочники, ЕГРЮЛ и hh —
+      карта принесёт мало. Зато в таком деле название говорит само за
+      себя.`;
+    note.classList.add("warn-note");
+  } else {
+    note.innerHTML = `Ищется по карте: у ${esc(opt.dataset.onmap)} видов
+      этой темы есть тег, и по ним найдутся даже те компании, у которых
+      это не написано в названии.`;
+    note.classList.remove("warn-note");
+  }
+}
 
 // Лежит ли нынешнее слово в выбранной теме.
 function tradeInTheme() {

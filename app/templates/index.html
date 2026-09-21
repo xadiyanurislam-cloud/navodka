@@ -126,15 +126,16 @@
                         <button type="button" class="dd-opt is-on" data-v="">Все темы
                           <em>{{ rubrics|length }} видов</em></button>
                         {% for g in trades %}
-                        <button type="button" class="dd-opt" data-v="{{ loop.index0 }}">{{ g.title }}
-                          <em>{{ g["items"]|length }}</em></button>
+                        <button type="button" class="dd-opt" data-v="{{ loop.index0 }}"
+                                data-kind="{{ g.kind }}" data-onmap="{{ g.on_map }}">{{ g.title }}
+                          <em>{{ g["items"]|length }}{% if g.kind == 'бизнес' %} · по названию{% endif %}</em></button>
                         {% endfor %}
                       </div>
                       <p class="dd-none" hidden>Ничего не подошло</p>
                     </div>
                   </div>
-                  <em class="fld-hint">Только сужает список ниже. Можно не
-                     выбирать — тогда доступны все виды сразу</em>
+                  <em class="fld-hint" id="theme-note">Только сужает список
+                     ниже. Можно не выбирать — тогда доступны все виды сразу</em>
                 </div>
 
                 <div class="fld">

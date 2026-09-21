@@ -372,6 +372,94 @@ TAGS = {
     "мотел": ['["tourism"="motel"]'],
     "база отдыха": ['["tourism"="camp_site"]'],
     "кемпинг": ['["tourism"="camp_site"]'],
+
+    # Производство, опт и услуги бизнесу.
+    #
+    # Тегов у карты здесь меньше: OpenStreetMap описывает места, куда
+    # заходят, а металлобаза и цех по обработке — это не магазин. Что
+    # есть, тем и пользуемся: craft для ремёсел, shop=trade для оптовых
+    # баз, man_made=works для заводов. Остальное честно ищется только по
+    # названию — в таком деле оно как раз и стоит в названии.
+    "металлообработ": ['["craft"="metal_construction"]'],
+    "токарн": ['["craft"="metal_construction"]'],
+    "фрезерн": ['["craft"="metal_construction"]'],
+    "лазерная резка": ['["craft"="metal_construction"]'],
+    "порошковая покраска": ['["craft"="painter"]'],
+    "завод": ['["man_made"="works"]'],
+    "комбинат": ['["man_made"="works"]'],
+    "пилорам": ['["craft"="sawmilling"]'],
+    "деревообработ": ['["craft"="sawmilling"]'],
+    "сруб": ['["craft"="carpenter"]'],
+    "каркасные дома": ['["craft"="carpenter"]', '["office"="construction_company"]'],
+    "столярный цех": ['["craft"="joiner"]'],
+    "арматур": ['["shop"="trade"]'],
+    "профнастил": ['["shop"="trade"]'],
+    "металлочерепиц": ['["shop"="trade"]', '["craft"="roofer"]'],
+    "сэндвич-панел": ['["shop"="trade"]'],
+    "нержавей": ['["shop"="trade"]'],
+    "трубы": ['["shop"="trade"]'],
+    "элеватор": ['["shop"="agrarian"]'],
+    "комбикорм": ['["shop"="agrarian"]'],
+    "ветпрепарат": ['["amenity"="veterinary"]'],
+    "пчеловод": ['["shop"="agrarian"]'],
+    "рыбоводств": ['["shop"="agrarian"]'],
+    "мясопереработ": ['["shop"="butcher"]'],
+    "колбасн": ['["shop"="butcher"]'],
+    "молокозавод": ['["shop"="dairy"]', '["man_made"="works"]'],
+    "хлебозавод": ['["shop"="bakery"]', '["man_made"="works"]'],
+    "пивовар": ['["craft"="brewery"]'],
+    "винодельн": ['["craft"="winery"]'],
+    "гофротар": ['["shop"="trade"]'],
+    "этикетк": ['["craft"="printer"]', '["shop"="copyshop"]'],
+    "упаковочн": ['["shop"="trade"]'],
+    "автокран": ['["shop"="trade"]'],
+    "экскаватор": ['["shop"="trade"]'],
+    "погрузчик": ['["shop"="trade"]'],
+    "компрессор": ['["shop"="trade"]'],
+    "насосное оборудование": ['["shop"="trade"]'],
+    "станк": ['["shop"="trade"]'],
+    "промышленное оборудование": ['["shop"="trade"]'],
+    "видеонаблюден": ['["craft"="electrician"]'],
+    "пожарная сигнализац": ['["craft"="electrician"]'],
+    "огнетушител": ['["shop"="trade"]'],
+    "охрана труда": ['["office"="consulting"]'],
+    "инкассац": ['["office"="financial"]'],
+    "металлолом": ['["amenity"="recycling"]'],
+    "макулатур": ['["amenity"="recycling"]'],
+    "переработка отходов": ['["amenity"="recycling"]'],
+    "прокат оборудован": ['["shop"="trade"]'],
+    "аренда инструмента": ['["shop"="hardware"]', '["shop"="trade"]'],
+    "воздушные шар": ['["shop"="party"]'],
+    "фейерверк": ['["shop"="fireworks"]'],
+    "спецодежд": ['["shop"="clothes"]', '["shop"="trade"]'],
+    "широкоформатная печать": ['["craft"="printer"]', '["shop"="copyshop"]'],
+    "шелкограф": ['["craft"="printer"]'],
+    "сувенирная продукц": ['["shop"="gift"]'],
+    "таблички": ['["craft"="signmaker"]'],
+    "банкротств": ['["office"="lawyer"]'],
+    "арбитраж": ['["office"="lawyer"]'],
+    "регистрация фирм": ['["office"="lawyer"]'],
+    "миграционн": ['["office"="lawyer"]'],
+    "патентн": ['["office"="lawyer"]'],
+    "сертификац": ['["office"="consulting"]'],
+    "метролог": ['["office"="research"]'],
+    "поверка приборов": ['["office"="research"]'],
+    "экспертиз": ['["office"="engineer"]'],
+    "телефони": ['["office"="telecommunication"]'],
+    "медицинское оборудование": ['["shop"="medical_supply"]'],
+    "лабораторное оборудование": ['["shop"="trade"]'],
+    "детские товар": ['["shop"="baby_goods"]'],
+    "коляск": ['["shop"="baby_goods"]'],
+    "робототехник": ['["office"="educational_institution"]'],
+    "спортивное питание": ['["shop"="nutrition_supplements"]'],
+    "рукодели": ['["shop"="craft"]'],
+    "товары для творчества": ['["shop"="craft"]'],
+    "настольные игр": ['["shop"="games"]'],
+    "моделизм": ['["shop"="model"]'],
+    "коллекцион": ['["shop"="collector"]'],
+    "профессиональная косметика": ['["shop"="cosmetics"]'],
+    "гончарн": ['["craft"="pottery"]'],
+    "керамическая мастерская": ['["craft"="pottery"]'],
 }
 
 # Теги OSM по-русски. В карточку и в выгрузку должно попадать
@@ -477,13 +565,19 @@ RUBRIC_RU = {
     "travel_agent": "Туроператор", "guest_house": "Гостевой дом",
     "apartment": "Апартаменты", "motel": "Мотель", "camp_site": "База отдыха",
     "well_drilling": "Бурение скважин",
+    "works": "Завод", "winery": "Винодельня", "brewery": "Пивоварня", "recycling": "Приём вторсырья",
+    "party": "Товары для праздника", "fireworks": "Пиротехника",
+    "baby_goods": "Детские товары", "nutrition_supplements": "Спортивное питание",
+    "craft": "Товары для творчества", "games": "Настольные игры",
+    "model": "Моделизм", "collector": "Коллекционирование",
+    "pottery": "Гончарная мастерская",
 }
 
 
 def rubric_ru(tags):
     """Понятное название рубрики из тегов OSM."""
     for key in ("amenity", "shop", "office", "healthcare", "leisure",
-                "tourism", "craft"):
+                "tourism", "craft", "man_made"):
         v = (tags.get(key) or "").strip()
         if v:
             return RUBRIC_RU.get(v, v.replace("_", " "))
