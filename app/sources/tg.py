@@ -31,7 +31,6 @@ contacts.importContacts: номера загружаются как контак
 Без входа модуль не делает ничего и говорит об этом словами.
 """
 import asyncio
-import base64
 import json
 import os
 import re
@@ -264,9 +263,19 @@ def import_session(conf, session_string):
             await client.disconnect()
             client2 = TelegramClient(session_path(conf.get("data_dir", "")),
                                      *_keys(conf), **_opts(conf))
-            client2.session.set_dc(*_dc(client.session))
-            client2.session.auth_key = client.session.auth_key
-            client2.session.save()
+            try:
+                client2.session.set_dc(*_dc(client.session))
+                client2.session.auth_key = client.session.auth_key
+                client2.session.save()
+            finally:
+                # Закрыть обязательно: файл сессии — база SQLite, и
+                # открытое соединение держит файл. На Windows это
+                # означает, что «Забыть аккаунт» его не удалит, а на
+                # каждый импорт остаётся лишний дескриптор.
+                try:
+                    client2.session.close()
+                except Exception:
+                    pass
             return {"ok": True, "who": who}
         finally:
             try:

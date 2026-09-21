@@ -815,7 +815,6 @@ class DirectorInSocials(unittest.TestCase):
     def test_service_key_refusal_is_told_apart_from_empty_result(self):
         """«Не нашлось» и «этим ключом так нельзя» — разные исходы: во
         втором случае повторять запрос на каждой компании незачем."""
-        from app.sources import vk
         code = io.open(os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "app/sources/vk.py"), encoding="utf-8").read()
@@ -3055,6 +3054,121 @@ class TelegramImportsTwoFiles(unittest.TestCase):
         got = self.cl.post("/api/tg/import", data={},
                            content_type="multipart/form-data").get_json()
         self.assertFalse(got["ok"])
+
+
+class RubbishInputDoesNotCrash(unittest.TestCase):
+    """Пятисотая ошибка — всегда ошибка в коде, а не в запросе.
+
+    В поле, где ожидается строка, приходил словарь — и .strip() ронял
+    весь запрос. Снаружи это выглядит как «программа не отвечает», а в
+    журнале остаётся трассировка вместо понятного отказа.
+    """
+
+    def setUp(self):
+        db.init()
+        self.cl = web.create_app().test_client()
+
+    CASES = [
+        ("/api/find", {"query": {"вложенный": "объект"}}),
+        ("/api/find", {"query": ["список"]}),
+        ("/api/find", {"cities": 123}),
+        ("/api/find", {"cities": "Москва"}),
+        ("/api/search", {"queries": [{"вложенный": "объект"}]}),
+        ("/api/search", {"queries": "одна строка"}),
+        ("/api/search", {"text": {"a": 1}}),
+        ("/api/search", {"areas": [1, 2, None]}),
+        ("/api/searches", {"name": {"a": 1}, "query": "x"}),
+        ("/api/gis", {"query": {"a": 1}, "region": {"b": 2}}),
+        ("/api/tg/proxy", {"proxy": {"a": 1}}),
+        ("/api/ai/queries", {"icp": {"a": 1}}),
+        ("/api/open", {"url": {"a": 1}}),
+        ("/api/settings", {"gis_key": {"a": 1}, "ai_url": ["x"]}),
+        ("/api/company/1", {"note": {"a": 1}}),
+        ("/api/company/1", {"stage": ["x"]}),
+        ("/api/company/1", {"next_date": {"a": 1}}),
+    ]
+
+    def test_no_route_falls_over_on_wrong_types(self):
+        for url, body in self.CASES:
+            got = self.cl.post(url, json=body)
+            self.assertLess(got.status_code, 500,
+                            "%s упал на %r" % (url, body))
+
+    def test_a_string_in_a_list_field_is_not_split_into_letters(self):
+        """Строка итерируется, и «Москва» в поле списка превращалась в
+        шесть городов по одной букве."""
+        app = web.create_app()
+        with app.test_request_context():
+            self.cl.post("/api/find", json={"query": "стоматология",
+                                            "cities": "Москва"})
+        row = db.conn().execute(
+            "SELECT params FROM tasks WHERE kind='find' ORDER BY id DESC "
+            "LIMIT 1").fetchone()
+        cities = json.loads(row["params"])["cities"]
+        self.assertEqual(cities, ["Москва"])
+
+
+class NothingShadowsAModule(unittest.TestCase):
+    """Переменная цикла с именем модуля затеняет его до конца функции.
+    В этом файле так уже ловились: net затенялся в обогащении, а потом
+    то же случилось с tg. Ошибка молчит ровно до первого обращения к
+    модулю после цикла, и тогда падает с «str has no attribute»."""
+
+    def test_loop_variables_do_not_take_module_names(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8").read()
+        modules = set(re.findall(r"^from \.sources import \(?([^)\n]+)",
+                                 src, re.M))
+        names = set()
+        for chunk in modules:
+            for part in chunk.split(","):
+                part = part.strip()
+                if " as " in part:
+                    part = part.split(" as ")[1].strip()
+                if part:
+                    names.add(part)
+        names |= {"db", "net", "ai", "geo", "score", "settings", "social"}
+        for name in sorted(names):
+            hit = re.search(r"^\s*for\s+%s\s*[,\s]" % re.escape(name),
+                            src, re.M)
+            self.assertIsNone(
+                hit, "переменная цикла «%s» затеняет одноимённый модуль" % name)
+
+
+class SessionFileIsNotHeldOpen(unittest.TestCase):
+    """Файл сессии — база SQLite. Открытое соединение держит файл, и на
+    Windows «Забыть аккаунт» его не удалит: os.remove упрётся в занятый
+    файл, а человеку скажут, что аккаунт забыт."""
+
+    def test_import_closes_the_session_it_wrote(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "sources", "tg.py"), encoding="utf-8").read()
+        block = src[src.index("def import_session("):]
+        block = block[:block.index("\ndef _dc")]
+        self.assertIn("client2.session.close()", block,
+                      "соединение с записанным файлом сессии не закрывается")
+
+    def test_forget_reports_the_truth(self):
+        """Кнопка «Забыть аккаунт» сообщала об успехе, не глядя на ответ."""
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8").read()
+        block = js[js.index('$("btn-tg-forget").onclick'):]
+        block = block[:block.index("};")]
+        self.assertIn('post("/api/tg/forget"', block)
+        self.assertIn("d.ok", block,
+                      "ответ сервера не проверяется — отчёт об успехе всегда")
+
+
+class DiagnosticsSaysWhy(unittest.TestCase):
+    """Экран диагностики существует ради причины отказа. «Не дозвонился»
+    без неё не отличает обрыв связи от блокировки провайдером."""
+
+    def test_transport_failure_carries_the_reason(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "diag.py"), encoding="utf-8").read()
+        block = src[src.index("for t in net.hh_transports():"):]
+        block = block[:block.index("ms = int(")]
+        self.assertIn("str(e)", block, "причина отказа выбрасывается")
 
 
 class TelegramProxy(unittest.TestCase):

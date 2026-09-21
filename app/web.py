@@ -196,7 +196,7 @@ def create_app():
     def api_find():
         """Поиск по виду деятельности: «стоматология», «грузоперевозки»."""
         d = request.get_json(silent=True) or {}
-        query = (d.get("query") or "").strip()
+        query = _text(d.get("query"))
         if not query:
             return jsonify(ok=False, error="впишите, кого ищем")
         # Пустой список городов означал «Россия целиком», а это отключает
@@ -212,6 +212,41 @@ def create_app():
         db.set_setting("last_find", json.dumps(params, ensure_ascii=False))
         return jsonify(ok=True, task_id=db.create_task("find", params))
 
+    def _text(value, limit=0):
+        """Строка из того, что пришло в запросе.
+
+        Снаружи приходит JSON, и в поле, где ожидается строка, может
+        оказаться словарь, число или список. Раньше на этом падал весь
+        запрос: .strip() у словаря нет, и вместо ответа человек получал
+        пятисотую ошибку. Приводим к строке молча — это ввод, а не
+        данные из базы, и спорить с ним незачем.
+
+        limit=0 означает «не обрезать»: обрезка там, где её не было,
+        молча испортила бы длинные поля вроде описания клиента.
+        """
+        if value is None or isinstance(value, (dict, list, tuple, set, bool)):
+            return ""
+        out = str(value).strip()
+        return out[:limit] if limit else out
+
+    def _texts(value, limit=120):
+        """Список строк из того, что пришло. Одна строка — список из неё.
+
+        Строка тоже итерируется, и без этой оговорки «москва» в поле
+        списка превращалась в шесть городов по одной букве.
+        """
+        if value is None or isinstance(value, (str, bytes)):
+            one = _text(value, limit)
+            return [one] if one else []
+        if not isinstance(value, (list, tuple, set)):
+            return []
+        out = []
+        for item in value:
+            got = _text(item, limit)
+            if got:
+                out.append(got)
+        return out
+
     def _find_params(d):
         """Условия поиска по виду деятельности — как их берёт задача.
 
@@ -221,8 +256,8 @@ def create_app():
         каждое по-своему, разъезжаются на первой же правке.
         """
         return {
-            "query": (d.get("query") or "").strip()[:120],
-            "cities": [str(c) for c in (d.get("cities") or [])][:14],
+            "query": _text(d.get("query")),
+            "cities": _texts(d.get("cities"), 80)[:14],
             "pages": num(d.get("pages"), 3, 1, 10),
             "limit": num(d.get("limit"), 200, 10, 5000),
             "sources": {
@@ -246,10 +281,10 @@ def create_app():
         сохраняются под именем, и повторяются позже. Три места, считающие
         их каждое по-своему, разъезжаются на первой же правке.
         """
-        queries = [q.strip() for q in (d.get("queries") or []) if q.strip()]
+        queries = _texts(d.get("queries"))
         if not queries:
-            queries = [(d.get("text") or "").strip() or hh.PRESETS["Отдел продаж"]]
-        areas = [str(a) for a in (d.get("areas") or []) if str(a).strip()]
+            queries = [_text(d.get("text")) or hh.PRESETS["Отдел продаж"]]
+        areas = _texts(d.get("areas"), 16)
         return {
             "queries": queries[:12],
             "areas": areas[:8] or [str(d.get("area") or "113")],
@@ -283,7 +318,7 @@ def create_app():
     @app.post("/api/searches")
     def api_searches_save():
         d = request.get_json(silent=True) or {}
-        name = (d.get("name") or "").strip()
+        name = _text(d.get("name"), 80)
         if not name:
             return jsonify(ok=False, error="без названия набор не найти потом")
         kind = "find" if (d.get("kind") == "find") else "hh_search"
@@ -327,10 +362,10 @@ def create_app():
     def api_gis():
         d = request.get_json(silent=True) or {}
         task_id = db.create_task("gis_search", {
-            "query": (d.get("query") or "").strip(),
+            "query": _text(d.get("query")),
             # Город приходит названием: номер региона есть не у всех, и
             # для остальных нужны координаты — искать по ним 2ГИС умеет.
-            "city": (d.get("region") or "").strip(),
+            "city": _text(d.get("region"), 80),
             "pages": num(d.get("pages"), 2, 1, 10),
         })
         return jsonify(ok=True, task_id=task_id)
@@ -356,7 +391,7 @@ def create_app():
     @app.post("/api/tg/code")
     def api_tg_code():
         d = request.get_json(silent=True) or {}
-        phone = (d.get("phone") or "").strip()
+        phone = _text(d.get("phone"), 32)
         if not phone:
             return jsonify(ok=False, error="Впишите номер телефона")
         api_id, api_hash = _tg_keys()
@@ -372,8 +407,8 @@ def create_app():
         if not api_id or not api_hash:
             return jsonify(ok=False, error="Сначала впишите api_id и api_hash")
         return jsonify(tg.sign_in(
-            tg.conf_from_db(), (d.get("phone") or "").strip(),
-            (d.get("code") or "").strip(), (d.get("password") or "").strip()))
+            tg.conf_from_db(), _text(d.get("phone"), 32),
+            _text(d.get("code"), 16), _text(d.get("password"), 256)))
 
     @app.post("/api/tg/account")
     def api_tg_account():
@@ -492,7 +527,7 @@ def create_app():
         """Проверяем адрес прокси до сохранения: опечатка должна быть
         видна сразу, а не таймаутом на первой проверке номеров."""
         d = request.get_json(silent=True) or {}
-        url = (d.get("proxy") or "").strip()
+        url = _text(d.get("proxy"), 500)
         try:
             tg.make_proxy(url)
         except tg.BadProxy as e:
@@ -538,9 +573,9 @@ def create_app():
     @app.post("/api/ai")
     def api_ai():
         d = request.get_json(silent=True) or {}
-        db.set_setting("ai_icp", (d.get("icp") or "").strip())
-        db.set_setting("ai_offer", (d.get("offer") or "").strip())
-        db.set_setting("ai_terms", (d.get("terms") or "").strip())
+        db.set_setting("ai_icp", _text(d.get("icp")))
+        db.set_setting("ai_offer", _text(d.get("offer")))
+        db.set_setting("ai_terms", _text(d.get("terms")))
         threads = num(d.get("threads"), 4, 1, 8)
         db.set_setting("ai_threads", str(threads))
         task_id = db.create_task("ai", {
@@ -600,7 +635,7 @@ def create_app():
         этим лежит шаг, на котором обычно и промахиваются.
         """
         d = request.get_json(silent=True) or {}
-        icp = (d.get("icp") or "").strip()
+        icp = _text(d.get("icp"))
         if not icp:
             return jsonify(ok=False, error="опишите, кого ищете")
         data, err = ai.suggest_queries(icp)
@@ -647,7 +682,7 @@ def create_app():
         дороги обратно: остаётся закрывать программу целиком. Поэтому все
         внешние ссылки уходят сюда, а отсюда — в системный браузер.
         """
-        url = ((request.get_json(silent=True) or {}).get("url") or "").strip()
+        url = _text((request.get_json(silent=True) or {}).get("url"), 2000)
         if not url.startswith(("http://", "https://")):
             return jsonify(ok=False, error="ссылка не похожа на адрес", url=url)
         ok, err = _open_outside(url)
@@ -999,13 +1034,15 @@ def create_app():
     @app.post("/api/company/<int:cid>")
     def api_company_update(cid):
         d = request.get_json(silent=True) or {}
-        patch = {k: d[k] for k in ("stage", "note", "next_step", "next_date")
-                 if k in d}
+        # Приводим к строкам на границе: дальше значения уходят прямо в
+        # SQLite, а он словарь не принимает и роняет запрос целиком.
+        patch = {k: _text(d[k], 2000) for k in
+                 ("stage", "note", "next_step", "next_date") if k in d}
         # Дата приходит из поля ввода в виде ГГГГ-ММ-ДД; всё остальное —
         # не дата, и в базу ему попадать незачем: по этому полю идёт
         # отбор «на сегодня».
         if "next_date" in patch:
-            val = (patch["next_date"] or "").strip()
+            val = _text(patch["next_date"], 10)
             patch["next_date"] = val if re.match(r"^\d{4}-\d{2}-\d{2}$", val) else ""
         # Смена стадии назначает следующий шаг, если его ещё нет.
         #
@@ -1049,7 +1086,7 @@ def create_app():
                     "tg_api_id", "tg_api_hash", "tg_phone",
                     "tg_proxy"):
             if key in d:
-                db.set_setting(key, (d[key] or "").strip())
+                db.set_setting(key, _text(d[key], 500))
         return jsonify(ok=True)
 
     def _company_facts(cid):

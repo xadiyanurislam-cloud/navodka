@@ -500,8 +500,13 @@ def task_enrich(task_id, params):
                 emails_found.append(addr)
             for ph in res["phones"]:
                 db.add_contact(cid, "phone", ph, "general", 90, "unchecked", "сайт компании")
-            for tg in res["telegram"]:
-                db.add_contact(cid, "telegram", "@" + tg, "general", 70, "unchecked", "сайт компании")
+            # Имя переменной не tg: так зовётся модуль проверки номеров,
+            # и цикл затенял его до конца функции — ровно та ловушка, про
+            # которую ниже сказано в случае с net. Обращений к модулю
+            # после цикла сейчас нет, но это везение, а не устройство.
+            for nick in res["telegram"]:
+                db.add_contact(cid, "telegram", "@" + nick, "general", 70,
+                               "unchecked", "сайт компании")
 
             # Соцсети компании — теми адресами, что она сама опубликовала.
             # Имя переменной не net: так зовётся модуль сетевого слоя, и
