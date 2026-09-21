@@ -1325,3 +1325,8 @@ details.ct-more > summary:hover{text-decoration:underline}
 .cs-boss{margin:0 0 6px;font-size:13px;color:var(--ink-2)}
 .cs-boss b{color:var(--ink);font-weight:600}
 .dim{color:var(--ink-3)}
+
+
+/* Ручной поиск людей: ссылки, по которым ходит человек, а не программа. */
+.hand-find em{display:block;margin-top:6px;font-style:normal;font-size:11px;
+  line-height:1.5;color:var(--ink-3)}

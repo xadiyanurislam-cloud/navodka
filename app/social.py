@@ -135,18 +135,46 @@ def near_person(pages_text, fio, window=6):
 def search_links(fio, company="", region=""):
     """Готовые запросы для поиска вручную.
 
-    Программа сюда не ходит и ничего не сохраняет: по имени надёжно не
-    найти — однофамильцев в любом городе сотни, — а автоматически
+    Программа сюда не ходит и ничего не сохраняет: автоматически
     собранная база личных страниц это уже профилирование частного лица.
     Человек открывает ссылку, смотрит и решает сам.
+
+    Два случая, и они разные.
+
+    Имя известно — ищем по имени. Оговорка та же, что и была:
+    однофамильцев в любом городе сотни, и проверять, тот ли это человек,
+    приходится глазами.
+
+    Имени нет — ищем по названию компании, и тогда делового поиска это
+    касается больше, чем общего. В TenChat человек сам указывает, где он
+    работает и кем: поиск по компании возвращает тех, кто это о себе
+    заявил, а не однофамильцев. Для «найти руководителя, когда ФИО
+    неизвестно» это единственный способ, который вообще работает, —
+    и раньше в таком случае программа не предлагала ничего.
     """
     fio = (fio or "").strip()
-    if not fio:
-        return []
-    who = quote(fio)
-    both = quote("%s %s" % (fio, company)).strip()
-    return [
-        ("ВКонтакте", "https://vk.com/search/people?q=%s" % who),
-        ("TenChat", "https://tenchat.ru/search?query=%s" % who),
-        ("Яндекс", "https://yandex.ru/search/?text=%s" % both),
-    ]
+    company = (company or "").strip()
+    out = []
+    if fio:
+        who = quote(fio)
+        both = quote(("%s %s" % (fio, company)).strip())
+        out += [
+            ("ВКонтакте", "https://vk.com/search/people?q=%s" % who),
+            ("TenChat", "https://tenchat.ru/search?query=%s" % who),
+            ("Яндекс", "https://yandex.ru/search/?text=%s" % both),
+        ]
+    elif company:
+        # Название юрлица целиком в поиск по людям не годится: «ООО» и
+        # кавычки в профилях не пишут.
+        short = re.sub(r'^(ООО|АО|ПАО|ЗАО|ИП|НАО|ОАО)\s+', "", company, flags=re.I)
+        short = short.strip(' "\u00ab\u00bb\'')
+        name = quote(short)
+        out += [
+            ("TenChat — сотрудники", "https://tenchat.ru/search?query=%s" % name),
+            ("Яндекс — руководитель",
+             "https://yandex.ru/search/?text=%s" % quote(
+                 "%s генеральный директор" % short)),
+            ("ВКонтакте — сообщество",
+             "https://vk.com/search?c%%5Bq%%5D=%s&c%%5Bsection%%5D=communities" % name),
+        ]
+    return out

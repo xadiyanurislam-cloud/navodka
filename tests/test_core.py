@@ -1276,6 +1276,49 @@ class EnrichmentFillsTheRowItWasGiven(unittest.TestCase):
                                      "проверьте, не разошлись ли два пути записи")
 
 
+class FindingPeopleWhenTheNameIsUnknown(unittest.TestCase):
+    """Когда ФИО руководителя неизвестно, программа не предлагала
+    ничего вовсе — а это как раз тот случай, когда помощь нужна."""
+
+    def test_by_name_when_the_name_is_known(self):
+        got = dict(social.search_links("Иванов Иван", "ООО «Ромашка»"))
+        self.assertIn("TenChat", got)
+        self.assertIn("ВКонтакте", got)
+
+    def test_by_company_when_it_is_not(self):
+        """В TenChat человек сам указывает, где работает: поиск по
+        компании возвращает тех, кто это о себе заявил, а не
+        однофамильцев."""
+        got = dict(social.search_links("", "ООО «Дента-Люкс»"))
+        self.assertTrue(any("TenChat" in t for t in got), got)
+
+    def test_the_legal_form_is_stripped_from_the_query(self):
+        """«ООО» и кавычки в профилях не пишут, и с ними поиск
+        по людям не находит ничего."""
+        url = dict(social.search_links("", "ПАО «ДВМП»"))["TenChat — сотрудники"]
+        self.assertNotIn("%D0%9F%D0%90%D0%9E", url, "«ПАО» осталось в запросе")
+        self.assertNotIn("%C2%AB", url, "кавычки остались в запросе")
+
+    def test_nothing_is_offered_out_of_thin_air(self):
+        self.assertEqual(social.search_links("", ""), [])
+
+    def test_the_program_still_does_not_walk_these_links(self):
+        """Граница та же, что и была: автоматически собранная
+        база личных страниц — это профилирование частного лица."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "worker.py"), encoding="utf-8")
+        with src as fh:
+            text = fh.read()
+        self.assertNotIn("search_links", text,
+                         "обход стал ходить по ссылкам ручного поиска")
+
+    def test_a_tenchat_link_from_the_site_is_still_collected(self):
+        """Ссылку, которую компания опубликовала сама, брать
+        можно и нужно: её затем и разместили."""
+        got = social.from_text('<a href="https://tenchat.ru/denta">TenChat</a>')
+        self.assertEqual(got.get("tenchat"), ["denta"])
+
+
 class TheCatalogueIsBig(unittest.TestCase):
     """Список, в котором нет вашего дела, бесполезен ровно так
     же, как пустое поле."""
