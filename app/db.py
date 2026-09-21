@@ -216,7 +216,11 @@ def init():
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s"
                           % (table, col, kind))
     c.commit()
-    _repair(c)
+    # Починка разовая: она проходит по всей таблице, а после первого
+    # раза чинить нечего — новые записи приходят уже разобранными.
+    if get_setting(_REPAIR_MARK) != "1":
+        _repair(c)
+        set_setting(_REPAIR_MARK, "1")
 
 
 # Две ошибки успели попасть в уже собранные базы: в «чем занимается»
@@ -224,6 +228,7 @@ def init():
 # Разбор и то и другое чинит для новых компаний, но старые карточки от
 # этого сами собой не исправятся — поэтому чиним их один раз здесь.
 _JUNK = ("http-equiv", "charset=", "content-type", "<meta")
+_REPAIR_MARK = "repaired_meta_and_utm"
 
 
 def _host_only(url):

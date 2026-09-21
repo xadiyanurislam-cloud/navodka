@@ -1815,7 +1815,7 @@ function contactRow(c) {
   }
   // Найденный адрес и выведенный по схеме — вещи разной надёжности, и это
   // должно читаться с первого взгляда.
-  const guess = (c.source || "").indexOf("схеме") >= 0;
+  const guess = /схеме|догадк/i.test(c.source || "");
   let mk = "";
   if (c.verified === "ok") mk = `<span class="mk ok">живой</span>`;
   else if (c.verified === "catch_all") mk = `<span class="mk ca">домен ловит всё</span>`;

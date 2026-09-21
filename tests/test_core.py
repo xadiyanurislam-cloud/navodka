@@ -313,7 +313,7 @@ class Storage(unittest.TestCase):
              'text/html; charset=utf-8" http-equiv="content-type"/> '
              "Сухие строительные смеси Старатели", cid))
         db.conn().commit()
-        db.init()
+        db._repair(db.conn())
         row = db.conn().execute("SELECT site, activity FROM companies "
                                 "WHERE id=?", (cid,)).fetchone()
         self.assertEqual(row["site"], "dnkom.ru")
@@ -326,12 +326,28 @@ class Storage(unittest.TestCase):
             ("https://helenmedia.ru", "Клиника эстетической медицины "
              "в центре Москвы", cid))
         db.conn().commit()
-        db.init()
+        db._repair(db.conn())
         row = db.conn().execute("SELECT site, activity FROM companies "
                                 "WHERE id=?", (cid,)).fetchone()
         self.assertEqual(row["site"], "https://helenmedia.ru")
         self.assertEqual(row["activity"],
                          "Клиника эстетической медицины в центре Москвы")
+
+    def test_repair_runs_once_and_then_keeps_quiet(self):
+        """Проход по всей таблице нужен один раз: новые записи приходят
+        уже разобранными, а на большой базе это лишняя работа на каждом
+        запуске."""
+        db.set_setting(db._REPAIR_MARK, "")
+        db.init()
+        self.assertEqual(db.get_setting(db._REPAIR_MARK), "1")
+        cid, _ = db.upsert_company({"name": "Позже", "inn": "7700000001"})
+        db.conn().execute("UPDATE companies SET site=? WHERE id=?",
+                          ("x.ru/?utm_source=y", cid))
+        db.conn().commit()
+        db.init()
+        row = db.conn().execute("SELECT site FROM companies WHERE id=?",
+                                (cid,)).fetchone()
+        self.assertEqual(row["site"], "x.ru/?utm_source=y")
 
     def test_new_columns_added_to_old_database(self):
         """Обновление программы не должно ронять базу, заведённую прошлой
