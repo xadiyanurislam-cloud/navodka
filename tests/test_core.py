@@ -1198,6 +1198,188 @@ class RunLimit(unittest.TestCase):
             osm.search = was
 
 
+class TodaySuggestsWhomToCall(unittest.TestCase):
+    """Главный экран при полной базе сообщал «ничего не
+    назначено» и оставлял человека одного. Кому звонить первым,
+    программа знает — за это и считался балл."""
+
+    def setUp(self):
+        db.init()
+        c = db.conn()
+        for t in ("contacts", "signals", "notes", "companies"):
+            c.execute("DELETE FROM %s" % t)
+        c.commit()
+        self.cl = web.create_app().test_client()
+
+    def add(self, name, score, **kw):
+        cid, _ = db.upsert_company(dict(name=name, score=score, **kw))
+        return cid
+
+    def test_the_best_unworked_companies_are_offered(self):
+        a = self.add("Сильная", 90)
+        b = self.add("Слабая", 10)
+        db.add_contact(a, "phone", "+79160000001")
+        db.add_contact(b, "phone", "+79160000002")
+        got = self.cl.get("/api/today").get_json()["suggest"]
+        self.assertEqual([r["name"] for r in got], ["Сильная", "Слабая"])
+
+    def test_a_company_with_no_way_to_call_is_not_offered(self):
+        """Предложить позвонить туда, куда нечем звонить, —
+        хуже, чем не предложить ничего."""
+        self.add("Без контактов", 99)
+        self.assertEqual(self.cl.get("/api/today").get_json()["suggest"], [])
+
+    def test_a_company_already_in_work_is_not_offered_again(self):
+        cid = self.add("В работе", 99)
+        db.add_contact(cid, "phone", "+79160000003")
+        # Стадию ставит человек, а не источник: при записи
+        # найденного это поле не трогается вовсе.
+        db.update_company_fields(cid, {"stage": "в работе"})
+        self.assertEqual(self.cl.get("/api/today").get_json()["suggest"], [])
+
+    def test_a_company_with_a_date_is_not_offered_but_is_due(self):
+        """У неё уже есть свой день — предлагать её заново
+        значит предложить сделать дважды одно и то же."""
+        cid = self.add("Назначена", 99)
+        db.add_contact(cid, "phone", "+79160000004")
+        db.update_company_fields(cid, {"next_date": "2020-01-01",
+                                       "next_step": "связаться"})
+        d = self.cl.get("/api/today").get_json()
+        self.assertEqual(d["suggest"], [])
+        self.assertEqual([r["name"] for r in d["due"]], ["Назначена"])
+
+    def test_the_phone_of_the_boss_comes_first(self):
+        """Мобильный руководителя и номер приёмной — разные
+        разговоры, и предлагать надо первый."""
+        cid = self.add("Два номера", 50)
+        db.add_contact(cid, "phone", "+74950000000", owner="general")
+        db.add_contact(cid, "phone", "+79161111111", owner="director")
+        got = self.cl.get("/api/today").get_json()["suggest"]
+        self.assertEqual(got[0]["phone"], "+79161111111")
+
+    def test_the_screen_offers_a_button_not_just_a_list(self):
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8")
+        with js as fh:
+            text = fh.read()
+        self.assertIn("function suggestBlock", text)
+        self.assertIn("data-take", text)
+
+
+class DeadLinksAreNotLinks(unittest.TestCase):
+    """В поле «сайт» у компании из справочника лежит что
+    угодно. <a href=""> — это ссылка на саму страницу: выглядит
+    как рабочий адрес, а нажатие перезагружает программу."""
+
+    def setUp(self):
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8")
+        with js as fh:
+            self.js = fh.read()
+
+    def test_nothing_builds_an_anchor_from_a_raw_safe_url(self):
+        """Шаблон `<a href="${safeUrl(...)}"` даёт пустой href на
+        отброшенном адресе. Пусть останется только там, где
+        адрес строит сама программа, а не приходит из источника."""
+        self.assertIn("function link(url, text, cls)", self.js)
+        # Сайт компании всегда через link().
+        self.assertNotIn('<a href="${safeUrl(c.site)}"', self.js)
+        self.assertNotIn('<a href="${safeUrl(r.site)}"', self.js)
+
+    def test_a_rejected_address_is_still_shown(self):
+        """Видеть мусор, пришедший из источника, полезно —
+        просто нажимать на него не надо."""
+        self.assertIn('class="dead"', self.js)
+
+    def test_a_phone_never_breaks_and_never_gets_cut(self):
+        """«+7 495 123-45-6» выглядит как настоящий номер, хотя
+        это уже другой номер."""
+        css = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "static", "app.css"), encoding="utf-8")
+        with css as fh:
+            text = fh.read()
+        self.assertIn(".ct .val.tel{white-space:nowrap", text)
+        self.assertIn("flex:0 0 auto", text.split(".ct .val.tel{")[1][:120])
+        self.assertIn('c.kind === "phone" ? " tel" : ""', self.js)
+
+
+class PostsBelongToTheRightPeople(unittest.TestCase):
+    """Должность, приписанная не тому человеку, — худшая ошибка
+    из возможных для списка на обзвон: человеку звонят, называя
+    чужую должность."""
+
+    TEAM = ["Наша команда",
+            "Генеральный директор", "Иванов Иван Иванович",
+            "Главный врач", "Сидорова Мария Сергеевна",
+            "Коммерческий директор", "Кузнецов Олег Петрович"]
+
+    def posts(self, lines):
+        return {p["fio"]: p["post"] for p in site.people([lines])}
+
+    def test_a_neighbour_does_not_steal_a_post(self):
+        """Окно в три строки накрывает и соседа по списку, и
+        главный врач становился генеральным директором — просто
+        потому, что его строка попала в чужое окно первой."""
+        got = self.posts(self.TEAM)
+        self.assertEqual(got.get("Иванов Иван Иванович"), "генеральный директор")
+        self.assertEqual(got.get("Сидорова Мария Сергеевна"), "главный врач")
+        self.assertEqual(got.get("Кузнецов Олег Петрович"), "коммерческий директор")
+
+    def test_the_longest_match_wins(self):
+        """«Коммерческий директор» содержит «директора», и бралось
+        первое совпадение — то есть менее точное."""
+        got = self.posts(["Финансовый директор", "Петров Пётр Петрович"])
+        self.assertEqual(got.get("Петров Пётр Петрович"), "финансовый директор")
+
+    def test_a_manager_nearby_gets_nothing(self):
+        """Менеджер через строку от руководителя получал его
+        должность. Одна должность — тот, кто к ней ближе."""
+        got = self.posts(["Руководитель отдела продаж",
+                          "Смирнова Анна Ивановна",
+                          "Менеджер", "Пупкин Вася Петрович"])
+        self.assertIn("Смирнова Анна Ивановна", got)
+        self.assertNotIn("Пупкин Вася Петрович", got)
+
+    def test_two_people_under_one_post_both_stay(self):
+        """«Директора: Иванов, Петров» — одна строка и два
+        настоящих директора: при равном расстоянии берём всех."""
+        got = self.posts(["Директора: Иванов Иван Иванович, "
+                          "Петров Пётр Петрович"])
+        self.assertEqual(len(got), 2, got)
+
+    def test_the_boss_set_is_named_not_sliced(self):
+        """Срез «первые восемь в списке» менял смысл молча, стоило
+        дописать должность в начало."""
+        src = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "sources", "site.py"), encoding="utf-8")
+        with src as fh:
+            text = fh.read()
+        self.assertNotIn("BOSS_POSTS[:", text)
+        self.assertIn("генеральный директор", site.BOSS)
+        self.assertNotIn("менеджер", site.BOSS)
+
+    def test_a_catalogue_pretending_to_be_a_team_page_is_cheap(self):
+        """Страница, где слово «директор» стоит в каждой строке,
+        разбиралась две секунды процессора на компанию. На прогоне
+        в полторы сотни компаний это восемь минут, потраченных ни
+        на что."""
+        import time as _t
+        pages = [["Генеральный директор Иванов Иван Иванович %d" % i
+                  for i in range(5000)] for _ in range(12)]
+        t0 = _t.perf_counter()
+        site.people(pages)
+        spent = _t.perf_counter() - t0
+        self.assertLess(spent, 0.5, "разбор занял %.2f с" % spent)
+
+    def test_a_string_instead_of_lines_is_not_walked_letter_by_letter(self):
+        """Перебор страницы по буквам — сотни тысяч холостых
+        проверок и ноль находок, причём молча."""
+        import time as _t
+        t0 = _t.perf_counter()
+        self.assertEqual(site.people(["директор " * 60000]), [])
+        self.assertLess(_t.perf_counter() - t0, 0.1)
+
+
 class RepeatOnSchedule(unittest.TestCase):
     """Повторный поиск по той же теме приносит ту же тысячу
     компаний, и десять новых в ней глазами не найти."""

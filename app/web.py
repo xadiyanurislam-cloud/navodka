@@ -742,7 +742,30 @@ def create_app():
             "ORDER BY id DESC LIMIT 8")]
         по_стадиям = {r["s"]: r["n"] for r in c.execute(
             "SELECT COALESCE(stage,'new') s, COUNT(*) n FROM companies GROUP BY 1")}
-        return jsonify(ok=True, due=due, fresh=fresh, stages=по_стадиям)
+        # Кому звонить, если на сегодня ничего не назначено.
+        #
+        # Главный экран программы при полной базе сообщал «ничего не
+        # назначено» и оставлял человека одного: дальше он шёл в базу и
+        # сортировал её глазами. Но кому звонить первым, программа знает
+        # — за это и считался балл. Берём тех, до кого ещё не дошли руки,
+        # у кого есть чем связаться, и показываем сразу с телефоном.
+        suggest = [dict(r) for r in c.execute("""
+            SELECT c.id, c.name, c.score, c.director, c.region,
+                   (SELECT value FROM contacts t WHERE t.company_id=c.id
+                     AND t.kind='phone'
+                     ORDER BY (t.owner='director') DESC, t.confidence DESC
+                     LIMIT 1) phone,
+                   (SELECT value FROM contacts t WHERE t.company_id=c.id
+                     AND t.kind='email'
+                     ORDER BY (t.owner='director') DESC, t.confidence DESC
+                     LIMIT 1) email
+            FROM companies c
+            WHERE COALESCE(c.stage,'new')='new'
+              AND COALESCE(c.next_date,'')=''
+              AND EXISTS (SELECT 1 FROM contacts t WHERE t.company_id=c.id)
+            ORDER BY c.score DESC, c.id DESC LIMIT 8""")]
+        return jsonify(ok=True, due=due, fresh=fresh, stages=по_стадиям,
+                       suggest=suggest)
 
     @app.get("/api/stats")
     def api_stats():

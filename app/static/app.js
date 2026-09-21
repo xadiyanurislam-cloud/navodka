@@ -25,6 +25,25 @@ const esc = (s) => String(s == null ? "" : s)
 //
 // Поэтому список разрешённых схем, а не список запрещённых: запрещать
 // по одной значит однажды забыть про data: или vbscript:.
+// Ссылка — только если по ней действительно можно пойти.
+//
+// safeUrl отбрасывает опасные схемы и возвращает пустую строку, но
+// <a href=""> — это ссылка на саму страницу: выглядит как рабочий адрес
+// сайта, а нажатие перезагружает программу. В поле «сайт» у компании
+// из справочника лежало «javascript:alert(1)», и в списке это
+// показывалось синим, как настоящий адрес.
+//
+// Поэтому отброшенный адрес не исчезает — он остаётся простым текстом:
+// видеть мусор, пришедший из источника, полезно, а нажимать на него не
+// надо.
+function link(url, text, cls) {
+  const href = safeUrl(url);
+  const body = esc(text == null ? url : text);
+  if (!href) return `<span class="dead" title="Адрес не похож на ссылку — ${
+    esc(String(url || "").slice(0, 80))}">${body}</span>`;
+  return `<a ${cls ? `class="${cls}" ` : ""}href="${href}" target="_blank">${body}</a>`;
+}
+
 function safeUrl(u) {
   const s = String(u == null ? "" : u).trim();
   if (/^(https?:|mailto:|tel:)/i.test(s)) return esc(s);
@@ -167,11 +186,20 @@ async function loadToday() {
         ${r.next_date < today() ? "просрочено · " : ""}${ruDate(r.next_date)}</span>
       <button class="btn sm" data-done="${r.id}">Сделано</button>
     </div>`).join("")
-    : `<div class="blank">
-         <p><b>На сегодня ничего не назначено.</b></p>
-         <p>Откройте компанию в базе и впишите в «Что дальше», когда к ней
-            вернуться — она появится здесь в нужный день.</p>
-       </div>`;
+    : suggestBlock(d.suggest || []);
+
+  $("due-list").querySelectorAll("[data-take]").forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      // «В работу» — это и стадия, и напоминание на сегодня: компания
+      // тут же переезжает из предложенных в назначенные, и видно, что
+      // нажатие сработало.
+      await post("/api/company/" + b.dataset.take,
+                 {stage: "в работе", next_step: "связаться", next_date: today()});
+      loadToday(); loadCompanies(); loadStats();
+      toast("Взято в работу — теперь в списке на сегодня");
+    };
+  });
 
   $("due-list").querySelectorAll("[data-done]").forEach((b) => {
     b.onclick = async (e) => {
@@ -1393,6 +1421,38 @@ async function poll() {
 }
 let liveSeen = {done: -1, at: 0};
 
+// Кому звонить, когда на сегодня ничего не назначено.
+//
+// Главный экран при полной базе сообщал «ничего не назначено» и
+// оставлял человека одного — дальше он шёл в базу и сортировал её
+// глазами. Но кому звонить первым, программа знает: за это и считался
+// балл. Показываем сразу с телефоном, чтобы между «открыл программу» и
+// «набрал номер» не было ни одного лишнего шага.
+function suggestBlock(rows) {
+  if (!rows.length) {
+    return `<div class="blank">
+      <p><b>На сегодня ничего не назначено.</b></p>
+      <p>И предложить некого: в базе нет компаний, до которых ещё не
+         дошли руки и у которых есть чем связаться. Начните с поиска —
+         вкладка «Поиск» слева.</p></div>`;
+  }
+  return `<p class="due-lede">На сегодня ничего не назначено. Программа
+     предлагает начать с этих — у них наибольший балл среди тех, до кого
+     ещё не дошли руки.</p>` + rows.map((r) => `
+    <div class="due" data-open="${r.id}">
+      ${scoreBadge(r.score)}
+      <span class="due-main">
+        <b>${esc(r.name)}</b>
+        <i>${r.director ? esc(r.director) + " · " : ""}${esc(r.region || "")}</i>
+      </span>
+      <span class="due-tel">${r.phone
+        ? `<button class="val copyable tel" data-copy="${esc(r.phone)}"
+             title="Нажмите, чтобы скопировать">${esc(prettyPhone(r.phone))}</button>`
+        : (r.email ? `<span class="val">${esc(r.email)}</span>` : "")}</span>
+      <button class="btn sm" data-take="${r.id}">В работу</button>
+    </div>`).join("");
+}
+
 // ── Сводка: цифры кликабельны и ставят фильтр ────────────
 const STAT_FILTER = {lpr_found: "lpr_found", callcenter: "callcenter",
                      with_dir_mail: "director", ai_fit: "ai_fit"};
@@ -1493,7 +1553,8 @@ function contactRow(c) {
     const kind = c.kind === "phone" ? phoneKind(c.value) : "";
     return `<div class="ct ${lpr ? "lpr" : ""}">
       <span class="who">${lpr ? "ГД тел" : (c.kind === "phone" ? "тел" : "tg")}</span>
-      <button class="val copyable" data-copy="${v}">${shown}</button>
+      <button class="val copyable${c.kind === "phone" ? " tel" : ""}"
+              data-copy="${v}">${shown}</button>
       ${lpr ? `<span class="mk ok">найден</span>` : ""}
       ${ctFrom(c, kind)}</div>`;
   }
@@ -1806,9 +1867,9 @@ async function toggleCard(tr, id) {
   const socials = cts.filter((x) => x.kind === "social");
   const rest = cts.filter((x) => x.kind !== "social");
   const links = [
-    c.site ? `<a href="${safeUrl(c.site)}" target="_blank">сайт</a>` : "",
-    sig.hh_url ? `<a href="${safeUrl(sig.hh_url)}" target="_blank">на hh.ru</a>` : "",
-    sig.zakupki_url ? `<a href="${safeUrl(sig.zakupki_url)}" target="_blank">в закупках</a>` : "",
+    c.site ? link(c.site, "сайт") : "",
+    sig.hh_url ? link(sig.hh_url, "на hh.ru") : "",
+    sig.zakupki_url ? link(sig.zakupki_url, "в закупках") : "",
     c.inn ? `<a href="https://bo.nalog.ru/search?query=${esc(c.inn)}" target="_blank">отчётность</a>` : "",
   ].filter(Boolean).join("");
 
@@ -1822,8 +1883,8 @@ async function toggleCard(tr, id) {
             title="Нажмите, чтобы скопировать">ИНН ${esc(c.inn)}</span>` : ""}
           ${c.ogrn ? `<span class="copyable" data-copy="${esc(c.ogrn)}"
             title="Нажмите, чтобы скопировать">ОГРН ${esc(c.ogrn)}</span>` : ""}
-          ${c.site ? `<a href="${safeUrl(c.site)}" target="_blank">${
-            esc(c.site.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</a>` : ""}
+          ${c.site ? link(c.site,
+            c.site.replace(/^https?:\/\//, "").replace(/\/$/, "")) : ""}
           ${c.region ? `<span>${esc(c.region)}</span>` : ""}
           ${c.okved_name ? `<span title="${esc(c.okved || "")}">${esc(c.okved_name)}</span>` : ""}
         </div>
@@ -2259,7 +2320,7 @@ async function loadCompanies(force) {
     const host = r.site ? r.site.replace(/^https?:\/\//, "") : "";
     const meta = [r.inn ? `<span title="ИНН">${esc(r.inn)}</span>` : "",
                   (!r.inn && r.ogrn) ? `<span title="ОГРН">${esc(r.ogrn)}</span>` : "",
-                  host ? `<a href="${safeUrl(r.site)}" target="_blank">${esc(host)}</a>` : "",
+                  host ? link(r.site, host) : "",
                   r.region ? `<span>${esc(r.region)}</span>` : ""].filter(Boolean).join("");
     // Порядок: найденный контакт ГД, потом выведенный по схеме, потом всё
     // остальное. По сырой уверенности info@ с сайта обгонял бы оба.

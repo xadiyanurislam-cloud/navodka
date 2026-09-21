@@ -265,6 +265,17 @@ td:nth-child(6),th:nth-child(6){width:20%}
          color:var(--ink-3);flex:0 0 auto}
 .ct .val{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;
          overflow-wrap:break-word;min-width:0}
+/* Телефон не переносится и не обрезается.
+   Читаемый вид «+7 916 000-02-73» содержит пробелы и дефисы, и в узкой
+   колонке он ломался по ним: номер вставал столбиком по две цифры, а
+   список из таких строк читать нельзя вовсе. Но просто запретить
+   перенос мало: номер тогда обрезался справа, и «+7 495 123-45-6»
+   выглядит как настоящий номер, хотя это уже другой номер. Поэтому
+   номеру запрещено и сжиматься, а подписи рядом с ним при нехватке
+   места уходят на следующую строку: цифры здесь важнее пометок.
+   Длинную почту переносить по-прежнему можно — она из слов. */
+.ct{flex-wrap:wrap}
+.ct .val.tel{white-space:nowrap;flex:0 0 auto;min-width:max-content}
 .ct.lpr .val{color:var(--ink);font-weight:550}
 /* Догадка не должна выглядеть как факт: приглушаем её, чтобы взгляд
    цеплялся за строку с настоящим найденным контактом. */
@@ -337,6 +348,8 @@ td.card-cell{padding:0 14px 20px;background:var(--hover)}
 
 .hint-sm{font-size:11.5px;color:var(--ink-3);line-height:1.5;margin:0 0 8px}
 .ct a.val{color:var(--accent);text-decoration:none}
+/* Отброшенный адрес: виден, но не ссылка и не выглядит ею. */
+.dead{color:var(--ink-3);text-decoration:line-through;cursor:help}
 .ct a.val:hover{text-decoration:underline}
 
 /* ── Доработка интерфейса ───────────────────────────────── */
@@ -1290,3 +1303,13 @@ details.ct-more > summary::after{content:"▾";font-size:10px;opacity:.7}
 details.ct-more[open] > summary::after{content:"▴"}
 details.ct-more > summary:hover{text-decoration:underline}
 .ct-rest{margin-top:4px;padding-top:6px;border-top:1px solid var(--line-2)}
+
+
+/* ── Кому звонить сегодня ─────────────────────────────────
+   Между «открыл программу» и «набрал номер» не должно быть ни одного
+   лишнего шага, поэтому телефон стоит прямо в строке. */
+.due-lede{margin:0 0 4px;padding:12px 16px 0;font-size:12.5px;
+  color:var(--ink-3);line-height:1.5}
+.due-tel{margin-left:auto;font-size:12px;white-space:nowrap;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.due-tel .val{font-size:12px}
