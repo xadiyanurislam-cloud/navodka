@@ -7,6 +7,7 @@
 import datetime
 import json
 import io
+import re
 import os
 import sys
 import tempfile
@@ -1274,6 +1275,272 @@ class EnrichmentFillsTheRowItWasGiven(unittest.TestCase):
                                 (cid,)).fetchone()
         self.assertFalse(row["inn"], "update_company_fields теперь пишет ИНН — "
                                      "проверьте, не разошлись ли два пути записи")
+
+
+class TheFirstRunIsNotAVoid(unittest.TestCase):
+    """Пустая база — это не «ноль компаний», а «ещё не
+    начинали». Первый запуск встречал четырьмя нулями в ряд и
+    двумя пустыми панелями на две трети экрана."""
+
+    def setUp(self):
+        self.js = self.read("app.js")
+
+    @staticmethod
+    def read(name):
+        fh = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", name), encoding="utf-8")
+        with fh:
+            return fh.read()
+
+    def test_an_empty_base_shows_how_to_start(self):
+        self.assertIn("first-run", self.js)
+        self.assertIn("С чего начать", self.js)
+        self.assertIn('data-go="sources"', self.js)
+
+    def test_counters_appear_only_when_there_is_something_to_count(self):
+        self.assertIn('$("tiles").hidden = !total', self.js)
+        self.assertIn('$("today-cols").hidden = !total', self.js)
+
+    def test_the_block_is_in_the_page(self):
+        db.init()
+        html = web.create_app().test_client().get("/").get_data(as_text=True)
+        self.assertIn('id="first-run"', html)
+        self.assertIn('id="today-cols"', html)
+
+
+class TheFunnelShowsWhichCompanyIsWhich(unittest.TestCase):
+    """«ООО «Компания 12»» в колонке шириной в двести пикселей
+    обрезалось до «ООО «Компания 1…», и соседние карточки были
+    неразличимы. Первые шесть знаков у всех одинаковы и ничего
+    не значат."""
+
+    def setUp(self):
+        self.js = TheFirstRunIsNotAVoid.read("app.js")
+
+    def test_the_legal_form_is_dropped_in_the_narrow_column(self):
+        self.assertIn("function shortName", self.js)
+        self.assertIn("FORM_RE", self.js)
+
+    def test_the_full_name_stays_in_the_tooltip(self):
+        """Сокращённое имя удобно читать, но полное иногда
+        нужно целиком — и оно не должно пропасть совсем."""
+        self.assertIn('<b title="${esc(r.name)}">${esc(shortName(r.name))}</b>',
+                      self.js)
+
+
+class NothingCoversWhatYouClick(unittest.TestCase):
+    """Липкая панель «Сохранить» стояла поверх кнопок
+    «Проверить связь» и «Показать доступные модели» — то есть
+    ровно тех, что нужны при настройке ключа ИИ, — и нажать по
+    ним было нельзя даже прокрутив страницу до конца."""
+
+    def test_the_settings_page_leaves_room_under_the_sticky_bar(self):
+        css = TheFirstRunIsNotAVoid.read("app.css")
+        self.assertIn("#view-settings{padding-bottom:", css)
+        m = re.search(r"#view-settings\{padding-bottom:(\d+)px", css)
+        self.assertTrue(m and int(m.group(1)) >= 64,
+                        "запаса под панелью не хватит")
+
+
+class TextIsReadable(unittest.TestCase):
+    """Приглушённый — не значит нечитаемый.
+
+    Именно тихим цветом набраны все пояснения, заголовки
+    колонок, ИНН в списке и подписи к контактам — то есть то, ради
+    чего программу и читают. При контрасте ниже 4,5 к 1 подсказку
+    проще пропустить, чем прочесть.
+
+    Проверяем сами переменные, а не страницу: правка одного
+    значения меняет сотни элементов разом, и ловить это надо в
+    источнике."""
+
+    @staticmethod
+    def _lum(hexcolor):
+        h = hexcolor.lstrip("#")
+        rgb = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+
+        def f(v):
+            v /= 255.0
+            return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+        return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2])
+
+    def ratio(self, a, b):
+        la, lb = self._lum(a), self._lum(b)
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+    def vars_of(self, block):
+        css = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "static", "app.css"), encoding="utf-8")
+        with css as fh:
+            text = fh.read()
+        if block == "dark":
+            text = text[text.index("prefers-color-scheme: dark"):]
+            text = text[:text.index("\n}")]
+        else:
+            text = text[text.index(":root{"):text.index(":root{color-scheme")]
+        return dict(re.findall(r"--([\w-]+)\s*:\s*(#[0-9a-fA-F]{6})", text))
+
+    def test_muted_text_meets_the_bar_in_both_themes(self):
+        for theme in ("light", "dark"):
+            v = self.vars_of(theme)
+            for name in ("ink", "ink-2", "ink-3"):
+                for on in ("bg", "surface", "surface-2"):
+                    got = self.ratio(v[name], v[on])
+                    self.assertGreaterEqual(
+                        got, 4.5,
+                        "%s: --%s на --%s даёт %.2f при норме 4.5"
+                        % (theme, name, on, got))
+
+    def test_the_hierarchy_of_greys_survives(self):
+        """Три уровня текста должны отличаться на глаз. Если
+        ради читаемости сравнять их в один, страница станет
+        ровным полотном, где всё одинаково важно."""
+        for theme in ("light", "dark"):
+            v = self.vars_of(theme)
+            main = self.ratio(v["ink"], v["surface"])
+            second = self.ratio(v["ink-2"], v["surface"])
+            third = self.ratio(v["ink-3"], v["surface"])
+            self.assertGreater(main, second, theme)
+            self.assertGreater(second, third, theme)
+
+    def test_nothing_is_set_smaller_than_ten_and_a_half(self):
+        """«ГД» и «найден» продавец читает весь день.
+
+        Порог именно 10,5, а не 11: прописные с разрядкой
+        читаются на этом размере хорошо, и это обычный приём для
+        подписей к колонкам. А вот 9,5 мало даже для них.
+
+        Значки в ::after — стрелка сортировки, треугольник
+        раскрытия — не текст, их не читают, а узнают по форме."""
+        css = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "static", "app.css"), encoding="utf-8")
+        with css as fh:
+            text = fh.read()
+        bad = []
+        for rule in re.findall(r"([^{}]+)\{([^{}]*)\}", text):
+            sel, body = rule
+            if "::after" in sel or "::before" in sel:
+                continue
+            for size in re.findall(r"font-size:(\d+(?:\.\d+)?)px", body):
+                if float(size) < 10.5:
+                    bad.append((sel.strip()[:40], size))
+        self.assertFalse(bad, "шрифт меньше 10.5px: %s" % bad)
+
+    def test_text_on_a_coloured_chip_follows_the_theme(self):
+        """Чёрный текст на «предупреждающем» цвете читаем в
+        тёмной теме и не читаем в светлой: там этот цвет
+        тёмно-коричневый."""
+        css = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                   "static", "app.css"), encoding="utf-8")
+        with css as fh:
+            text = fh.read()
+        self.assertNotIn("color:#111}", text,
+                         "текст на цветной подложке задан чёрным напрямую")
+
+
+class StopReallyStops(unittest.TestCase):
+    """Нажатие «Остановить» прерывало обход — и тут же ставило в
+    очередь обогащение, которое идёт втрое дольше. Снаружи это
+    выглядело как кнопка, которая ничего не делает."""
+
+    def setUp(self):
+        db.init()
+        c = db.conn()
+        for t in ("tasks", "logs", "companies", "contacts", "signals"):
+            c.execute("DELETE FROM %s" % t)
+        c.commit()
+
+    def tearDown(self):
+        worker._stop.clear()
+
+    def test_a_stopped_run_queues_nothing_after_itself(self):
+        from app.sources import osm
+        was = osm.search
+        try:
+            osm.search = lambda q, city, **kw: []
+            tid = db.create_task("find", {})
+            worker._stop.set()
+            try:
+                worker.task_find(tid, {
+                    "query": "стоматология", "cities": ["Москва"],
+                    "then_enrich": True, "then_ai": True, "synonyms": False,
+                    "sources": {"osm": True, "gis": False, "yandex": False,
+                                "dadata": False, "hh": False}})
+            except RuntimeError:
+                pass
+            # Сама остановленная задача здесь не считается: её статус
+            # меняет поток обхода, а его тут нет.
+            left = [r["kind"] for r in db.conn().execute(
+                "SELECT kind FROM tasks WHERE status='queued' AND id<>?", (tid,))]
+            self.assertEqual(left, [], "после остановки всё равно встала задача")
+        finally:
+            osm.search = was
+
+    def test_the_journal_says_the_chain_was_dropped(self):
+        """Молча отменённая цепочка — это человек, ждущий
+        обогащения, которого не будет."""
+        tid = db.create_task("enrich", {})
+        worker._stop.set()
+        self.assertTrue(worker._chain_stopped(tid, "разбор ИИ"))
+        said = [r["text"] for r in db.conn().execute(
+            "SELECT text FROM logs WHERE task_id=?", (tid,))]
+        self.assertTrue(any("в очередь не ставлю" in t for t in said), said)
+
+    def test_a_normal_finish_still_chains(self):
+        """Проверка на остановку не должна сломать то, ради чего
+        цепочка и затевалась: одно нажатие и можно уйти."""
+        tid = db.create_task("enrich", {})
+        self.assertFalse(worker._chain_stopped(tid, "разбор ИИ"))
+
+
+class TheQueueIsVisibleAndCancellable(unittest.TestCase):
+    """«В очереди ещё 2» не говорило ни что это, ни как это
+    отменить. Передумавший мог только ждать, пока программа
+    доделает то, чего он уже не хочет."""
+
+    def setUp(self):
+        db.init()
+        db.conn().execute("DELETE FROM tasks")
+        db.conn().commit()
+        self.cl = web.create_app().test_client()
+
+    def test_the_queue_comes_as_a_list_not_a_number(self):
+        db.create_task("find", {"query": "стоматология"})
+        db.create_task("enrich", {"limit": 200})
+        q = self.cl.get("/api/task").get_json()["queue"]
+        self.assertEqual([r["kind"] for r in q], ["find", "enrich"])
+        self.assertEqual(q[0]["params"]["query"], "стоматология")
+
+    def test_one_can_be_cancelled(self):
+        a = db.create_task("find", {})
+        b = db.create_task("enrich", {})
+        self.assertTrue(self.cl.post("/api/task/%d/cancel" % a).get_json()["cancelled"])
+        self.assertEqual([r["id"] for r in db.queued_tasks()], [b])
+
+    def test_a_running_task_is_not_cancelled_from_here(self):
+        """Остановкой идущей занимается поток обхода. Двое,
+        меняющие одну строку, разойдутся во мнении о том, что
+        происходит."""
+        tid = db.create_task("find", {})
+        db.update_task(tid, status="running")
+        self.assertFalse(db.cancel_task(tid))
+        row = db.conn().execute("SELECT status FROM tasks WHERE id=?",
+                                (tid,)).fetchone()
+        self.assertEqual(row["status"], "running")
+
+    def test_the_whole_queue_can_be_dropped(self):
+        for _ in range(3):
+            db.create_task("enrich", {})
+        self.assertEqual(self.cl.post("/api/queue/clear").get_json()["cancelled"], 3)
+        self.assertEqual(db.queued_tasks(), [])
+
+    def test_history_says_what_happened_and_how_long(self):
+        tid = db.create_task("find", {})
+        db.update_task(tid, status="error", message="hh ответил 403")
+        rows = self.cl.get("/api/tasks").get_json()["rows"]
+        self.assertEqual(rows[0]["status"], "error")
+        self.assertIn("403", rows[0]["message"])
+        self.assertTrue(rows[0]["created_at"] and rows[0]["updated_at"])
 
 
 class FindingPeopleWhenTheNameIsUnknown(unittest.TestCase):

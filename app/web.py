@@ -505,8 +505,28 @@ def create_app():
         logs = c.execute("""SELECT level, text, created_at FROM logs
                             WHERE task_id=? ORDER BY id DESC LIMIT 80""",
                          (row["id"],)).fetchall()
+        # Очередь списком, а не числом. «В очереди ещё 2» не говорит ни
+        # что это, ни как их отменить: человек, передумавший на середине,
+        # мог только ждать, пока программа доделает то, что он уже не
+        # хочет.
         return jsonify(ok=True, task=dict(row), queued=queued,
+                       queue=db.queued_tasks(),
                        logs=[dict(x) for x in reversed(logs)])
+
+    @app.get("/api/tasks")
+    def api_tasks():
+        """Последние задачи: что шло, чем кончилось и сколько заняло."""
+        return jsonify(ok=True, rows=db.recent_tasks())
+
+    @app.post("/api/task/<int:tid>/cancel")
+    def api_task_cancel(tid):
+        return jsonify(ok=True, cancelled=db.cancel_task(tid),
+                       queue=db.queued_tasks())
+
+    @app.post("/api/queue/clear")
+    def api_queue_clear():
+        return jsonify(ok=True, cancelled=db.cancel_queued(),
+                       queue=db.queued_tasks())
 
     # ── Данные ───────────────────────────────────────────
     def _company_where(q="", only="", ids=""):

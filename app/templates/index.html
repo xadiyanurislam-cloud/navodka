@@ -77,9 +77,12 @@
       <span class="run-status" id="run-status"></span>
       <button class="btn quiet sm" id="btn-stop" hidden>Остановить</button>
       <button class="btn quiet sm" id="btn-log">Журнал</button>
+      <button class="btn quiet sm" id="btn-hist">Что было</button>
     </div>
     <div class="track"><div class="fill" id="fill"></div></div>
+    <div class="queue" id="queue" hidden></div>
     <pre class="log" id="log" hidden></pre>
+    <div class="hist" id="hist" hidden></div>
   </div>
 
   <!-- ── Источники ─────────────────────────────────── -->
@@ -579,9 +582,10 @@
 
   <!-- ── Сегодня ───────────────────────────────────── -->
   <main class="view" id="view-today">
+    <section class="first-run" id="first-run" hidden></section>
     <div class="tiles" id="tiles"></div>
 
-    <div class="two-col">
+    <div class="two-col" id="today-cols">
       <section class="panel">
         <header class="panel-head">
           <h2>На сегодня</h2>

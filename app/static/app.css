@@ -44,7 +44,14 @@
   --side-active:#ffffff;
   --ink:#12141a;
   --ink-2:#5b6170;
-  --ink-3:#8b919e;
+  /* Приглушённый — не значит нечитаемый.
+     Именно этим цветом набраны все пояснения, заголовки колонок,
+     ИНН в списке и подписи к контактам — то есть то, ради чего
+     программу и читают. Прежние #8b919e давали контраст 2.9 к 1 на
+     фоне страницы при норме 4.5, и подсказки было проще
+     пропустить, чем прочитать. Здесь 4.6 — по-прежнему тихо, но
+     уже видно. */
+  --ink-3:#636a7a;
   --line:#e3e6ec;
   --line-2:#eef0f4;
   --accent:#3355ff;
@@ -54,7 +61,7 @@
   --hot-bg:#e6f6ee;
   --warm:#9a6100;
   --warm-bg:#fdf3e0;
-  --cold:#6c7280;
+  --cold:#5f6573;
   --cold-bg:#eef0f4;
   --ok:#0d7a4f;
   --ok-bg:#e6f6ee;
@@ -76,12 +83,12 @@
        тёмный, а текст не чисто белый. */
     --bg:#0c0e13; --surface:#14171e; --surface-2:#171b23;
     --side:#090b0f; --side-2:#12151c; --side-text:#868c99;
-    --ink:#e8eaef; --ink-2:#9aa1af; --ink-3:#6b7280;
+    --ink:#e8eaef; --ink-2:#9aa1af; --ink-3:#8b93a2;
     --line:#242932; --line-2:#1b1f27;
     --accent:#7e97ff; --accent-2:#93a8ff; --accent-soft:rgba(126,151,255,.14);
     --hot:#4fc78f; --hot-bg:rgba(79,199,143,.14);
     --warm:#e3ab5a; --warm-bg:rgba(227,171,90,.14);
-    --cold:#828997; --cold-bg:rgba(130,137,151,.14);
+    --cold:#8d95a4; --cold-bg:rgba(130,137,151,.14);
     --ok:#4fc78f; --ok-bg:rgba(79,199,143,.14);
     --warn:#e3ab5a; --warn-bg:rgba(227,171,90,.14);
     --err:#ec8179; --hover:#191d25;
@@ -261,7 +268,7 @@ td:nth-child(6),th:nth-child(6){width:20%}
 
 .ct{display:flex;align-items:baseline;gap:6px;font-size:12.5px;
     padding:1px 0;line-height:1.45}
-.ct .who{font-size:10px;letter-spacing:.05em;text-transform:uppercase;
+.ct .who{font-size:11px;letter-spacing:.05em;text-transform:uppercase;
          color:var(--ink-3);flex:0 0 auto}
 .ct .val{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;
          overflow-wrap:break-word;min-width:0}
@@ -280,7 +287,7 @@ td:nth-child(6),th:nth-child(6){width:20%}
 /* Догадка не должна выглядеть как факт: приглушаем её, чтобы взгляд
    цеплялся за строку с настоящим найденным контактом. */
 .ct.is-guess .val{font-weight:400;color:var(--ink-2)}
-.mk{font-size:10px;padding:1px 6px;border-radius:5px;flex:0 0 auto;
+.mk{font-size:11px;padding:1px 6px;border-radius:5px;flex:0 0 auto;
     letter-spacing:.01em;white-space:nowrap}
 .mk.ok{background:var(--ok-bg);color:var(--ok)}
 .mk.ca{background:var(--warn-bg);color:var(--warn)}
@@ -302,9 +309,15 @@ select.stage{width:auto;min-width:104px;padding:5px 8px;font-size:12px;
 .keys label em{font-style:normal;font-size:11.5px;color:var(--ink-3);line-height:1.55}
 #view-settings{padding-bottom:0}
 #view-settings .cards{margin-bottom:64px}
+/* Липкая панель «Сохранить» не должна закрывать то, на что нажимают.
+   Она стояла поверх кнопок «Проверить связь» и «Показать доступные
+   модели» — то есть ровно тех, что нужны при настройке ключа ИИ, — и
+   нажать по ним было нельзя вовсе, даже прокрутив страницу до конца.
+   Запас снизу даёт содержимому подняться над панелью. */
 .save-bar{position:sticky;bottom:0;display:flex;align-items:center;gap:10px;
   padding:14px 0 4px;margin-top:18px;max-width:1180px;
   background:linear-gradient(to top,var(--bg) 62%,transparent)}
+#view-settings{padding-bottom:96px}
 #save-note{font-size:12px;color:var(--ok)}
 
 @media (max-width:900px){
@@ -464,7 +477,7 @@ th.is-sorted[data-dir="up"]::after{content:"↑"}
 .ai-block{margin-top:18px;padding:12px 14px;border:1px solid var(--line);
           border-radius:10px;background:var(--line-2)}
 .ai-block h4{margin:0 0 8px;display:flex;align-items:center;gap:7px}
-.ai-mark{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;
+.ai-mark{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
          padding:1px 6px;border-radius:4px;background:var(--ink);
          color:var(--surface);font-weight:600}
 .ai-fit{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
@@ -716,7 +729,7 @@ td{padding:10px 14px}
 
 .nav{display:flex;flex-direction:column;gap:2px}
 .nav-label{
-  font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
   color:#5c616d;padding:14px 10px 6px}
 .nav-btn{
   display:flex;align-items:center;gap:11px;width:100%;padding:9px 10px;
@@ -1097,8 +1110,8 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
 .dd-opt.weak{color:var(--ink-3)}
 .dd-opt.weak:hover{color:var(--ink)}
 .dd-opt.wide-one{font-style:italic}
-.dd-opt.wide-one.is-on{background:var(--warn);color:#111}
-.dd-opt.wide-one.is-on em{color:rgba(0,0,0,.6)}
+.dd-opt.wide-one.is-on{background:var(--warn);color:var(--surface)}
+.dd-opt.wide-one.is-on em{color:var(--surface);opacity:.75}
 .dd-grp{display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:9px 9px 4px;position:sticky;top:0;background:var(--surface);
   border-bottom:1px solid var(--line-2);margin-bottom:2px}
@@ -1183,7 +1196,7 @@ select[multiple] option{padding:3px 6px;border-radius:5px}
 }
 .badge-big b{font-size:21px;font-weight:650;line-height:1;
   font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.badge-big span{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;
+.badge-big span{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
   opacity:.75}
 .badge-big.hot{background:var(--hot-bg);color:var(--hot)}
 .badge-big.warm{background:var(--warm-bg);color:var(--warm)}
@@ -1282,7 +1295,12 @@ details.score-block .score-note{margin-bottom:12px}
 .area.is-on{background:var(--accent);border-color:var(--accent);color:#fff;
   font-weight:550}
 .area.wide-one{order:-1;font-style:italic}
-.area.wide-one.is-on{background:var(--warn);border-color:var(--warn);color:#111}
+/* Текст на цветной подложке берётся от поверхности, а не чёрный.
+   В светлой теме «предупреждающий» цвет — тёмно-коричневый, и
+   чёрные буквы на нём давали контраст 3.7 при норме 4.5; в тёмной
+   он, наоборот, светлый. Одна переменная верна в обеих темах. */
+.area.wide-one.is-on{background:var(--warn);border-color:var(--warn);
+  color:var(--surface)}
 .warn-note{color:var(--warn)}
 
 /* ── Откуда контакт и какой он ────────────────────────────
@@ -1330,3 +1348,48 @@ details.ct-more > summary:hover{text-decoration:underline}
 /* Ручной поиск людей: ссылки, по которым ходит человек, а не программа. */
 .hand-find em{display:block;margin-top:6px;font-style:normal;font-size:11px;
   line-height:1.5;color:var(--ink-3)}
+
+
+/* ── Очередь и история задач ──────────────────────────────
+   «В очереди ещё 2» не говорило ни что это, ни как это отменить. */
+.queue{display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+  padding:8px 0 2px;font-size:12px}
+.queue[hidden]{display:none}
+.q-lbl{color:var(--ink-3);font-size:11.5px}
+.q-item{display:inline-flex;align-items:center;gap:5px;padding:3px 6px 3px 9px;
+  border-radius:20px;background:var(--surface-2);border:1px solid var(--line-2);
+  color:var(--ink-2)}
+.q-x{border:0;background:none;color:var(--ink-3);font-size:14px;line-height:1;
+  cursor:pointer;padding:0 2px;border-radius:50%}
+.q-x:hover{color:var(--bad, var(--warn));background:var(--surface)}
+.hist{padding:10px 0 4px;display:flex;flex-direction:column;gap:2px}
+.hist[hidden]{display:none}
+.h-row{display:grid;grid-template-columns:minmax(120px,auto) 84px 1fr;
+  gap:4px 12px;padding:6px 9px;border-radius:7px;font-size:12px;
+  align-items:baseline}
+.h-row:nth-child(odd){background:var(--surface-2)}
+.h-kind{font-weight:600}
+.h-when,.h-res{color:var(--ink-3);font-size:11.5px}
+.h-msg{grid-column:1 / -1;color:var(--ink-3);font-size:11.5px;line-height:1.45}
+.h-error .h-kind{color:var(--bad, var(--warn))}
+.h-error .h-msg{color:var(--warn)}
+.h-done .h-res{color:var(--ok)}
+
+
+/* ── Первый запуск ────────────────────────────────────────
+   Пустая база — это не «ноль компаний», а «ещё не начинали». Четыре
+   нуля в ряд и две пустые панели на две трети экрана были всем
+   впечатлением о программе. */
+.first-run{max-width:660px;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-lg);padding:26px 28px 24px;box-shadow:var(--shadow-card)}
+.first-run[hidden]{display:none}
+.first-run h2{font-size:20px;font-weight:650;letter-spacing:-.01em;margin:0 0 4px}
+.steps-lite{margin:14px 0 0;padding-left:20px;display:flex;
+  flex-direction:column;gap:11px}
+.steps-lite li{font-size:13.5px;line-height:1.55;color:var(--ink-2)}
+.steps-lite b{color:var(--ink);font-weight:600}
+.first-note{margin:18px 0 18px;padding:11px 13px;border-radius:var(--r);
+  background:var(--accent-soft);font-size:12.5px;line-height:1.55;
+  color:var(--ink-2)}
+.first-note b{color:var(--ink)}
+.tiles[hidden],.two-col[hidden]{display:none}

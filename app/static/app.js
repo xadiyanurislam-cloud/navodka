@@ -158,6 +158,37 @@ async function loadToday() {
 
   const st = d.stages || {};
   const total = Object.values(st).reduce((a, b) => a + b, 0);
+
+  // Пустая база — это не «ноль компаний», а «ещё не начинали».
+  //
+  // Раньше первый запуск встречал человека четырьмя нулями в ряд и
+  // двумя пустыми панелями на две трети экрана. Это всё впечатление о
+  // программе, и оно было «здесь ничего нет» вместо «вот с чего
+  // начать». Плитки со счётчиками появляются, когда есть что считать.
+  const blank = $("first-run");
+  blank.hidden = total > 0;
+  $("tiles").hidden = !total;
+  $("today-cols").hidden = !total;
+  if (!total) {
+    blank.innerHTML = `
+      <h2>С чего начать</h2>
+      <ol class="steps-lite">
+        <li><b>Выберите тему, вид деятельности и город.</b>
+          Сорок восемь тем и больше пятисот видов — от стоматологии до
+          металлообработки.</li>
+        <li><b>Программа обойдёт источники сама.</b> Карта, справочники,
+          ЕГРЮЛ и работодатели hh — и сведёт найденное в один список без
+          дублей.</li>
+        <li><b>Звоните по списку.</b> Наверху — те, у кого нашёлся прямой
+          контакт руководителя.</li>
+      </ol>
+      <p class="first-note"><b>OpenStreetMap и hh.ru работают без ключей</b>
+        — начинать можно прямо сейчас. Остальные источники подключаются
+        в «Настройках» и делают выдачу полнее.</p>
+      <button class="btn primary" data-go="sources">Перейти к поиску</button>`;
+    return;
+  }
+
   const tiles = [
     ["Всего компаний", total, "base", ""],
     ["На сегодня", d.due.length, "today", d.due.length ? "hot" : ""],
@@ -284,11 +315,25 @@ async function loadBoard() {
   bindBoard();
 }
 
+// Имя компании для узкой колонки воронки.
+//
+// «ООО «Компания 12»» в колонке шириной в двести пикселей обрезалось до
+// «ООО «Компания 1…», и различить соседние карточки было нельзя. При
+// этом первые шесть знаков у всех одинаковы и не значат ничего: какая
+// это форма собственности, в воронке не решает.
+const FORM_RE = /^(ООО|АО|ПАО|ЗАО|ОАО|НАО|ИП|АНО|НКО|ФГУП|МУП|ГУП|ТСЖ|СНТ|КФХ)\s+/i;
+
+function shortName(name) {
+  const s = String(name || "").trim();
+  const cut = s.replace(FORM_RE, "").replace(/^[«"']|[»"']$/g, "").trim();
+  return cut || s;
+}
+
 function boardCard(r) {
   return `<article class="bcard" draggable="true" data-id="${r.id}">
     <div class="bcard-top">
       ${scoreBadge(r.score)}
-      <b>${esc(r.name)}</b>
+      <b title="${esc(r.name)}">${esc(shortName(r.name))}</b>
     </div>
     ${r.director ? `<p class="bcard-sub">${esc(r.director)}</p>` : ""}
     ${r.contact ? `<p class="bcard-contact">${esc(r.contact)}</p>` : ""}
@@ -1161,7 +1206,10 @@ $("btn-diag").onclick = async () => {
 };
 
 $("btn-stop").onclick = () => { post("/api/stop"); toast("Останавливаю…"); };
+// Журнал и история — одно место, две вкладки: две раскрытые панели
+// подряд уже не читаются.
 $("btn-log").onclick = () => {
+  $("hist").hidden = true;
   const l = $("log");
   l.hidden = !l.hidden;
   $("btn-log").textContent = l.hidden ? "Журнал" : "Скрыть журнал";
@@ -1466,6 +1514,8 @@ async function poll() {
     (t.message ? ` · ${t.message}` : "");
   $("btn-stop").hidden = !live;
 
+  drawQueue(d.queue || []);
+
   $("log").innerHTML = (d.logs || [])
     .map((l) => `<span class="${l.level}">${esc(l.text)}</span>`).join("\n");
   if (!$("log").hidden) $("log").scrollTop = $("log").scrollHeight;
@@ -1491,6 +1541,72 @@ async function poll() {
   }
 }
 let liveSeen = {done: -1, at: 0};
+
+// ── Очередь: что будет после того, что идёт сейчас ───────
+//
+// Раньше здесь было только число: «в очереди ещё 2». Оно не говорило ни
+// что это за задачи, ни как их отменить. Человек, передумавший на
+// середине, мог только ждать, пока программа доделает то, чего он уже
+// не хочет, — а обогащение с разбором ИИ идут часами.
+function taskWhat(t) {
+  const p = t.params || {};
+  if (p.query) return `«${p.query}»`;
+  if (p.queries && p.queries.length) return `«${p.queries[0]}»`;
+  if (p.limit) return `до ${p.limit}`;
+  return "";
+}
+
+function drawQueue(rows) {
+  const box = $("queue");
+  box.hidden = !rows.length;
+  if (!rows.length) return;
+  box.innerHTML = `<span class="q-lbl">Дальше в очереди:</span>`
+    + rows.map((t) => `<span class="q-item">${esc(KINDS[t.kind] || t.kind)}${
+        taskWhat(t) ? " " + esc(taskWhat(t)) : ""}<button class="q-x"
+        data-cancel="${t.id}" title="Убрать из очереди">×</button></span>`).join("")
+    + (rows.length > 1
+        ? `<button class="lnk" data-clear-queue>отменить всё</button>` : "");
+}
+
+$("queue").onclick = async (e) => {
+  const one = e.target.closest("[data-cancel]");
+  const all = e.target.closest("[data-clear-queue]");
+  if (!one && !all) return;
+  const d = all ? await post("/api/queue/clear", {})
+                : await post(`/api/task/${one.dataset.cancel}/cancel`, {});
+  if (!d.ok) return;
+  drawQueue(d.queue || []);
+  toast(all ? "Очередь очищена" : "Убрано из очереди");
+};
+
+// ── Что было: последние задачи ───────────────────────────
+//
+// Задача, упавшая час назад, была невидима совсем: строка состояния
+// показывает только текущую. Человек помнит, что «что-то запускал», а
+// что именно и чем кончилось — нет.
+async function drawHist() {
+  const d = await get("/api/tasks");
+  if (!d || !d.ok) return;
+  $("hist").innerHTML = d.rows.length ? d.rows.map((t) => {
+    const spent = (t.updated_at && t.created_at)
+      ? Math.max(0, t.updated_at - t.created_at) : 0;
+    const dur = spent >= 60 ? `${Math.round(spent / 60)} мин` : `${spent} с`;
+    return `<div class="h-row h-${t.status}">
+      <span class="h-kind">${esc(KINDS[t.kind] || t.kind)}</span>
+      <span class="h-when">${ruStamp(t.created_at)}</span>
+      <span class="h-res">${esc(STATUS[t.status] || t.status)}${
+        t.total ? ` · ${t.done} из ${t.total}` : ""} · ${dur}</span>
+      ${t.message ? `<span class="h-msg">${esc(t.message)}</span>` : ""}
+    </div>`;
+  }).join("") : `<p class="nobody">Задач ещё не было.</p>`;
+}
+
+$("btn-hist").onclick = () => {
+  const box = $("hist");
+  box.hidden = !box.hidden;
+  $("log").hidden = true;
+  if (!box.hidden) drawHist();
+};
 
 // Кому звонить, когда на сегодня ничего не назначено.
 //

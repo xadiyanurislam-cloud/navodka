@@ -222,6 +222,21 @@ def _loop():
             _current["task_id"] = None
 
 
+def _chain_stopped(task_id, what):
+    """Ставить ли следующую задачу цепочки.
+
+    «Остановить» должно останавливать. Раньше проверки здесь не было:
+    человек нажимал стоп посреди поиска, обход прерывался — и тут же
+    ставил в очередь обогащение, которое идёт втрое дольше. Снаружи это
+    выглядело как кнопка, которая ничего не делает, и единственным
+    способом действительно остановить программу было закрыть окно.
+    """
+    if not _should_stop():
+        return False
+    db.log(task_id, "Остановлено — %s в очередь не ставлю." % what, "warn")
+    return True
+
+
 # ── Задача: поиск компаний на hh.ru ──────────────────────
 def task_hh_search(task_id, params):
     # Запросов может быть несколько. Один запрос за прогон — это ровно та
@@ -383,7 +398,8 @@ def task_hh_search(task_id, params):
     # условие «есть новые» ничего не защищало, а вредило: прогон,
     # прерванный на середине, оставлял компании без обогащения навсегда —
     # повторный поиск находил их же, новых не было, и очередь пустовала.
-    if params.get("then_enrich") and (added or known):
+    if params.get("then_enrich") and (added or known) \
+            and not _chain_stopped(task_id, "обогащение"):
         # Поиск без обогащения — половина дела: в карточке одно название.
         # Ставим вторую задачу в очередь, чтобы не ждать у экрана.
         db.create_task("enrich", {
@@ -792,7 +808,7 @@ def task_enrich(task_id, params):
            ", выведен по схеме ещё у %d" % lpr_guessed_now
            if lpr_guessed_now else "", total_lpr))
 
-    if params.get("then_ai"):
+    if params.get("then_ai") and not _chain_stopped(task_id, "разбор ИИ"):
         if not db.get_setting("ai_key", ""):
             log("Ключ ИИ не задан — разбор пропущен.", "warn")
         else:
@@ -1661,7 +1677,8 @@ def task_find(task_id, params):
     # По факту находок, а не только новых: обогащение и так берёт лишь
     # тех, у кого его ещё не было, а прерванный прогон иначе оставлял
     # компании пустыми навсегда.
-    if params.get("then_enrich") and (added or known):
+    if params.get("then_enrich") and (added or known) \
+            and not _chain_stopped(task_id, "обогащение"):
         db.create_task("enrich", {
             "limit": min(500, max(added + known, 1)), "fns": True,
             "only_lpr": False,

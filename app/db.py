@@ -756,6 +756,59 @@ def create_task(kind, params=None, total=0):
     return cur.lastrowid
 
 
+def queued_tasks(limit=20):
+    """Что стоит в очереди, по порядку исполнения."""
+    rows = conn().execute(
+        "SELECT id, kind, params, created_at FROM tasks "
+        "WHERE status='queued' ORDER BY id LIMIT ?", (int(limit),)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            params = json.loads(r["params"] or "{}")
+        except Exception:
+            params = {}
+        out.append(dict(r, params=params))
+    return out
+
+
+def recent_tasks(limit=12):
+    """Последние задачи — что шло, чем кончилось и сколько заняло.
+
+    Нужно затем же, зачем журнал: задача, упавшая час назад, сейчас
+    невидима совсем. Человек помнит, что «что-то запускал», а что и чем
+    оно кончилось — нет.
+    """
+    rows = conn().execute(
+        "SELECT id, kind, status, done, total, message, created_at, updated_at "
+        "FROM tasks ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cancel_task(task_id):
+    """Убрать из очереди то, что ещё не началось.
+
+    Только «в очереди»: остановкой идущей задачи занимается поток
+    обхода, и трогать её строку отсюда — значит разойтись с ним во
+    мнении о том, что происходит.
+    """
+    c = conn()
+    cur = c.execute("UPDATE tasks SET status='stopped', "
+                    "message='отменено до запуска', updated_at=? "
+                    "WHERE id=? AND status='queued'", (now(), task_id))
+    c.commit()
+    return cur.rowcount > 0
+
+
+def cancel_queued():
+    """Очистить очередь целиком. Идущая задача не трогается."""
+    c = conn()
+    cur = c.execute("UPDATE tasks SET status='stopped', "
+                    "message='отменено до запуска', updated_at=? "
+                    "WHERE status='queued'", (now(),))
+    c.commit()
+    return cur.rowcount
+
+
 def update_task(task_id, **patch):
     if not patch:
         return
