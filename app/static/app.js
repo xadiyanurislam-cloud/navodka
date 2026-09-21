@@ -627,6 +627,105 @@ $("btn-gis").onclick = () => run("/api/gis", {
   query: $("g-query").value, region: $("g-region").value,
   pages: $("g-pages").value}, "Поиск по 2ГИС");
 
+// ── Telegram: вход и проверка номеров ────────────────────
+//
+// Вход идёт в два приёма, потому что так устроен сам Telegram: сначала
+// он присылает код в приложение, и только потом принимает его обратно.
+// Экран об этом говорит прямо, иначе «Войти» после «Прислать код»
+// выглядит как вторая попытка того же действия.
+async function tgState() {
+  const d = await get("/api/tg/state");
+  if (!d || !d.ok) return null;
+  const tag = $("tag-tg"), tag2 = $("tag-tg2");
+  let label = "вход не выполнен", ready = false;
+  if (!d.lib) label = "библиотека не установлена";
+  else if (!d.keys) label = "нужны api_id и api_hash";
+  else if (!d.logged) label = "вход не выполнен";
+  else { label = "вход выполнен"; ready = true; }
+  for (const el of [tag, tag2]) {
+    if (!el) continue;
+    el.textContent = ready ? "вход выполнен" : label;
+    el.classList.toggle("ready", ready);
+  }
+  return d;
+}
+
+async function tgSaveKeys() {
+  await post("/api/settings", {
+    tg_api_id: $("s-tg-id").value.trim(),
+    tg_api_hash: $("s-tg-hash").value.trim(),
+    tg_phone: $("s-tg-phone").value.trim()});
+}
+
+if ($("btn-tg-code")) {
+  const note = $("tg-state");
+  $("btn-tg-code").onclick = async () => {
+    await tgSaveKeys();
+    note.textContent = "прошу код…";
+    const d = await post("/api/tg/code", {phone: $("s-tg-phone").value.trim()});
+    if (!d || !d.ok) {
+      note.innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+      return;
+    }
+    if (d.done) {
+      note.textContent = `уже вошли: ${d.who || ""}`;
+      tgState();
+      return;
+    }
+    note.textContent = "код отправлен в Telegram — впишите его и нажмите «Войти»";
+    $("s-tg-code").focus();
+  };
+
+  $("btn-tg-signin").onclick = async () => {
+    await tgSaveKeys();
+    note.textContent = "вхожу…";
+    const d = await post("/api/tg/signin", {
+      phone: $("s-tg-phone").value.trim(),
+      code: $("s-tg-code").value.trim(),
+      password: $("s-tg-pass").value.trim()});
+    if (d && d.need_password) {
+      $("tg-pass-wrap").hidden = false;
+      $("s-tg-pass").focus();
+      note.innerHTML = `<span class="bad">${esc(d.error)}</span>`;
+      return;
+    }
+    if (!d || !d.ok) {
+      note.innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+      return;
+    }
+    $("s-tg-code").value = "";
+    $("s-tg-pass").value = "";
+    note.textContent = `вошли: ${d.who || ""}`;
+    toast("Telegram подключён");
+    tgState();
+  };
+
+  $("btn-tg-forget").onclick = async () => {
+    if (!confirm("Забыть аккаунт Telegram? Для проверки номеров придётся "
+                 + "войти заново.")) return;
+    await post("/api/tg/forget", {});
+    note.textContent = "аккаунт забыт";
+    tgState();
+  };
+}
+
+if ($("btn-tg-check")) {
+  $("btn-tg-check").onclick = async () => {
+    const d = await tgState();
+    if (!d || !d.lib) { toast("Библиотека Telethon не установлена"); return; }
+    if (!d.keys || !d.logged) {
+      toast("Сначала войдите в Telegram — «Настройки»");
+      showView("settings");
+      return;
+    }
+    run("/api/tg/check", {limit: $("t-limit").value,
+                          landlines: $("t-landlines").checked,
+                          redo: $("t-redo").checked},
+        "Проверка номеров в Telegram");
+  };
+}
+tgState();
+
 $("btn-import").onclick = () => {
   const text = $("i-text").value.trim();
   if (!text) { toast("Список пуст"); return; }
@@ -1538,7 +1637,8 @@ const STATUS = {queued: "в очереди", running: "выполняется", 
 const KINDS = {find: "Поиск компаний", hh_search: "Поиск по вакансиям",
                socials: "Поиск соцсетей",
                gis_search: "Поиск по 2ГИС", import: "Импорт списка",
-               enrich: "Обогащение", ai: "ИИ-анализ"};
+               enrich: "Обогащение", ai: "ИИ-анализ",
+               tg: "Проверка номеров в Telegram"};
 let lastTask = null;
 
 // Сколько ещё ждать.
@@ -1806,11 +1906,23 @@ function contactRow(c) {
   if (c.kind !== "email") {
     const lpr = c.owner === "director";
     const kind = c.kind === "phone" ? phoneKind(c.value) : "";
+    // Номер, на который заведён Telegram, — это другой разговор: туда
+    // пишут, а не звонят, и читает написанное чаще сам владелец.
+    // «Нет» здесь значит «не нашёлся»: закрытый профиль не находится.
+    // Только у телефона: на строке «@имя» отметка «есть TG» повторяет
+    // саму строку и занимает место, которого в карточке и так нет.
+    let tgMk = "";
+    if (c.kind !== "phone") tgMk = "";
+    else if (c.verified === "tg")
+      tgMk = `<span class="mk tg" title="На этот номер заведён Telegram">есть TG</span>`;
+    else if (c.verified === "no_tg")
+      tgMk = `<span class="mk cold" title="Проверяли — аккаунт не нашёлся. `
+           + `Закрытый профиль не находится по номеру">TG не нашёлся</span>`;
     return `<div class="ct ${lpr ? "lpr" : ""}">
       <span class="who">${lpr ? "ГД тел" : (c.kind === "phone" ? "тел" : "tg")}</span>
       <button class="val copyable${c.kind === "phone" ? " tel" : ""}"
               data-copy="${v}">${shown}</button>
-      ${lpr ? `<span class="mk ok">найден</span>` : ""}
+      ${lpr ? `<span class="mk ok">найден</span>` : ""}${tgMk}
       ${ctFrom(c, kind)}</div>`;
   }
   // Найденный адрес и выведенный по схеме — вещи разной надёжности, и это

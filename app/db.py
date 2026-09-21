@@ -472,6 +472,38 @@ def add_contact(company_id, kind, value, owner="unknown", confidence=50,
     return cur.rowcount > 0
 
 
+def phones_to_check(limit=200, redo=False, landlines=False):
+    """Телефоны, про которые ещё не спрашивали Telegram.
+
+    Отметка живёт в том же поле verified, что и у почты: у телефона оно
+    до сих пор всегда было «unchecked», так что новая колонка не нужна,
+    а повторный прогон по проверенным номерам не тратит дневной предел
+    впустую.
+    """
+    if redo:
+        where = ""
+    else:
+        # skip — номер, который спрашивать незачем никогда: 8-800 и
+        # обрывки. skip_land — городской, отложенный до отдельной
+        # просьбы: он вернётся, когда её попросят, и до тех пор не
+        # занимает собой окно выборки.
+        seen = ["verified IS NULL", "verified='unchecked'"]
+        if landlines:
+            seen.append("verified='skip_land'")
+        where = " AND (%s)" % " OR ".join(seen)
+    return [dict(r) for r in conn().execute(
+        "SELECT id, company_id, value, owner FROM contacts "
+        "WHERE kind='phone'%s ORDER BY confidence DESC, id LIMIT ?" % where,
+        (int(limit),))]
+
+
+def set_contact_verified(contact_id, verified):
+    c = conn()
+    c.execute("UPDATE contacts SET verified=? WHERE id=?",
+              (verified, int(contact_id)))
+    c.commit()
+
+
 def add_signal(company_id, key, value=""):
     c = conn()
     c.execute("""INSERT INTO signals (company_id, key, value, created_at)

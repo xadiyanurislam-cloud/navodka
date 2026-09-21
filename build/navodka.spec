@@ -20,19 +20,29 @@ try:
 except Exception:
     _curl_datas, _curl_binaries, _curl_hidden = [], [], []
 
+try:
+    _tg_datas, _tg_binaries, _tg_hidden = collect_all("telethon")[:3]
+except Exception:
+    _tg_datas, _tg_binaries, _tg_hidden = [], [], []
+
 block_cipher = None
 ROOT = os.path.abspath(os.path.join(os.getcwd()))
 
 a = Analysis(
     ["../main.py"],
     pathex=[ROOT],
-    binaries=_curl_binaries,
+    binaries=_curl_binaries + _tg_binaries,
     # Шаблоны и статика — обычные файлы рядом с кодом, в exe они сами не
     # попадут. settings.resource_path ищет их относительно sys._MEIPASS.
     datas=[("../app/templates", "app/templates"),
            ("../app/static", "app/static"),
-           ("icon.ico", ".")] + _curl_datas,
-    hiddenimports=["dns.resolver", "openpyxl", "curl_cffi", "socks"] + _curl_hidden,
+           ("icon.ico", ".")] + _curl_datas + _tg_datas,
+    # Telethon собирает запросы MTProto из сотен модулей, которые нигде
+    # не импортируются по имени: без сбора целиком проверка номеров
+    # падает в собранной программе, хотя из исходников работает.
+    hiddenimports=(["dns.resolver", "openpyxl", "curl_cffi", "socks",
+                    "telethon", "pyaes", "rsa"]
+                   + _curl_hidden + _tg_hidden),
     hookspath=[],
     runtime_hooks=[],
     # Тянуть эти пакеты незачем: PyInstaller подхватывает их следом за

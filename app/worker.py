@@ -20,7 +20,7 @@ import requests
 from . import (ai, db, enrich, geo, net, profile, score, settings, social,
                trades, verify)
 from .sources import (dadata, fns, gis2, hh, importer, osm,
-                      site as site_src, vk, yandex, zakupki)
+                      site as site_src, tg, vk, yandex, zakupki)
 
 _thread = None
 _plans = None
@@ -1785,8 +1785,116 @@ def task_socials(task_id, params):
             "карточке хуже пустой клетки.", "warn")
 
 
+# ── Задача: есть ли у номера Telegram ────────────────────
+def task_tg(task_id, params):
+    """Пройтись по собранным телефонам и спросить Telegram про каждый.
+
+    Задача осторожная по устройству: маленькие пачки, паузы, дневной
+    предел и остановка по первому же отказу. Расплачивается за спешку
+    здесь не программа, а живой аккаунт, с которого идут запросы.
+    """
+    def log(msg, level="info"):
+        db.log(task_id, msg, level)
+
+    if not tg.available():
+        log("Библиотека Telethon не установлена — переустановите программу "
+            "или добавьте её в окружение.", "error")
+        return
+    api_id = db.get_setting("tg_api_id", "")
+    api_hash = db.get_setting("tg_api_hash", "")
+    data_dir = settings.data_dir()
+    if not api_id or not api_hash:
+        log("Не заданы api_id и api_hash. Возьмите их на my.telegram.org и "
+            "впишите в «Настройки».", "error")
+        return
+    if not tg.logged_in(data_dir):
+        log("Вход в Telegram не выполнен. Откройте «Настройки» и войдите — "
+            "проверка идёт от имени вашего аккаунта.", "error")
+        return
+
+    limit = max(1, min(tg.DAY_LIMIT, int(params.get("limit") or 50)))
+    landlines = bool(params.get("landlines"))
+    redo = bool(params.get("redo"))
+
+    rows = db.phones_to_check(limit=limit * 20, redo=redo, landlines=landlines)
+    if not rows:
+        log("Непроверенных телефонов нет. Сначала соберите компании и "
+            "запустите обогащение — телефоны берутся оттуда.", "warn")
+        return
+
+    # Один номер бывает у нескольких компаний, и записан он у каждой
+    # по-своему: «+7 999 111-22-33» и «8 999 1112233» — это один
+    # телефон. Сводим к единому виду до всего остального, иначе
+    # Telegram спрашивают дважды, а отметка достаётся одной компании
+    # из двух — вторая приходит за ответом снова и снова.
+    by_e164, skipped = {}, 0
+    for r in rows:
+        e164 = tg.to_e164(r["value"])
+        if not e164:
+            db.set_contact_verified(r["id"], "skip")
+            skipped += 1
+            continue
+        if not tg.worth_checking(e164, landlines):
+            # 8-800 не станет мобильным никогда, а городской подождёт
+            # до отдельной просьбы. И тот и другой больше не попадают в
+            # выборку и не занимают в ней место.
+            db.set_contact_verified(
+                r["id"], "skip" if tg.kind_of(e164) == "бесплатный"
+                else "skip_land")
+            skipped += 1
+            continue
+        by_e164.setdefault(e164, []).append(r)
+
+    pairs = tg.prepare(list(by_e164), landlines=landlines, limit=limit)
+    if not pairs:
+        log("Среди непроверенных номеров нет ни одного подходящего: "
+            "отложено %d (бесплатные 8-800, городские и обрывки). "
+            "Городские проверяются по отдельной галочке." % skipped, "warn")
+        return
+    if skipped:
+        log("Отложено без запроса: %d — бесплатные 8-800, обрывки%s."
+            % (skipped, "" if landlines else " и городские"))
+
+    db.update_task(task_id, total=len(pairs))
+    log("Спрашиваю Telegram про %d номеров пачками по %d. Это медленно "
+        "намеренно: за спешку Telegram ограничивает аккаунт."
+        % (len(pairs), tg.BATCH))
+    res = tg.check(api_id, api_hash, data_dir, pairs, on_log=log,
+                   should_stop=_should_stop)
+    if not res.get("ok"):
+        log("Telegram: %s" % res.get("error", "не вышло"), "error")
+        return
+
+    found = res.get("found") or {}
+    for raw in res.get("checked") or []:
+        hit = found.get(raw)
+        for row in by_e164.get(raw, []):
+            db.set_contact_verified(row["id"], "tg" if hit else "no_tg")
+            if not hit:
+                continue
+            # Имя пользователя — это уже прямая ссылка на переписку, и
+            # она ценнее самой отметки: писать по @ удобнее, чем искать
+            # номер в телефоне.
+            if hit.get("username"):
+                db.add_contact(row["company_id"], "telegram",
+                               "@" + hit["username"], row.get("owner") or "general",
+                               80, "tg", "номер найден в Telegram")
+            _rescore(row["company_id"])
+    db.update_task(task_id, done=len(res.get("checked") or []))
+
+    log("Готово. Проверено номеров: %d, с Telegram: %d."
+        % (len(res.get("checked") or []), len(found)))
+    if res.get("stopped"):
+        log(res["stopped"], "warn")
+    if not found and res.get("checked"):
+        log("Ни одного не нашлось. Это не обязательно значит, что аккаунтов "
+            "нет: кто закрыл «кто может найти меня по номеру телефона», не "
+            "находится вовсе.", "warn")
+
+
 HANDLERS = {
     "ai": task_ai,
+    "tg": task_tg,
     "socials": task_socials,
     "find": task_find,
     "hh_search": task_hh_search,

@@ -434,6 +434,30 @@
 
       <article class="card">
         <header>
+          <h2>Телефоны в Telegram</h2>
+          <span class="tag key" id="tag-tg2">нужен вход</span>
+        </header>
+        <p>Проверяет собранные номера: заведён ли на них аккаунт. Идёт от
+           имени вашего аккаунта Telegram и медленно намеренно — за спешку
+           Telegram ограничивает. Вход и предупреждения — в «Настройках».</p>
+        <div class="fields">
+          <label>Сколько номеров за раз
+            <input id="t-limit" type="number" min="1" max="{{ tg_limit }}" value="50">
+            <em class="fld-hint">Больше {{ tg_limit }} за прогон не бывает</em>
+          </label>
+        </div>
+        <label class="also"><input id="t-landlines" type="checkbox">
+          <span><b>Проверять и городские</b>
+            <em>По умолчанию только мобильные: у городского аккаунт бывает
+                редко, а очередь он съедает наравне со всеми</em></span></label>
+        <label class="also"><input id="t-redo" type="checkbox">
+          <span><b>Проверить заново уже проверенные</b>
+            <em>Обычно не нужно: ответ не меняется неделями</em></span></label>
+        <footer><button class="btn primary" id="btn-tg-check">Проверить номера</button></footer>
+      </article>
+
+      <article class="card">
+        <header>
           <h2>Свой список</h2>
           <span class="tag free">офлайн</span>
         </header>
@@ -696,6 +720,71 @@
       <button class="btn quiet sm" id="btn-ai-check2">Проверить связь</button>
       <span class="hint" id="ai-cfg-note"></span>
     </div>
+      </article>
+
+      <article class="card span">
+        <header>
+          <h2>Telegram</h2>
+          <span class="tag key" id="tag-tg">вход не выполнен</span>
+        </header>
+        <p>Программа умеет спрашивать у Telegram, заведён ли аккаунт на
+           собранный номер. Номер из справочника — это приёмная, тот же
+           номер в Telegram — переписка, которую читают сами.</p>
+        <div class="warn-box">
+          <b>Прежде чем входить, прочтите.</b>
+          Проверка идёт <b>от имени вашего аккаунта</b>: другого способа
+          спросить у Telegram не существует. Массовый импорт контактов
+          Telegram считает злоупотреблением и ограничивает такие аккаунты
+          вплоть до блокировки. Программа бьёт запросы на пачки по
+          {{ tg_batch }}, держит паузы и не делает больше {{ tg_limit }}
+          проверок за прогон, но полностью риск это не снимает.
+          <b>Заводите отдельный номер, а не рабочий.</b>
+          Ответ «нет» означает «не нашёлся»: кто закрыл в настройках
+          Telegram «кто может найти меня по номеру телефона», не найдётся,
+          даже если аккаунт у него есть.
+        </div>
+        <div class="fields">
+          <div class="row2 wide pair">
+            <label>api_id
+              <input id="s-tg-id" type="text" value="{{ tg_api_id }}"
+                     placeholder="числовой">
+              <em class="fld-hint">Берётся один раз на
+                <a href="https://my.telegram.org/apps">my.telegram.org</a>,
+                раздел «API development tools»</em>
+            </label>
+            <label>api_hash
+              <input id="s-tg-hash" type="password" data-secret
+                     value="{{ tg_api_hash }}" placeholder="строка из букв и цифр">
+              <em class="fld-hint">Оттуда же, рядом с api_id</em>
+            </label>
+          </div>
+          <div class="row2 wide pair">
+            <label>Номер аккаунта
+              <input id="s-tg-phone" type="text" value="{{ tg_phone }}"
+                     placeholder="+7 999 123-45-67">
+              <em class="fld-hint">С этого номера пойдут запросы. Заведите
+                 отдельный</em>
+            </label>
+            <label>Код из Telegram
+              <input id="s-tg-code" type="text" placeholder="придёт в приложение"
+                     autocomplete="one-time-code">
+              <em class="fld-hint">Код приходит сообщением в сам Telegram,
+                 не по SMS</em>
+            </label>
+          </div>
+          <label class="wide" id="tg-pass-wrap" hidden>Пароль облака
+            <input id="s-tg-pass" type="password" data-secret
+                   placeholder="двухэтапная проверка">
+            <em class="fld-hint">Нужен, только если у аккаунта включена
+               двухэтапная проверка</em>
+          </label>
+        </div>
+        <footer class="upd-line">
+          <button class="btn" id="btn-tg-code">Прислать код</button>
+          <button class="btn primary" id="btn-tg-signin">Войти</button>
+          <button class="btn quiet" id="btn-tg-forget">Забыть аккаунт</button>
+          <span class="upd-state" id="tg-state"></span>
+        </footer>
       </article>
 
       <article class="card">

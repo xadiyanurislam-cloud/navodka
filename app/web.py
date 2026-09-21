@@ -16,7 +16,7 @@ from flask import (Flask, Response, jsonify, render_template, request,
 
 from . import (ai, db, diag, export, geo, score, settings, trades,
                update, worker)
-from .sources import hh
+from .sources import hh, tg
 
 
 def _open_outside(url, is_path=False):
@@ -148,6 +148,10 @@ def create_app():
             app_name=settings.APP_NAME, version=settings.VERSION,
             areas=hh.AREAS, presets=hh.PRESETS,
             rubrics=trades.all_words(), trades=trades.catalog(),
+            tg_api_id=db.get_setting("tg_api_id", ""),
+            tg_api_hash=db.get_setting("tg_api_hash", ""),
+            tg_phone=db.get_setting("tg_phone", ""),
+            tg_batch=tg.BATCH, tg_limit=tg.DAY_LIMIT,
             dadata_token=db.get_setting("dadata_token", ""),
             gis_key=db.get_setting("gis_key", ""),
             ai_key=db.get_setting("ai_key", ""),
@@ -327,6 +331,59 @@ def create_app():
             # для остальных нужны координаты — искать по ним 2ГИС умеет.
             "city": (d.get("region") or "").strip(),
             "pages": num(d.get("pages"), 2, 1, 10),
+        })
+        return jsonify(ok=True, task_id=task_id)
+
+    # ── Telegram ─────────────────────────────────────────
+    # Вход идёт в два приёма: сначала Telegram присылает код в само
+    # приложение, потом код вводят здесь. Между приёмами ничего не
+    # хранится в базе — код действителен минуты.
+    def _tg_keys():
+        return (db.get_setting("tg_api_id", ""),
+                db.get_setting("tg_api_hash", ""))
+
+    @app.get("/api/tg/state")
+    def api_tg_state():
+        api_id, api_hash = _tg_keys()
+        return jsonify(ok=True, lib=tg.available(),
+                       keys=bool(api_id and api_hash),
+                       logged=tg.logged_in(settings.data_dir()),
+                       phone=db.get_setting("tg_phone", ""))
+
+    @app.post("/api/tg/code")
+    def api_tg_code():
+        d = request.get_json(silent=True) or {}
+        phone = (d.get("phone") or "").strip()
+        if not phone:
+            return jsonify(ok=False, error="Впишите номер телефона")
+        api_id, api_hash = _tg_keys()
+        if not api_id or not api_hash:
+            return jsonify(ok=False, error="Сначала впишите api_id и api_hash")
+        db.set_setting("tg_phone", phone)
+        return jsonify(tg.send_code(api_id, api_hash, settings.data_dir(), phone))
+
+    @app.post("/api/tg/signin")
+    def api_tg_signin():
+        d = request.get_json(silent=True) or {}
+        api_id, api_hash = _tg_keys()
+        if not api_id or not api_hash:
+            return jsonify(ok=False, error="Сначала впишите api_id и api_hash")
+        return jsonify(tg.sign_in(
+            api_id, api_hash, settings.data_dir(),
+            (d.get("phone") or "").strip(), (d.get("code") or "").strip(),
+            (d.get("password") or "").strip()))
+
+    @app.post("/api/tg/forget")
+    def api_tg_forget():
+        return jsonify(ok=tg.forget(settings.data_dir()))
+
+    @app.post("/api/tg/check")
+    def api_tg_check():
+        d = request.get_json(silent=True) or {}
+        task_id = db.create_task("tg", {
+            "limit": num(d.get("limit"), 50, 1, tg.DAY_LIMIT),
+            "landlines": bool(d.get("landlines")),
+            "redo": bool(d.get("redo")),
         })
         return jsonify(ok=True, task_id=task_id)
 
@@ -859,7 +916,8 @@ def create_app():
         for key in ("dadata_token", "gis_key", "ai_key", "ai_url",
                     "ai_model", "hh_ua", "hh_token",
                     "update_repo", "update_token", "update_url",
-                    "yandex_key", "vk_token", "ai_kind", "proxy_url"):
+                    "yandex_key", "vk_token", "ai_kind", "proxy_url",
+                    "tg_api_id", "tg_api_hash", "tg_phone"):
             if key in d:
                 db.set_setting(key, (d[key] or "").strip())
         return jsonify(ok=True)

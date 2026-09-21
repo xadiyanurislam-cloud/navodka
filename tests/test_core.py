@@ -25,7 +25,7 @@ settings.db_path = lambda: os.path.join(_TMP, "test.sqlite3")
 
 from app import (ai, db, diag, enrich, export, geo, net, profile, score,  # noqa: E402
                  social, trades, update, web, worker)
-from app.sources import dadata, fns, gis2, hh, importer, site, zakupki  # noqa: E402
+from app.sources import dadata, fns, gis2, hh, importer, site, tg, zakupki  # noqa: E402
 
 
 class Transliteration(unittest.TestCase):
@@ -348,6 +348,20 @@ class Storage(unittest.TestCase):
         row = db.conn().execute("SELECT site FROM companies WHERE id=?",
                                 (cid,)).fetchone()
         self.assertEqual(row["site"], "x.ru/?utm_source=y")
+
+    def test_only_unchecked_phones_come_up_for_telegram(self):
+        """Повторный прогон не должен тратить дневной предел Telegram на
+        номера, про которые уже спрашивали."""
+        cid, _ = db.upsert_company({"name": "Х", "inn": "7700000077"})
+        db.add_contact(cid, "phone", "+79990000001", "general", 90)
+        db.add_contact(cid, "phone", "+79990000002", "general", 80)
+        db.add_contact(cid, "email", "a@b.ru", "general", 80)
+        rows = db.phones_to_check()
+        self.assertEqual(len(rows), 2)
+        db.set_contact_verified(rows[0]["id"], "tg")
+        self.assertEqual(len(db.phones_to_check()), 1)
+        # Но по отдельной просьбе — заново все.
+        self.assertEqual(len(db.phones_to_check(redo=True)), 2)
 
     def test_new_columns_added_to_old_database(self):
         """Обновление программы не должно ронять базу, заведённую прошлой
@@ -1517,6 +1531,26 @@ class TextIsReadable(unittest.TestCase):
                         "%s: --%s на --%s даёт %.2f при норме 4.5"
                         % (theme, name, on, got))
 
+    def test_the_telegram_badge_is_readable_on_its_own_tint(self):
+        """Под «есть TG» лежит подложка того же цвета, что и текст.
+        Акцентом набирают ссылки на белом — здесь он даёт 4,1 к 1, и
+        именно та подпись, ради которой отметку ставили, читается хуже
+        всего. Поэтому у неё своя, тёмная краска."""
+        # Подложка — акцент с прозрачностью поверх фона страницы.
+        alpha = {"light": 0.10, "dark": 0.14}
+        for theme in ("light", "dark"):
+            v = self.vars_of(theme)
+            acc = [int(v["accent"].lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+            base = [int(v["bg"].lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+            a = alpha[theme]
+            mixed = "#%02x%02x%02x" % tuple(
+                int(round(acc[i] * a + base[i] * (1 - a))) for i in range(3))
+            got = self.ratio(v["tg-ink"], mixed)
+            self.assertGreaterEqual(
+                got, 4.5,
+                "%s: --tg-ink на подложке даёт %.2f при норме 4.5"
+                % (theme, got))
+
     def test_the_hierarchy_of_greys_survives(self):
         """Три уровня текста должны отличаться на глаз. Если
         ради читаемости сравнять их в один, страница станет
@@ -2669,6 +2703,212 @@ class Sources(unittest.TestCase):
 
     def test_gis_without_region_and_point_is_skipped(self):
         self.assertEqual(gis2.search("стоматология", 0, "ключ"), [])
+
+
+class TelegramNumbers(unittest.TestCase):
+    """Проверка номеров в Telegram. Ошибиться здесь дорого: платит не
+    программа, а живой аккаунт, с которого идут запросы."""
+
+    def test_russian_numbers_come_to_one_shape(self):
+        for raw, want in (("+7 495 123-45-67", "+74951234567"),
+                          ("8 (999) 123-45-67", "+79991234567"),
+                          ("7 999 123 45 67", "+79991234567"),
+                          ("9991234567", "+79991234567")):
+            self.assertEqual(tg.to_e164(raw), want, raw)
+
+    def test_scraps_are_not_numbers(self):
+        for raw in ("112", "", "—", "доб. 214", "1234"):
+            self.assertEqual(tg.to_e164(raw), "", raw)
+
+    def test_tollfree_is_never_asked_about(self):
+        """У 8-800 аккаунта не бывает: это маршрут в колл-центр, а не
+        телефон. Спрашивать про него — тратить дневной предел впустую."""
+        self.assertEqual(tg.kind_of("+78005553535"), "бесплатный")
+        self.assertFalse(tg.worth_checking("+78005553535"))
+        self.assertFalse(tg.worth_checking("+78005553535", landlines=True))
+
+    def test_landlines_only_on_request(self):
+        self.assertEqual(tg.kind_of("+74951234567"), "городской")
+        self.assertFalse(tg.worth_checking("+74951234567"))
+        self.assertTrue(tg.worth_checking("+74951234567", landlines=True))
+
+    def test_mobile_and_foreign_are_checked(self):
+        self.assertTrue(tg.worth_checking("+79991234567"))
+        self.assertTrue(tg.worth_checking("+380441234567"))
+
+    def test_same_number_asked_about_once(self):
+        """Один телефон стоит у нескольких компаний, а предел общий."""
+        pairs = tg.prepare(["8 999 111 22 33", "+7 999 111-22-33",
+                            "+7 (999) 1112233"])
+        self.assertEqual(len(pairs), 1)
+
+    def test_limit_is_respected(self):
+        many = ["+7 999 %03d 00 00" % i for i in range(50)]
+        self.assertEqual(len(tg.prepare(many, limit=7)), 7)
+
+    def test_answer_is_matched_to_the_number_asked(self):
+        """Telegram отвечает не по порядку и не про всех. Сопоставление
+        идёт по client_id, который мы сами и проставили."""
+        class Imp(object):
+            def __init__(self, client_id, user_id):
+                self.client_id, self.user_id = client_id, user_id
+
+        class User(object):
+            def __init__(self, uid, username):
+                self.id, self.username = uid, username
+                self.first_name, self.last_name = "Иван", "Петров"
+
+        batch = ["+79990000001", "+79990000002", "+79990000003"]
+        got = tg.read_batch([Imp(2, 77)], [User(77, "ivan")], batch)
+        self.assertEqual(list(got), ["+79990000003"])
+        self.assertEqual(got["+79990000003"]["username"], "ivan")
+
+    def test_unknown_client_id_is_ignored(self):
+        """Ответ не по нашему запросу не должен молча сдвигать список."""
+        class Imp(object):
+            client_id, user_id = 99, 5
+        self.assertEqual(tg.read_batch([Imp()], [], ["+79990000001"]), {})
+
+    def test_nothing_happens_without_a_login(self):
+        res = tg.check("1", "x", "/nonexistent-dir-for-test", [("a", "+79990000001")])
+        self.assertFalse(res["ok"])
+        self.assertIn("ход", res["error"])
+
+    def test_swapped_keys_are_explained_not_traced(self):
+        """api_id и api_hash лежат рядом и путаются местами. До сих пор
+        за это выдавали трассировку про int()."""
+        res = tg.send_code("не число", "abc", "/tmp", "+79990000000")
+        self.assertFalse(res["ok"])
+        self.assertIn("api_id", res["error"])
+        self.assertNotIn("ValueError", res["error"])
+
+    def test_errors_are_explained_in_words(self):
+        class FloodWaitError(Exception):
+            seconds = 300
+        self.assertIn("300", tg.explain(FloodWaitError()))
+
+        class PhoneCodeInvalidError(Exception):
+            pass
+        self.assertEqual(tg.explain(PhoneCodeInvalidError()), "Код неверный")
+
+
+class EveryTaskHasAName(unittest.TestCase):
+    """Задача без названия показывается в очереди голым словом из кода:
+    «tg», «gis_search». Отменять такую человек не рискует."""
+
+    def test_all_handlers_are_named_on_screen(self):
+        js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
+                                  "static", "app.js"), encoding="utf-8").read()
+        block = js[js.index("const KINDS = {"):]
+        block = block[:block.index("}")]
+        for kind in worker.HANDLERS:
+            self.assertIn("%s:" % kind, block, "задача %s без названия" % kind)
+
+
+class TelegramRun(unittest.TestCase):
+    """Прогон целиком, без сети: что спросили у Telegram, что отметили
+    и что не стали спрашивать второй раз."""
+
+    def setUp(self):
+        db.init()
+        c = db.conn()
+        for t in ("contacts", "signals", "companies", "logs", "tasks"):
+            c.execute("DELETE FROM %s" % t)
+        c.commit()
+        db.set_setting("tg_api_id", "1")
+        db.set_setting("tg_api_hash", "x")
+        self.asked = []
+        self._logged_in, self._check = tg.logged_in, tg.check
+        tg.logged_in = lambda d: True
+
+        def fake(api_id, api_hash, data_dir, pairs, on_log=None,
+                 should_stop=None, **kw):
+            self.asked.append([e for _, e in pairs])
+            return {"ok": True, "checked": [raw for raw, _ in pairs],
+                    "found": {raw: {"username": "boss", "name": "Босс",
+                                    "user_id": 1}
+                              for raw, e in pairs if e == "+79991112233"},
+                    "stopped": ""}
+        tg.check = fake
+
+        self.a, _ = db.upsert_company({"name": "А", "inn": "7700000001"})
+        self.b, _ = db.upsert_company({"name": "Б", "inn": "7700000002"})
+
+    def tearDown(self):
+        tg.logged_in, tg.check = self._logged_in, self._check
+
+    def run_task(self, **params):
+        tid = db.create_task("tg", params)
+        worker.task_tg(tid, params)
+        return tid
+
+    def verified(self, value):
+        row = db.conn().execute(
+            "SELECT verified FROM contacts WHERE kind='phone' AND value=?",
+            (value,)).fetchone()
+        return row["verified"] if row else None
+
+    def test_one_number_written_two_ways_is_asked_once_marked_twice(self):
+        """«+7 999 111-22-33» и «8 999 1112233» — один телефон. Спросить
+        надо один раз, отметить обе компании: иначе вторая приходит за
+        ответом снова и снова и съедает дневной предел."""
+        db.add_contact(self.a, "phone", "+7 999 111-22-33", "director", 90)
+        db.add_contact(self.b, "phone", "8 999 1112233", "general", 80)
+        self.run_task(limit=50)
+        self.assertEqual(self.asked, [["+79991112233"]])
+        self.assertEqual(self.verified("+7 999 111-22-33"), "tg")
+        self.assertEqual(self.verified("8 999 1112233"), "tg")
+        # Имя пользователя достаётся обеим компаниям, а не первой.
+        got = [r["company_id"] for r in db.conn().execute(
+            "SELECT company_id FROM contacts WHERE kind='telegram'")]
+        self.assertEqual(sorted(got), sorted([self.a, self.b]))
+
+    def test_tollfree_is_set_aside_for_good(self):
+        db.add_contact(self.a, "phone", "8 800 555 35 35", "general", 60)
+        db.add_contact(self.a, "phone", "+7 999 111-22-33", "general", 90)
+        self.run_task(limit=50)
+        self.assertEqual(self.asked, [["+79991112233"]])
+        self.assertEqual(self.verified("8 800 555 35 35"), "skip")
+        # И с галочкой «и городские» тоже: у 8-800 аккаунта не бывает.
+        self.asked = []
+        self.run_task(limit=50, landlines=True)
+        self.assertEqual(self.asked, [])
+
+    def test_a_landline_waits_for_the_tick_and_then_comes_back(self):
+        db.add_contact(self.a, "phone", "+7 495 000-00-00", "general", 50)
+        self.run_task(limit=50)
+        self.assertEqual(self.asked, [])
+        self.assertEqual(self.verified("+7 495 000-00-00"), "skip_land")
+        self.asked = []
+        self.run_task(limit=50, landlines=True)
+        self.assertEqual(self.asked, [["+74950000000"]])
+
+    def test_the_second_run_asks_nothing(self):
+        db.add_contact(self.a, "phone", "+7 999 111-22-33", "general", 90)
+        self.run_task(limit=50)
+        self.asked = []
+        self.run_task(limit=50)
+        self.assertEqual(self.asked, [])
+
+    def test_a_number_that_is_not_a_number_is_set_aside(self):
+        db.conn().execute(
+            "INSERT INTO contacts (company_id, kind, value, owner, "
+            "confidence, verified, source, created_at) "
+            "VALUES (?,?,?,?,?,?,?,0)",
+            (self.a, "phone", "доб. 214", "general", 10, "unchecked", "тест"))
+        db.conn().commit()
+        self.run_task(limit=50)
+        self.assertEqual(self.verified("доб. 214"), "skip")
+
+    def test_no_login_means_no_requests(self):
+        tg.logged_in = lambda d: False
+        db.add_contact(self.a, "phone", "+7 999 111-22-33", "general", 90)
+        tid = self.run_task(limit=50)
+        self.assertEqual(self.asked, [])
+        texts = " ".join(r["text"] for r in db.conn().execute(
+            "SELECT text FROM logs WHERE task_id=?", (tid,)))
+        self.assertIn("Вход в Telegram не выполнен", texts)
+        self.assertEqual(self.verified("+7 999 111-22-33"), "unchecked")
 
 
 class Financials(unittest.TestCase):

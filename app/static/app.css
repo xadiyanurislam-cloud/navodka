@@ -57,6 +57,7 @@
   --accent:#3355ff;
   --accent-2:#5b7cff;
   --accent-soft:rgba(51,85,255,.10);
+  --tg-ink:#2540bd;
   --hot:#0d7a4f;
   --hot-bg:#e6f6ee;
   --warm:#9a6100;
@@ -86,6 +87,7 @@
     --ink:#e8eaef; --ink-2:#9aa1af; --ink-3:#8b93a2;
     --line:#242932; --line-2:#1b1f27;
     --accent:#7e97ff; --accent-2:#93a8ff; --accent-soft:rgba(126,151,255,.14);
+    --tg-ink:#a8b8ff;
     --hot:#4fc78f; --hot-bg:rgba(79,199,143,.14);
     --warm:#e3ab5a; --warm-bg:rgba(227,171,90,.14);
     --cold:#8d95a4; --cold-bg:rgba(130,137,151,.14);
@@ -292,6 +294,14 @@ td:nth-child(6),th:nth-child(6){width:20%}
 .mk.ok{background:var(--ok-bg);color:var(--ok)}
 .mk.ca{background:var(--warn-bg);color:var(--warn)}
 .mk.guess{background:var(--line-2);color:var(--ink-3)}
+/* Номер с Telegram — находка, а не просто отметка: писать туда можно
+   сразу. Цвет свой, синий: рядом с зелёным «найден» он не сливается.
+   Краска темнее самого акцента: акцентом набирают ссылки на белом, а
+   здесь под текстом ещё и подложка того же цвета — на ней он даёт 4,1
+   к 1 при норме 4,5, то есть ровно ту подпись, ради которой отметку и
+   ставили, прочесть труднее всего. */
+.mk.tg{background:var(--accent-soft);color:var(--tg-ink)}
+.mk.cold{background:var(--line-2);color:var(--ink-3)}
 
 .sig{display:inline-block;font-size:11px;color:var(--ink-2);border:1px solid var(--line);
      border-radius:6px;padding:1px 7px;margin:0 3px 3px 0;white-space:nowrap}
@@ -306,6 +316,13 @@ select.stage{width:auto;min-width:104px;padding:5px 8px;font-size:12px;
    поверх. Окно поверх закрывало собой то, ради чего в него зашли:
    проверить, что источник заработал, не поднимая глаз от ключа. */
 .keys{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
+/* Предупреждение, которое обязано быть прочитанным: рискуют здесь не
+   данными, а живым аккаунтом. Поэтому не серая подсказка мелким
+   шрифтом, а отдельная плашка на цвете. */
+.warn-box{background:var(--warn-bg);border:1px solid var(--warn);
+  border-radius:var(--r-lg);padding:12px 14px;margin:0 0 14px;
+  font-size:12.5px;line-height:1.6;color:var(--ink)}
+.warn-box b{font-weight:600}
 .keys label em{font-style:normal;font-size:11.5px;color:var(--ink-3);line-height:1.55}
 #view-settings{padding-bottom:0}
 #view-settings .cards{margin-bottom:64px}
@@ -931,8 +948,12 @@ thead th{background:var(--surface-2)}
   margin-top:12px}
 #ai-cfg-note{font-size:12px}
 
-/* Поля обновления больше не жмутся в половину колонки. */
+/* Поля обновления больше не жмутся в половину колонки. Короткие пары —
+   api_id рядом с api_hash, номер рядом с кодом — остаются парами: они
+   и читаются вместе, и вводятся подряд. */
 #view-settings .row2{grid-template-columns:1fr;gap:12px}
+#view-settings .row2.pair{grid-template-columns:1fr 1fr}
+@media (max-width:900px){#view-settings .row2.pair{grid-template-columns:1fr}}
 
 /* ── Экран поиска ───────────────────────────────────────
    Раньше главная карточка была двумя длинными колонками: слева два
