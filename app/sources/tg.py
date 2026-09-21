@@ -31,8 +31,11 @@ contacts.importContacts: номера загружаются как контак
 Без входа модуль не делает ничего и говорит об этом словами.
 """
 import asyncio
+import base64
+import json
 import os
 import re
+import shutil
 
 # Пачка маленькая намеренно. Импорт контактов — самое подозрительное,
 # что можно делать с аккаунтом, и тысяча номеров одним запросом отличает
@@ -83,6 +86,159 @@ def forget(data_dir):
         return True
     except OSError:
         return False
+
+
+# ── Готовый аккаунт ──────────────────────────────────────
+#
+# Входить по коду приходится не всем: аккаунт чаще получают уже
+# заведённым — строкой сессии или связкой «JSON плюс файл .session».
+# Имена полей в этих JSON не стандартизованы никем, поэтому у каждого
+# значения несколько написаний, и все они встречаются вживую.
+FIELD_NAMES = {
+    "api_id": ("api_id", "app_id", "apiId", "appId", "api-id"),
+    "api_hash": ("api_hash", "app_hash", "apiHash", "appHash", "api-hash"),
+    "phone": ("phone", "phone_number", "number", "phoneNumber"),
+    "password": ("twoFA", "two_fa", "2fa", "twofa", "password"),
+    "session": ("session", "session_string", "string_session",
+                "stringSession", "sessionString"),
+}
+# Признаки устройства. Аккаунт, заведённый «телефоном», а продолженный
+# «компьютером с другой версией приложения», Telegram нередко
+# разлогинивает — для него это выглядит как угон. Поэтому то, что
+# пришло в JSON, переносится как есть, а не заменяется своим.
+DEVICE_NAMES = {
+    "device_model": ("device", "device_model", "deviceModel"),
+    "system_version": ("sdk", "system_version", "systemVersion"),
+    "app_version": ("app_version", "appVersion"),
+    "lang_code": ("lang_code", "lang_pack", "langCode"),
+    "system_lang_code": ("system_lang_code", "system_lang_pack",
+                         "systemLangCode"),
+}
+
+# Строка сессии Telethon: версия «1» и дальше base64. Ни на JSON, ни на
+# номер телефона это не похоже, так что различить их можно молча.
+SESSION_RE = re.compile(r"^1[A-Za-z0-9+/=_-]{80,}$")
+
+
+def _pick(data, names):
+    for name in names:
+        if name in data and data[name] not in (None, ""):
+            return data[name]
+    return ""
+
+
+def parse_account(text):
+    """Разобрать вставленный аккаунт: JSON или строку сессии.
+
+    Ничего не сохраняет и не ходит в сеть — только понимает, что ему
+    дали. Отдельно, потому что именно здесь ошибаются: формат приходит
+    от продавца, а не от нас, и проверять разбор надо без аккаунта.
+    """
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "error": "Пусто — вставьте JSON или строку сессии"}
+
+    if SESSION_RE.match(text):
+        return {"ok": True, "session": text, "api_id": "", "api_hash": "",
+                "phone": "", "password": "", "device": {}}
+
+    if not text.startswith(("{", "[")):
+        return {"ok": False,
+                "error": "Не похоже ни на JSON, ни на строку сессии. Строка "
+                         "сессии начинается с единицы и идёт одним куском "
+                         "без пробелов"}
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        return {"ok": False, "error": "JSON не читается: %s" % str(e)[:120]}
+    if isinstance(data, list):
+        data = next((x for x in data if isinstance(x, dict)), None)
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "В JSON нет объекта с полями аккаунта"}
+
+    out = {"ok": True, "device": {}}
+    for key, names in FIELD_NAMES.items():
+        out[key] = str(_pick(data, names) or "").strip()
+    for key, names in DEVICE_NAMES.items():
+        value = str(_pick(data, names) or "").strip()
+        if value:
+            out["device"][key] = value
+    if not (out["session"] or out["api_id"] or out["api_hash"]):
+        return {"ok": False,
+                "error": "В JSON нет ни api_id с api_hash, ни строки сессии"}
+    return out
+
+
+def save_session_bytes(data_dir, raw):
+    """Положить готовый файл .session на место нашего.
+
+    Файл сессии Telethon — это база SQLite. Чужой файл другого формата
+    прошёл бы молча и упал бы только при первой проверке номеров,
+    поэтому смотрим на подпись сразу.
+    """
+    if not raw:
+        return {"ok": False, "error": "Файл пустой"}
+    if not raw.startswith(b"SQLite format 3"):
+        return {"ok": False,
+                "error": "Это не файл сессии Telethon. Он выглядит как база "
+                         "SQLite; файлы tdata от настольного Telegram не "
+                         "подходят"}
+    path = session_path(data_dir)
+    try:
+        tmp = path + ".part"
+        with open(tmp, "wb") as fh:
+            fh.write(raw)
+        shutil.move(tmp, path)
+    except OSError as e:
+        return {"ok": False, "error": "Не удалось записать файл: %s" % e}
+    return {"ok": True}
+
+
+def import_session(conf, session_string):
+    """Превратить строку сессии в файл сессии.
+
+    Хранить строку в базе незачем: она и есть ключ от аккаунта, а файл
+    лежит рядом с остальными данными и удаляется одной кнопкой.
+    """
+    if not available():
+        return {"ok": False, "error": "Библиотека Telethon не установлена"}
+    session_string = (session_string or "").strip()
+    if not SESSION_RE.match(session_string):
+        return {"ok": False, "error": "Строка сессии не похожа на строку "
+                                      "сессии Telethon"}
+
+    async def go():
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        client = TelegramClient(StringSession(session_string),
+                                *_keys(conf), **_opts(conf))
+        await client.connect()
+        try:
+            if not await client.is_user_authorized():
+                return {"ok": False,
+                        "error": "Сессия не авторизована: аккаунт разлогинен "
+                                 "или заблокирован"}
+            who = _who(await client.get_me())
+            # Переносим уже проверенную сессию в файл — ровно тот, с
+            # которым потом работает проверка номеров.
+            await client.disconnect()
+            client2 = TelegramClient(session_path(conf.get("data_dir", "")),
+                                     *_keys(conf), **_opts(conf))
+            client2.session.set_dc(*_dc(client.session))
+            client2.session.auth_key = client.session.auth_key
+            client2.session.save()
+            return {"ok": True, "who": who}
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    return _guard(go)
+
+
+def _dc(session):
+    return session.dc_id, session.server_address, session.port
 
 
 # ── Номера ───────────────────────────────────────────────
@@ -182,15 +338,136 @@ class BadKeys(Exception):
     трассировкой про int()."""
 
 
-async def _client(api_id, api_hash, path):
-    from telethon import TelegramClient
+class BadProxy(Exception):
+    """Адрес прокси разобрать не вышло."""
+
+
+# ── Прокси ───────────────────────────────────────────────
+#
+# Свой, отдельный от общего прокси программы: к Telegram ходят не
+# запросами HTTP, а своим протоколом на 443 и 80 порт, и провайдеры
+# режут его отдельно от всего остального. К тому же аккаунт, купленный
+# «под страну», с домашнего адреса разлогинивают заметно охотнее.
+PROXY_KINDS = ("socks5", "socks4", "http", "https", "mtproto", "mtproxy")
+
+
+def make_proxy(url):
+    """Адрес прокси → то, что понимает Telethon.
+
+    Возвращает {"kind": …, "proxy": …} или None, если прокси не задан.
+    Разбор отдельно от подключения: опечатка в адресе должна быть видна
+    сразу, а не через таймаут в тридцать секунд.
+    """
+    url = (url or "").strip()
+    if not url:
+        return None
+    m = re.match(r"^(\w+)://(.*)$", url)
+    if not m:
+        raise BadProxy("Не хватает схемы: socks5://, http:// или mtproto://")
+    kind, rest = m.group(1).lower(), m.group(2)
+    if kind not in PROXY_KINDS:
+        raise BadProxy("Неизвестный вид прокси «%s». Бывают: %s"
+                       % (kind, ", ".join(PROXY_KINDS)))
+
+    user = password = ""
+    if "@" in rest:
+        creds, rest = rest.rsplit("@", 1)
+        user, _, password = creds.partition(":")
+    host, _, tail = rest.partition(":")
+    port, _, path = tail.partition("/")
+    if not host or not port.isdigit():
+        raise BadProxy("Нужны адрес и порт: socks5://логин:пароль@адрес:порт")
+
+    if kind in ("mtproto", "mtproxy"):
+        # У MTProto вместо логина и пароля один секрет. Его пишут то
+        # после порта, то на месте логина — принимаем оба написания.
+        secret = (path or user or password).strip()
+        if not secret:
+            raise BadProxy("У MTProto-прокси нужен секрет: "
+                           "mtproto://адрес:порт/секрет")
+        return {"kind": "mtproto", "proxy": (host, int(port), secret)}
+
+    import socks
+    code = {"socks5": socks.SOCKS5, "socks4": socks.SOCKS4,
+            "http": socks.HTTP, "https": socks.HTTP}[kind]
+    return {"kind": kind,
+            "proxy": (code, host, int(port), True, user or None,
+                      password or None)}
+
+
+def label_proxy(url):
+    """Адрес прокси без логина и пароля — для журнала и экрана.
+
+    Пароль от прокси в тексте ошибки — та же утечка, что и ключ: его
+    видно на скриншоте, который присылают в поддержку.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
+    return re.sub(r"://[^@/]*@", "://…@", url)
+
+
+# ── Подключение ──────────────────────────────────────────
+def conf(api_id="", api_hash="", data_dir="", proxy="", device=None):
+    """Всё, что нужно для подключения, одной связкой."""
+    return {"api_id": api_id, "api_hash": api_hash, "data_dir": data_dir,
+            "proxy": proxy, "device": device or {}}
+
+
+def conf_from_db():
+    """Та же связка, собранная из настроек программы."""
+    from .. import db, settings
     try:
-        api_id = int(str(api_id).strip())
+        device = json.loads(db.get_setting("tg_device", "") or "{}")
+    except ValueError:
+        device = {}
+    return conf(api_id=db.get_setting("tg_api_id", ""),
+                api_hash=db.get_setting("tg_api_hash", ""),
+                data_dir=settings.data_dir(),
+                proxy=db.get_setting("tg_proxy", ""),
+                device=device if isinstance(device, dict) else {})
+
+
+def _keys(c):
+    try:
+        api_id = int(str(c.get("api_id") or "").strip())
     except (TypeError, ValueError):
         raise BadKeys()
-    if not str(api_hash or "").strip():
+    api_hash = str(c.get("api_hash") or "").strip()
+    if not api_hash:
         raise BadKeys()
-    client = TelegramClient(path, api_id, str(api_hash).strip())
+    return api_id, api_hash
+
+
+# Сколько ждать соединения. По умолчанию Telethon пробует пять раз с
+# растущей паузой, и при неверном прокси или закрытом доступе окно
+# висит минутами без единого слова на экране. Измерено: с настройками
+# по умолчанию отказ приходил через минуту с лишним, с этими —
+# вчетверо быстрее, и это тот срок, который успеваешь дождаться.
+CONNECT = {"connection_retries": 1, "retry_delay": 1,
+           "timeout": 12, "request_retries": 2}
+
+
+def _opts(c):
+    """Необязательные части подключения: прокси и признаки устройства."""
+    out = dict(CONNECT)
+    got = make_proxy(c.get("proxy") or "")
+    if got:
+        out["proxy"] = got["proxy"]
+        if got["kind"] == "mtproto":
+            from telethon.network import \
+                ConnectionTcpMTProxyRandomizedIntermediate as MT
+            out["connection"] = MT
+    for key, value in (c.get("device") or {}).items():
+        if key in DEVICE_NAMES and value:
+            out[key] = value
+    return out
+
+
+async def _client(c, path=None):
+    from telethon import TelegramClient
+    client = TelegramClient(path or session_path(c.get("data_dir", "")),
+                            *_keys(c), **_opts(c))
     await client.connect()
     return client
 
@@ -201,13 +478,13 @@ async def _client(api_id, api_hash, path):
 _code_hash = {}
 
 
-def send_code(api_id, api_hash, data_dir, phone):
+def send_code(c, phone):
     """Первый шаг входа: попросить Telegram прислать код."""
     if not available():
         return {"ok": False, "error": "Библиотека Telethon не установлена"}
 
     async def go():
-        client = await _client(api_id, api_hash, session_path(data_dir))
+        client = await _client(c)
         try:
             if await client.is_user_authorized():
                 me = await client.get_me()
@@ -221,14 +498,14 @@ def send_code(api_id, api_hash, data_dir, phone):
     return _guard(go)
 
 
-def sign_in(api_id, api_hash, data_dir, phone, code="", password=""):
+def sign_in(c, phone, code="", password=""):
     """Второй шаг: код из Telegram, при двухэтапной проверке — пароль."""
     if not available():
         return {"ok": False, "error": "Библиотека Telethon не установлена"}
 
     async def go():
         from telethon.errors import SessionPasswordNeededError
-        client = await _client(api_id, api_hash, session_path(data_dir))
+        client = await _client(c)
         try:
             if password:
                 await client.sign_in(password=password)
@@ -249,15 +526,15 @@ def sign_in(api_id, api_hash, data_dir, phone, code="", password=""):
     return _guard(go)
 
 
-def whoami(api_id, api_hash, data_dir):
+def whoami(c):
     """Под кем мы вошли. Нужен, чтобы человек видел, чей аккаунт рискует."""
     if not available():
         return {"ok": False, "error": "Библиотека Telethon не установлена"}
-    if not logged_in(data_dir):
+    if not logged_in(c.get("data_dir", "")):
         return {"ok": False, "error": "Вход не выполнен"}
 
     async def go():
-        client = await _client(api_id, api_hash, session_path(data_dir))
+        client = await _client(c)
         try:
             if not await client.is_user_authorized():
                 return {"ok": False, "error": "Сеанс больше не действует"}
@@ -293,6 +570,8 @@ def _guard(make_coro):
 def explain(e):
     name = type(e).__name__
     text = str(e)
+    if isinstance(e, BadProxy):
+        return "Прокси: %s" % text
     if isinstance(e, BadKeys):
         return ("api_id — это число, api_hash — строка. Проверьте, что "
                 "не перепутали их местами: оба лежат рядом на "
@@ -312,6 +591,10 @@ def explain(e):
         return "api_id или api_hash не подходят — проверьте их на my.telegram.org"
     if name == "AuthKeyUnregisteredError":
         return "Сеанс больше не действует — войдите снова"
+    if name in ("ConnectionError", "TimeoutError", "OSError",
+                "asyncio.TimeoutError", "CancelledError"):
+        return ("Не удалось соединиться с Telegram. Проверьте связь, а если "
+                "задан прокси — его адрес и доступность")
     return "%s: %s" % (name, text[:200]) if text else name
 
 
@@ -339,7 +622,7 @@ def read_batch(imported, users, batch):
     return out
 
 
-def check(api_id, api_hash, data_dir, pairs, on_log=None, should_stop=None,
+def check(c, pairs, on_log=None, should_stop=None,
           batch=BATCH, pause=PAUSE):
     """Проверить подготовленные номера.
 
@@ -350,7 +633,7 @@ def check(api_id, api_hash, data_dir, pairs, on_log=None, should_stop=None,
     result = {"ok": True, "found": {}, "checked": [], "stopped": ""}
     if not available():
         return {"ok": False, "error": "Библиотека Telethon не установлена"}
-    if not logged_in(data_dir):
+    if not logged_in(c.get("data_dir", "")):
         return {"ok": False, "error": "Вход в Telegram не выполнен"}
     if not pairs:
         return result
@@ -360,7 +643,7 @@ def check(api_id, api_hash, data_dir, pairs, on_log=None, should_stop=None,
         from telethon.tl.functions.contacts import (DeleteContactsRequest,
                                                     ImportContactsRequest)
         from telethon.tl.types import InputPhoneContact
-        client = await _client(api_id, api_hash, session_path(data_dir))
+        client = await _client(c)
         try:
             if not await client.is_user_authorized():
                 return {"ok": False, "error": "Сеанс больше не действует — "
@@ -426,4 +709,6 @@ def wait_hint(seconds):
 __all__ = ["available", "logged_in", "forget", "send_code", "sign_in",
            "whoami", "check", "prepare", "to_e164", "kind_of",
            "worth_checking", "read_batch", "explain", "wait_hint",
+           "parse_account", "save_session_bytes", "import_session",
+           "make_proxy", "label_proxy", "conf", "conf_from_db",
            "BATCH", "PAUSE", "DAY_LIMIT"]

@@ -151,6 +151,7 @@ def create_app():
             tg_api_id=db.get_setting("tg_api_id", ""),
             tg_api_hash=db.get_setting("tg_api_hash", ""),
             tg_phone=db.get_setting("tg_phone", ""),
+            tg_proxy=db.get_setting("tg_proxy", ""),
             tg_batch=tg.BATCH, tg_limit=tg.DAY_LIMIT,
             dadata_token=db.get_setting("dadata_token", ""),
             gis_key=db.get_setting("gis_key", ""),
@@ -348,6 +349,8 @@ def create_app():
         return jsonify(ok=True, lib=tg.available(),
                        keys=bool(api_id and api_hash),
                        logged=tg.logged_in(settings.data_dir()),
+                       proxy=tg.label_proxy(db.get_setting("tg_proxy", "")),
+                       device=db.get_setting("tg_device", ""),
                        phone=db.get_setting("tg_phone", ""))
 
     @app.post("/api/tg/code")
@@ -360,7 +363,7 @@ def create_app():
         if not api_id or not api_hash:
             return jsonify(ok=False, error="Сначала впишите api_id и api_hash")
         db.set_setting("tg_phone", phone)
-        return jsonify(tg.send_code(api_id, api_hash, settings.data_dir(), phone))
+        return jsonify(tg.send_code(tg.conf_from_db(), phone))
 
     @app.post("/api/tg/signin")
     def api_tg_signin():
@@ -369,12 +372,80 @@ def create_app():
         if not api_id or not api_hash:
             return jsonify(ok=False, error="Сначала впишите api_id и api_hash")
         return jsonify(tg.sign_in(
-            api_id, api_hash, settings.data_dir(),
-            (d.get("phone") or "").strip(), (d.get("code") or "").strip(),
-            (d.get("password") or "").strip()))
+            tg.conf_from_db(), (d.get("phone") or "").strip(),
+            (d.get("code") or "").strip(), (d.get("password") or "").strip()))
+
+    @app.post("/api/tg/account")
+    def api_tg_account():
+        """Готовый аккаунт: JSON от продавца или строка сессии.
+
+        Ключи и признаки устройства из JSON сохраняются вместе с
+        сессией: аккаунт, заведённый «телефоном» и продолженный
+        «компьютером», Telegram разлогинивает как угнанный.
+        """
+        d = request.get_json(silent=True) or {}
+        got = tg.parse_account(d.get("text") or "")
+        if not got.get("ok"):
+            return jsonify(got)
+        if got.get("api_id"):
+            db.set_setting("tg_api_id", got["api_id"])
+        if got.get("api_hash"):
+            db.set_setting("tg_api_hash", got["api_hash"])
+        if got.get("phone"):
+            db.set_setting("tg_phone", got["phone"])
+        if got.get("device"):
+            db.set_setting("tg_device", json.dumps(got["device"]))
+        if not got.get("session"):
+            # JSON без строки сессии идёт в паре с файлом .session:
+            # сам по себе он только настраивает подключение.
+            api_id, api_hash = _tg_keys()
+            return jsonify(ok=True, keys_only=True,
+                           need_file=not tg.logged_in(settings.data_dir()),
+                           # Поля выше должны показать принятое, иначе
+                           # «ключи приняты» стоит над пустой строкой.
+                           api_id=api_id, api_hash=api_hash,
+                           phone=db.get_setting("tg_phone", ""),
+                           error="" if (api_id and api_hash) else
+                                 "В JSON не нашлось ни api_id, ни api_hash")
+        res = tg.import_session(tg.conf_from_db(), got["session"])
+        if res.get("ok"):
+            api_id, api_hash = _tg_keys()
+            res.update(api_id=api_id, api_hash=api_hash,
+                       phone=db.get_setting("tg_phone", ""))
+        return jsonify(res)
+
+    @app.post("/api/tg/session-file")
+    def api_tg_session_file():
+        """Готовый файл .session — кладётся на место нашего."""
+        raw = request.get_data() or b""
+        if len(raw) > 8 * 1024 * 1024:
+            return jsonify(ok=False, error="Файл слишком большой для сессии")
+        got = tg.save_session_bytes(settings.data_dir(), raw)
+        if not got.get("ok"):
+            return jsonify(got)
+        api_id, api_hash = _tg_keys()
+        if not api_id or not api_hash:
+            return jsonify(ok=True, error="Файл принят, но нужны ещё api_id "
+                                          "и api_hash того же аккаунта")
+        return jsonify(tg.whoami(tg.conf_from_db()))
+
+    @app.post("/api/tg/proxy")
+    def api_tg_proxy():
+        """Проверяем адрес прокси до сохранения: опечатка должна быть
+        видна сразу, а не таймаутом на первой проверке номеров."""
+        d = request.get_json(silent=True) or {}
+        url = (d.get("proxy") or "").strip()
+        try:
+            tg.make_proxy(url)
+        except tg.BadProxy as e:
+            return jsonify(ok=False, error="Прокси: %s" % e)
+        db.set_setting("tg_proxy", url)
+        return jsonify(ok=True, proxy=tg.label_proxy(url))
 
     @app.post("/api/tg/forget")
     def api_tg_forget():
+        for key in ("tg_device",):
+            db.set_setting(key, "")
         return jsonify(ok=tg.forget(settings.data_dir()))
 
     @app.post("/api/tg/check")
@@ -917,7 +988,8 @@ def create_app():
                     "ai_model", "hh_ua", "hh_token",
                     "update_repo", "update_token", "update_url",
                     "yandex_key", "vk_token", "ai_kind", "proxy_url",
-                    "tg_api_id", "tg_api_hash", "tg_phone"):
+                    "tg_api_id", "tg_api_hash", "tg_phone",
+                    "tg_proxy"):
             if key in d:
                 db.set_setting(key, (d[key] or "").strip())
         return jsonify(ok=True)
@@ -934,6 +1006,59 @@ def create_app():
             "SELECT kind, value, owner, confidence, verified, source "
             "FROM contacts WHERE company_id=? ORDER BY confidence DESC", (cid,))]
         return dict(row), sig, cts
+
+    @app.post("/api/company/<int:cid>/tg")
+    def api_company_tg(cid):
+        """Проверить телефоны одной компании прямо сейчас.
+
+        Общий прогон идёт по полусотне номеров и занимает минуты. Когда
+        открыта одна карточка и звонить по ней надо сегодня, ждать
+        незачем — а номеров здесь два-три, и предел от них не страдает.
+        """
+        row = db.conn().execute("SELECT id FROM companies WHERE id=?",
+                                (cid,)).fetchone()
+        if row is None:
+            return jsonify(ok=False, error="компания не найдена")
+        if not tg.available():
+            return jsonify(ok=False, error="библиотека Telethon не установлена")
+        api_id, api_hash = _tg_keys()
+        if not api_id or not api_hash or not tg.logged_in(settings.data_dir()):
+            return jsonify(ok=False,
+                           error="вход в Telegram не выполнен — «Настройки»")
+        d = request.get_json(silent=True) or {}
+        # Из карточки проверяем всё, что есть, включая городские: их
+        # тут два, а не две тысячи, и человек спросил про эту компанию.
+        rows = [r for r in db.conn().execute(
+            "SELECT id, value FROM contacts WHERE company_id=? AND kind='phone'",
+            (cid,))]
+        by_e164 = {}
+        for r in rows:
+            e164 = tg.to_e164(r["value"])
+            if e164 and tg.worth_checking(e164, landlines=True):
+                by_e164.setdefault(e164, []).append(dict(r))
+        pairs = tg.prepare(list(by_e164), landlines=True, limit=10)
+        if not pairs:
+            return jsonify(ok=False,
+                           error="у компании нет номеров, которые можно "
+                                 "спросить: 8-800 и обрывки не в счёт")
+        res = tg.check(tg.conf_from_db(), pairs, batch=len(pairs))
+        if not res.get("ok"):
+            return jsonify(ok=False, error=res.get("error", "не вышло"))
+        found = res.get("found") or {}
+        for raw in res.get("checked") or []:
+            hit = found.get(raw)
+            for r in by_e164.get(raw, []):
+                db.set_contact_verified(r["id"], "tg" if hit else "no_tg")
+                if hit and hit.get("username"):
+                    db.add_contact(cid, "telegram", "@" + hit["username"],
+                                   "general", 80, "tg",
+                                   "номер найден в Telegram")
+        if bool(d.get("rescore", True)):
+            worker._rescore(cid)
+        _, _, cts = _company_facts(cid)
+        return jsonify(ok=True, found=len(found),
+                       checked=len(res.get("checked") or []),
+                       stopped=res.get("stopped", ""), contacts=cts)
 
     @app.post("/api/company/<int:cid>/analyze")
     def api_company_analyze(cid):

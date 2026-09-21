@@ -2770,14 +2770,17 @@ class TelegramNumbers(unittest.TestCase):
         self.assertEqual(tg.read_batch([Imp()], [], ["+79990000001"]), {})
 
     def test_nothing_happens_without_a_login(self):
-        res = tg.check("1", "x", "/nonexistent-dir-for-test", [("a", "+79990000001")])
+        res = tg.check(tg.conf(api_id="1", api_hash="x",
+                               data_dir="/nonexistent-dir-for-test"),
+                       [("a", "+79990000001")])
         self.assertFalse(res["ok"])
         self.assertIn("ход", res["error"])
 
     def test_swapped_keys_are_explained_not_traced(self):
         """api_id и api_hash лежат рядом и путаются местами. До сих пор
         за это выдавали трассировку про int()."""
-        res = tg.send_code("не число", "abc", "/tmp", "+79990000000")
+        res = tg.send_code(tg.conf(api_id="не число", api_hash="abc",
+                                   data_dir="/tmp"), "+79990000000")
         self.assertFalse(res["ok"])
         self.assertIn("api_id", res["error"])
         self.assertNotIn("ValueError", res["error"])
@@ -2805,6 +2808,186 @@ class EveryTaskHasAName(unittest.TestCase):
             self.assertIn("%s:" % kind, block, "задача %s без названия" % kind)
 
 
+class TelegramFromTheCard(unittest.TestCase):
+    """Проверка телефонов одной компании, не дожидаясь общего прогона.
+    Номеров здесь два-три, и дневной предел от них не страдает."""
+
+    def setUp(self):
+        db.init()
+        c = db.conn()
+        for t in ("contacts", "signals", "companies", "logs", "tasks"):
+            c.execute("DELETE FROM %s" % t)
+        c.commit()
+        db.set_setting("tg_api_id", "1")
+        db.set_setting("tg_api_hash", "x")
+        self.cl = web.create_app().test_client()
+        self.asked = []
+        self._logged_in, self._check = tg.logged_in, tg.check
+        tg.logged_in = lambda d: True
+
+        def fake(conf, pairs, on_log=None, should_stop=None, **kw):
+            self.asked.append([e for _, e in pairs])
+            return {"ok": True, "checked": [raw for raw, _ in pairs],
+                    "found": {raw: {"username": "boss", "name": "Босс",
+                                    "user_id": 1}
+                              for raw, e in pairs if e == "+79991112233"},
+                    "stopped": ""}
+        tg.check = fake
+        self.cid, _ = db.upsert_company({"name": "А", "inn": "7700000001"})
+
+    def tearDown(self):
+        tg.logged_in, tg.check = self._logged_in, self._check
+
+    def post(self):
+        return self.cl.post("/api/company/%d/tg" % self.cid,
+                            json={}).get_json()
+
+    def test_the_card_checks_landlines_too(self):
+        """Из карточки спрашивают про конкретную компанию, а не про всю
+        базу: городских тут два, а не две тысячи."""
+        db.add_contact(self.cid, "phone", "+7 999 111-22-33", "director", 90)
+        db.add_contact(self.cid, "phone", "+7 495 000-00-00", "general", 50)
+        got = self.post()
+        self.assertTrue(got["ok"], got)
+        self.assertEqual(sorted(self.asked[0]),
+                         ["+74950000000", "+79991112233"])
+        self.assertEqual(got["found"], 1)
+        self.assertEqual(got["checked"], 2)
+
+    def test_marks_land_on_the_contacts_returned(self):
+        db.add_contact(self.cid, "phone", "+7 999 111-22-33", "director", 90)
+        got = self.post()
+        marks = {c["value"]: c["verified"] for c in got["contacts"]}
+        self.assertEqual(marks["+7 999 111-22-33"], "tg")
+        self.assertEqual(marks["@boss"], "tg")
+
+    def test_tollfree_alone_is_refused_with_a_reason(self):
+        db.add_contact(self.cid, "phone", "8 800 555 35 35", "general", 60)
+        got = self.post()
+        self.assertFalse(got["ok"])
+        self.assertIn("8-800", got["error"])
+        self.assertEqual(self.asked, [])
+
+    def test_without_a_login_it_says_so_and_asks_nothing(self):
+        tg.logged_in = lambda d: False
+        db.add_contact(self.cid, "phone", "+7 999 111-22-33", "general", 90)
+        got = self.post()
+        self.assertFalse(got["ok"])
+        self.assertIn("Настройки", got["error"])
+        self.assertEqual(self.asked, [])
+
+    def test_an_unknown_company_is_not_a_crash(self):
+        got = self.cl.post("/api/company/999999/tg", json={}).get_json()
+        self.assertFalse(got["ok"])
+
+
+class TelegramAccount(unittest.TestCase):
+    """Готовый аккаунт приходит не кодом, а строкой сессии или JSON от
+    продавца. Имена полей в этих JSON не стандартизованы никем."""
+
+    SELLER = ('{"app_id": 2040, "app_hash": "b18441a1ff607e10", '
+              '"sdk": "Windows 10", "device": "Desktop", '
+              '"app_version": "4.9.7 x64", "lang_pack": "ru", '
+              '"system_lang_pack": "ru-RU", "twoFA": "qwerty", '
+              '"phone": "79991234567"}')
+
+    def test_seller_json_is_understood(self):
+        got = tg.parse_account(self.SELLER)
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["api_id"], "2040")
+        self.assertEqual(got["api_hash"], "b18441a1ff607e10")
+        self.assertEqual(got["phone"], "79991234567")
+        self.assertEqual(got["password"], "qwerty")
+
+    def test_device_is_carried_over_as_is(self):
+        """Аккаунт, заведённый «телефоном» и продолженный «компьютером
+        другой версии», Telegram разлогинивает как угнанный."""
+        got = tg.parse_account(self.SELLER)
+        self.assertEqual(got["device"], {
+            "device_model": "Desktop", "system_version": "Windows 10",
+            "app_version": "4.9.7 x64", "lang_code": "ru",
+            "system_lang_code": "ru-RU"})
+
+    def test_a_bare_session_string_is_understood(self):
+        line = "1" + "A" * 120
+        got = tg.parse_account(line)
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["session"], line)
+
+    def test_a_list_of_accounts_takes_the_first(self):
+        got = tg.parse_account('[{"app_id": 5, "app_hash": "x"}]')
+        self.assertEqual(got["api_id"], "5")
+
+    def test_rubbish_is_named_not_swallowed(self):
+        for text, part in (("", "Пусто"),
+                           ("79991234567", "Не похоже"),
+                           ('{"a":', "JSON не читается"),
+                           ('{"hello": 1}', "нет ни api_id")):
+            got = tg.parse_account(text)
+            self.assertFalse(got["ok"], text)
+            self.assertIn(part, got["error"], text)
+
+    def test_only_a_real_session_file_is_accepted(self):
+        """Файл сессии Telethon — база SQLite. Файлы tdata от
+        настольного Telegram прошли бы молча и упали бы при первой
+        проверке номеров."""
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.assertFalse(tg.save_session_bytes(d, b"")["ok"])
+        bad = tg.save_session_bytes(d, b"TDF$ tdata garbage")
+        self.assertFalse(bad["ok"])
+        self.assertIn("tdata", bad["error"])
+        good = tg.save_session_bytes(d, b"SQLite format 3\x00" + b"0" * 64)
+        self.assertTrue(good["ok"])
+        self.assertTrue(tg.logged_in(d))
+
+
+class TelegramProxy(unittest.TestCase):
+    """К Telegram ходят своим протоколом, а не запросами HTTP, и режут
+    его отдельно — поэтому прокси у него свой."""
+
+    def test_socks5_with_credentials(self):
+        got = tg.make_proxy("socks5://user:pass@1.2.3.4:1080")
+        self.assertEqual(got["kind"], "socks5")
+        self.assertEqual(got["proxy"][1:], ("1.2.3.4", 1080, True,
+                                            "user", "pass"))
+
+    def test_without_credentials(self):
+        got = tg.make_proxy("http://1.2.3.4:8080")
+        self.assertEqual(got["proxy"][4:], (None, None))
+
+    def test_mtproto_takes_a_secret(self):
+        got = tg.make_proxy("mtproto://1.2.3.4:443/ee0123abcd")
+        self.assertEqual(got, {"kind": "mtproto",
+                               "proxy": ("1.2.3.4", 443, "ee0123abcd")})
+
+    def test_empty_means_straight_through(self):
+        self.assertIsNone(tg.make_proxy(""))
+
+    def test_mistakes_are_named(self):
+        for url, part in (("1.2.3.4:1080", "схемы"),
+                          ("socks5://1.2.3.4", "адрес и порт"),
+                          ("ftp://a:1", "Неизвестный вид"),
+                          ("mtproto://1.2.3.4:443", "секрет")):
+            with self.assertRaises(tg.BadProxy, msg=url) as got:
+                tg.make_proxy(url)
+            self.assertIn(part, str(got.exception), url)
+
+    def test_the_password_never_shows(self):
+        """Пароль от прокси в тексте ошибки — та же утечка, что и ключ:
+        его видно на скриншоте, который присылают в поддержку."""
+        shown = tg.label_proxy("socks5://user:s3cret@1.2.3.4:1080")
+        self.assertNotIn("s3cret", shown)
+        self.assertIn("1.2.3.4:1080", shown)
+
+    def test_a_slow_connection_gives_up_instead_of_hanging(self):
+        """По умолчанию Telethon пробует пять раз с растущей паузой, и
+        при неверном прокси окно висело минутами без слова на экране."""
+        opts = tg._opts(tg.conf())
+        self.assertLessEqual(opts["connection_retries"], 2)
+        self.assertLessEqual(opts["timeout"], 20)
+
+
 class TelegramRun(unittest.TestCase):
     """Прогон целиком, без сети: что спросили у Telegram, что отметили
     и что не стали спрашивать второй раз."""
@@ -2821,8 +3004,7 @@ class TelegramRun(unittest.TestCase):
         self._logged_in, self._check = tg.logged_in, tg.check
         tg.logged_in = lambda d: True
 
-        def fake(api_id, api_hash, data_dir, pairs, on_log=None,
-                 should_stop=None, **kw):
+        def fake(conf, pairs, on_log=None, should_stop=None, **kw):
             self.asked.append([e for _, e in pairs])
             return {"ok": True, "checked": [raw for raw, _ in pairs],
                     "found": {raw: {"username": "boss", "name": "Босс",

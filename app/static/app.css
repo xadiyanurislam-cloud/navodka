@@ -319,6 +319,17 @@ select.stage{width:auto;min-width:104px;padding:5px 8px;font-size:12px;
 /* Предупреждение, которое обязано быть прочитанным: рискуют здесь не
    данными, а живым аккаунтом. Поэтому не серая подсказка мелким
    шрифтом, а отдельная плашка на цвете. */
+/* Готовый аккаунт и прокси — отдельные ходы внутри той же карточки,
+   а не ещё две карточки рядом: относятся они к одному и тому же входу
+   и читаются как его продолжение. */
+.tg-alt{margin-top:18px;padding-top:16px;border-top:1px solid var(--line-2)}
+.tg-alt h3{font-size:13px;font-weight:600;margin:0 0 6px}
+.tg-alt .hint-sm{margin-bottom:10px}
+.tg-alt textarea{font-size:12px;line-height:1.5;min-height:84px}
+/* Настоящий input[type=file] выглядит в каждой системе по-своему и
+   ни в одной — как остальные кнопки программы. Прячем его за ярлыком. */
+.file-btn{display:inline-flex;align-items:center;cursor:pointer;
+  flex-direction:row;gap:0;font-size:13px;color:var(--ink)}
 .warn-box{background:var(--warn-bg);border:1px solid var(--warn);
   border-radius:var(--r-lg);padding:12px 14px;margin:0 0 14px;
   font-size:12.5px;line-height:1.6;color:var(--ink)}

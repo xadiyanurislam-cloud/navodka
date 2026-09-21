@@ -709,6 +709,73 @@ if ($("btn-tg-code")) {
   };
 }
 
+// Готовый аккаунт: строка сессии или JSON от продавца, и отдельно
+// файл .session, который к такому JSON обычно и прилагается.
+if ($("btn-tg-account")) {
+  const note = $("tg-acc-state");
+  $("btn-tg-account").onclick = async () => {
+    const text = $("s-tg-account").value.trim();
+    if (!text) { toast("Вставьте JSON или строку сессии"); return; }
+    note.textContent = "разбираю…";
+    const d = await post("/api/tg/account", {text});
+    if (!d || !d.ok) {
+      note.innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+      return;
+    }
+    // Строку сессии вычищаем сразу: это и есть ключ от аккаунта, и
+    // висеть на экране ему незачем.
+    $("s-tg-account").value = "";
+    if (d.keys_only) {
+      note.textContent = d.need_file
+        ? "ключи приняты — теперь выберите файл .session"
+        : "ключи приняты";
+      if (d.error) note.innerHTML = `<span class="bad">${esc(d.error)}</span>`;
+    } else {
+      note.textContent = `аккаунт принят: ${d.who || ""}`;
+      toast("Telegram подключён");
+    }
+    // Поля выше заполняем принятым: «ключи приняты» над пустой
+    // строкой выглядит как «ничего не вышло».
+    for (const [id, key] of [["s-tg-id", "api_id"], ["s-tg-hash", "api_hash"],
+                             ["s-tg-phone", "phone"]]) {
+      if (d[key] && $(id)) $(id).value = d[key];
+    }
+    tgState();
+  };
+
+  $("s-tg-file").onchange = async () => {
+    const file = $("s-tg-file").files[0];
+    if (!file) return;
+    note.textContent = "читаю файл…";
+    const buf = await file.arrayBuffer();
+    const r = await fetch("/api/tg/session-file", {
+      method: "POST", headers: {"Content-Type": "application/octet-stream"},
+      body: buf});
+    const d = await r.json().catch(() => null);
+    $("s-tg-file").value = "";
+    if (!d || !d.ok) {
+      note.innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+      return;
+    }
+    note.innerHTML = d.error
+      ? `<span class="bad">${esc(d.error)}</span>`
+      : `файл принят: ${esc(d.who || "")}`;
+    if (!d.error) toast("Telegram подключён");
+    tgState();
+  };
+}
+
+if ($("btn-tg-proxy")) {
+  $("btn-tg-proxy").onclick = async () => {
+    const note = $("tg-proxy-state");
+    note.textContent = "проверяю адрес…";
+    const d = await post("/api/tg/proxy", {proxy: $("s-tg-proxy").value.trim()});
+    note.innerHTML = (d && d.ok)
+      ? (d.proxy ? `сохранено: ${esc(d.proxy)}` : "прокси выключен")
+      : `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+  };
+}
+
 if ($("btn-tg-check")) {
   $("btn-tg-check").onclick = async () => {
     const d = await tgState();
@@ -2346,6 +2413,7 @@ async function toggleCard(tr, id) {
 
     <div class="card-do">
       <button class="btn primary sm" data-analyze="${c.id}">Разобрать через ИИ</button>
+      <button class="btn sm" data-tgcheck="${c.id}">Проверить в Telegram</button>
       <button class="btn sm" data-letter="${c.id}">Письмо</button>
       <button class="btn sm" data-kp="${c.id}">Коммерческое предложение</button>
       <span class="do-links">${links}</span>
@@ -2529,6 +2597,34 @@ function bindWork(root, c) {
       ev.stopPropagation();
       copy(d.subject + "\n\n" + d.body);
     };
+  };
+
+  // Телефоны этой компании — сейчас. Их два-три, дневной предел от
+  // них не страдает, а ответ нужен до звонка, а не после общего
+  // прогона. Городские здесь спрашиваются тоже: человек попросил про
+  // эту компанию, а не про всю базу.
+  const tgBtn = root.querySelector("[data-tgcheck]");
+  if (tgBtn) tgBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const back = tgBtn.textContent;
+    tgBtn.disabled = true;
+    tgBtn.textContent = "спрашиваю…";
+    const d = await post("/api/company/" + c.id + "/tg", {});
+    tgBtn.disabled = false;
+    tgBtn.textContent = back;
+    if (!d || !d.ok) { toast((d && d.error) || "не вышло"); return; }
+    // Отметки живут прямо на строках контактов — перерисовываем их, а
+    // не всю карточку: открытые «показать ещё» не должны схлопнуться.
+    const fresh = await get("/api/company/" + c.id);
+    if (fresh && fresh.ok) {
+      const rest2 = (fresh.contacts || []).filter((x) => x.kind !== "social");
+      const cs = root.querySelector(".cs");
+      if (cs) cs.innerHTML = `<h4>Как связаться</h4>${contactsBlock(rest2, c.id)}`;
+    }
+    toast(d.found
+      ? `Telegram есть у ${d.found} из ${d.checked}`
+      : `Проверено ${d.checked} — ни одного не нашлось`);
+    if (d.stopped) toast(d.stopped);
   };
 
   // Разбор одной компании сейчас. Общий прогон идёт по тридцати

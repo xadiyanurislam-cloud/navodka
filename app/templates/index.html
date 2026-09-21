@@ -785,6 +785,52 @@
           <button class="btn quiet" id="btn-tg-forget">Забыть аккаунт</button>
           <span class="upd-state" id="tg-state"></span>
         </footer>
+
+        <div class="tg-alt">
+          <h3>Аккаунт уже есть</h3>
+          <p class="hint-sm">Входить по коду нужно не всегда: готовый
+             аккаунт приходит строкой сессии или связкой «JSON плюс файл
+             .session». Признаки устройства из JSON переносятся как есть —
+             аккаунт, заведённый «телефоном» и продолженный «компьютером
+             другой версии», Telegram разлогинивает как угнанный.</p>
+          <div class="fields">
+            <label class="wide">JSON от продавца или строка сессии
+              <textarea id="s-tg-account" rows="4" spellcheck="false"
+                placeholder='{"app_id": 2040, "app_hash": "…", "device": "Desktop", "sdk": "Windows 10", "phone": "79991234567"}&#10;— или —&#10;1BVtsOHwBu4…'></textarea>
+              <em class="fld-hint">Вставляется целиком. Строка сессии
+                 начинается с единицы и идёт одним куском</em>
+            </label>
+          </div>
+          <div class="upd-line">
+            <button class="btn" id="btn-tg-account">Принять аккаунт</button>
+            <label class="btn file-btn">Выбрать файл .session
+              <input id="s-tg-file" type="file" accept=".session,.sqlite,.db" hidden>
+            </label>
+            <span class="upd-state" id="tg-acc-state"></span>
+          </div>
+        </div>
+
+        <div class="tg-alt">
+          <h3>Прокси для Telegram</h3>
+          <p class="hint-sm">Отдельный от общего прокси программы: к
+             Telegram ходят не запросами HTTP, а своим протоколом, и
+             режут его отдельно от всего остального. Купленный «под
+             страну» аккаунт с домашнего адреса разлогинивают охотнее.</p>
+          <div class="fields">
+            <label class="wide">Адрес
+              <input id="s-tg-proxy" type="password" data-secret
+                     value="{{ tg_proxy }}"
+                     placeholder="socks5://логин:пароль@адрес:порт">
+              <em class="fld-hint">Годятся <b>socks5://</b>, <b>socks4://</b>,
+                 <b>http://</b> и <b>mtproto://адрес:порт/секрет</b>.
+                 Пусто — идём напрямую</em>
+            </label>
+          </div>
+          <div class="upd-line">
+            <button class="btn" id="btn-tg-proxy">Сохранить прокси</button>
+            <span class="upd-state" id="tg-proxy-state"></span>
+          </div>
+        </div>
       </article>
 
       <article class="card">

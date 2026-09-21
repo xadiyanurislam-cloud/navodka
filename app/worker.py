@@ -1800,9 +1800,9 @@ def task_tg(task_id, params):
         log("Библиотека Telethon не установлена — переустановите программу "
             "или добавьте её в окружение.", "error")
         return
-    api_id = db.get_setting("tg_api_id", "")
-    api_hash = db.get_setting("tg_api_hash", "")
-    data_dir = settings.data_dir()
+    conf = tg.conf_from_db()
+    api_id, api_hash = conf["api_id"], conf["api_hash"]
+    data_dir = conf["data_dir"]
     if not api_id or not api_hash:
         log("Не заданы api_id и api_hash. Возьмите их на my.telegram.org и "
             "впишите в «Настройки».", "error")
@@ -1859,8 +1859,9 @@ def task_tg(task_id, params):
     log("Спрашиваю Telegram про %d номеров пачками по %d. Это медленно "
         "намеренно: за спешку Telegram ограничивает аккаунт."
         % (len(pairs), tg.BATCH))
-    res = tg.check(api_id, api_hash, data_dir, pairs, on_log=log,
-                   should_stop=_should_stop)
+    if conf["proxy"]:
+        log("Через прокси %s" % tg.label_proxy(conf["proxy"]))
+    res = tg.check(conf, pairs, on_log=log, should_stop=_should_stop)
     if not res.get("ok"):
         log("Telegram: %s" % res.get("error", "не вышло"), "error")
         return
