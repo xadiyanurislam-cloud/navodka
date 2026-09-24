@@ -1474,3 +1474,106 @@ details.ct-more > summary:hover{text-decoration:underline}
    поверх текста ключа. */
 .secret-wrap input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]){
   width:100%;padding-right:76px}
+
+/* ── Рассылки ─────────────────────────────────────────────
+   Сверху — одна строка о том, идёт ли отправка и почему нет. Это
+   главный вопрос экрана: письма уходят сами, и понять, что они стоят,
+   иначе нельзя, кроме как по отсутствию ответов через неделю. */
+/* Блоком, а не сеткой или флексом: экран сам прокручивается и имеет
+   высоту окна, а панели с overflow:hidden в сетке такой высоты
+   сжимаются до нуля и обрезают содержимое. */
+#view-mail > *{max-width:1180px}
+#view-mail > * + *{margin-top:14px}
+.mail-state{background:var(--surface);border:1px solid var(--line);
+  border-left:4px solid var(--line);border-radius:var(--r-lg);
+  padding:14px 18px;box-shadow:var(--shadow-card)}
+.mail-state.good{border-left-color:var(--ok)}
+.mail-state.warn{border-left-color:var(--warn)}
+.mail-state.bad{border-left-color:var(--err)}
+.ms-head{font-size:13.5px;font-weight:550;display:flex;align-items:center;
+  gap:10px;flex-wrap:wrap;line-height:1.5}
+.ms-nums{display:flex;gap:18px;flex-wrap:wrap;margin-top:8px;font-size:12px;
+  color:var(--ink-2);align-items:center}
+.ms-nums b{color:var(--ink);font-weight:600}
+.ms-err{margin-top:8px;font-size:12px;color:var(--err)}
+.ms-foot{margin-top:6px;font-size:11.5px;color:var(--ink-3)}
+
+.camp{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:16px;
+  align-items:center;padding:13px 18px;border-bottom:1px solid var(--line-2)}
+.camp:last-child{border-bottom:0}
+.camp.is-paused .camp-main b{color:var(--ink-3)}
+.camp-main{display:flex;flex-direction:column;min-width:0;line-height:1.4}
+.camp-main b{font-size:13.5px;font-weight:550;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.camp-main i{font-style:normal;font-size:11.5px;color:var(--ink-2)}
+.camp-nums{display:flex;gap:14px}
+.camp-nums span{display:flex;flex-direction:column;align-items:center;
+  font-size:15px;font-weight:600;min-width:46px}
+.camp-nums em{font-style:normal;font-size:10.5px;font-weight:400;color:var(--ink-3)}
+.camp-nums .good{color:var(--ok)} .camp-nums .bad{color:var(--err)}
+.camp-do{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+@media (max-width:900px){
+  .camp{grid-template-columns:1fr}
+  .camp-nums{justify-content:space-between}
+  .camp-do{justify-content:flex-start}
+}
+
+.camp-body{padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+.camp-name{max-width:520px}
+.ph-chips{display:inline-flex;gap:5px;flex-wrap:wrap;vertical-align:middle}
+.chip.sm{padding:2px 8px;font-size:11.5px}
+.step-box{border:1px solid var(--line);border-radius:var(--r);padding:10px 14px 14px;
+  margin:0;min-width:0}
+.step-box + .step-box{margin-top:10px}
+.step-box legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:0 6px;font-size:13px}
+.step-box legend label.opt{font-size:13px}
+.step-box.is-off .st-fields,.step-box.is-off .st-delay{opacity:.45}
+.st-delay{font-size:12px;color:var(--ink-2);display:inline-flex;align-items:center;gap:6px}
+#camp-steps .st-delay input.st-days{width:70px;flex:0 0 70px;padding:5px 8px}
+.st-mode-l{margin:4px 0 10px}
+.st-fields{display:flex;flex-direction:column;gap:10px}
+.st-fields textarea{font:inherit;font-size:13px;line-height:1.55;resize:vertical}
+.prev-h{font-size:13.5px;margin:4px 0 8px}
+.prev-co{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-bottom:10px}
+.prev-to{font-size:12.5px;margin-bottom:8px}
+.prev-l + .prev-l{border-top:1px dashed var(--line);margin-top:10px;padding-top:10px}
+.prev-meta{font-size:11px;color:var(--ink-3);text-transform:uppercase;
+  letter-spacing:.04em;margin-bottom:4px}
+
+#camp-rows .panel-head{flex-wrap:wrap}
+#camp-rows .panel-head h2{flex:1 1 100%;order:0}
+#camp-rows .panel-head .chips{flex:1 1 auto;order:1}
+#camp-rows-close{position:absolute;right:18px;top:12px}
+#camp-rows .panel-head{position:relative;padding-right:90px}
+table.mini{width:100%;border-collapse:collapse;font-size:12.5px}
+table.mini th{text-align:left;font-weight:500;color:var(--ink-3);font-size:11.5px;
+  padding:8px 12px;border-bottom:1px solid var(--line-2)}
+table.mini td{padding:8px 12px;border-bottom:1px solid var(--line-2);vertical-align:top}
+table.mini td em{display:block;font-style:normal;font-size:11px;color:var(--ink-3)}
+table.mini .st-replied{color:var(--ok);font-weight:550}
+table.mini .st-bounced,table.mini .st-error{color:var(--err)}
+#camp-rows-list{overflow-x:auto}
+
+.mail-rules{padding:12px 18px 16px 36px;font-size:12.5px;line-height:1.6;color:var(--ink-2)}
+.mail-rules li + li{margin-top:6px}
+.mail-rules b{color:var(--ink);font-weight:550}
+
+.mail-srv{margin:14px 0 4px}
+.mail-srv summary{cursor:pointer;font-size:12.5px;color:var(--ink-2)}
+.mail-srv .fields{margin-top:10px}
+.mail-pace{margin-top:14px}
+.mail-check-line{margin-top:14px}
+.mail-check{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.mc-row{display:flex;gap:10px;font-size:12.5px;line-height:1.5}
+.mc-row b{flex:0 0 170px;font-weight:550}
+.mc-row.good b{color:var(--ok)} .mc-row.bad b{color:var(--err)}
+.mc-row span{color:var(--ink-2)}
+@media (max-width:640px){.mc-row{flex-direction:column;gap:2px}.mc-row b{flex:none}}
+#s-mail-sign{font-family:inherit;font-size:13px}
+@media (max-width:700px){
+  #view-mail .panel-head{flex-wrap:wrap}
+  #view-mail .panel-head .panel-note{flex-basis:100%;order:3}
+  .camp-nums{flex-wrap:wrap;gap:10px}
+  .camp-nums span{min-width:0}
+}

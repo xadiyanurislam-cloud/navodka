@@ -14,8 +14,8 @@ import time
 from flask import (Flask, Response, jsonify, render_template, request,
                    send_file)
 
-from . import (ai, db, diag, export, geo, score, settings, trades,
-               update, worker)
+from . import (ai, db, diag, export, geo, mail, outreach, score, settings,
+               trades, update, worker)
 from .sources import hh, tg
 
 
@@ -114,6 +114,8 @@ def num(value, default, low, high):
 STAGE_NEXT = {
     "в работе": ("связаться", 0),
     "написали": ("проверить, ответили ли", 3),
+    # Ответ на письмо ждёт сегодня: через день человек уже остыл.
+    "ответили": ("ответить на письмо", 0),
     "созвон": ("созвониться", 1),
 }
 
@@ -122,6 +124,25 @@ STAGE_NEXT = {
 LIST_SIGNALS = ("hh_vacancies", "hh_fresh_days", "tech_calltracking",
                 "tech_crm", "tech_telephony", "gis_rubric", "size",
                 "revenue", "zakupki_person", "found_by", "cc_why")
+
+
+# Настройки ящика для рассылок. В базе лежат с приставкой mail_.
+MAIL_KEYS = ("address", "password", "name", "sign", "smtp_host", "smtp_port",
+             "imap_host", "imap_port", "day_limit", "hour_from", "hour_to",
+             "weekends", "warmup")
+
+
+def _enroll_text(got):
+    """Итог добавления в кампанию одной строкой: сколько и почему не все."""
+    parts = ["добавлено %d" % got["added"]]
+    for key, word in (("busy", "уже в рассылке"),
+                      ("no_email", "без почты"),
+                      ("guess", "только угаданный адрес"),
+                      ("refused", "просили не писать"),
+                      ("blocked", "отказ, ответили или в чёрном списке")):
+        if got.get(key):
+            parts.append("%s — %d" % (word, got[key]))
+    return ", ".join(parts)
 
 
 def create_app():
@@ -189,6 +210,9 @@ def create_app():
             has_vk=bool(db.get_setting("vk_token", "")),
             yandex_key=db.get_setting("yandex_key", ""),
             vk_token=db.get_setting("vk_token", ""),
+            mail={k: db.get_setting("mail_" + k, "") for k in MAIL_KEYS},
+            mail_presets=mail.presets_for_ui(),
+            mail_optout_line=mail.OPT_OUT_LINE,
         )
 
     # ── Задачи ───────────────────────────────────────────
@@ -953,7 +977,7 @@ def create_app():
                        search=[{"title": t, "url": u} for t, u in
                                social.search_links(row["director"], row["name"])])
 
-    STAGES = ["new", "в работе", "написали", "созвон", "отказ"]
+    STAGES = ["new", "в работе", "написали", "ответили", "созвон", "отказ"]
 
     @app.get("/api/board")
     def api_board():
@@ -1107,6 +1131,16 @@ def create_app():
                     "tg_proxy"):
             if key in d:
                 db.set_setting(key, _text(d[key], 500))
+        touched = False
+        for key in MAIL_KEYS:
+            if "mail_" + key in d:
+                limit = 1000 if key == "sign" else 200
+                db.set_setting("mail_" + key, _text(d["mail_" + key], limit))
+                touched = True
+        # Ящик поправили — пробуем сразу, а не через четверть часа паузы,
+        # которую поставила прошлая ошибка входа.
+        if touched:
+            outreach.reset_pause()
         return jsonify(ok=True)
 
     def _company_facts(cid):
@@ -1316,9 +1350,109 @@ def create_app():
         elif action == "blacklist":
             for cid in ids:
                 db.blacklist_add(cid, (d.get("reason") or "отказ")[:200])
+        elif action == "campaign":
+            got = outreach.enroll(num(d.get("campaign"), 0, 0, 2**31), ids)
+            if got is None:
+                return jsonify(ok=False, error="кампания не найдена")
+            return jsonify(ok=True, count=got["added"], result=got,
+                           text=_enroll_text(got))
         else:
             return jsonify(ok=False, error="неизвестное действие")
         return jsonify(ok=True, count=len(ids))
+
+    # ── Рассылки ─────────────────────────────────────────
+    @app.get("/api/mail/state")
+    def api_mail_state():
+        return jsonify(ok=True, **outreach.status())
+
+    @app.post("/api/mail/check")
+    def api_mail_check():
+        """Проверить ящик: вход на отправку, на чтение и письмо себе."""
+        d = request.get_json(silent=True) or {}
+        steps = mail.check(mail.conf_from_db(), send_test=bool(d.get("send_test")))
+        outreach.reset_pause()
+        return jsonify(ok=all(s[1] for s in steps),
+                       steps=[{"what": a, "ok": b, "text": c} for a, b, c in steps])
+
+    @app.post("/api/mail/poll")
+    def api_mail_poll():
+        """Проверить ответы сейчас, не дожидаясь пяти минут."""
+        got = outreach.poll()
+        st = outreach.status()
+        if got is None:
+            return jsonify(ok=False, error=st["problem"] or st["poll_error"]
+                           or "чтение ответов не настроено")
+        if st["poll_error"]:
+            return jsonify(ok=False, error=st["poll_error"], found=got)
+        return jsonify(ok=True, found=got)
+
+    @app.get("/api/campaigns")
+    def api_campaigns():
+        return jsonify(ok=True, campaigns=outreach.list_campaigns(),
+                       defaults=outreach.DEFAULT_STEPS,
+                       placeholders=list(outreach.PLACEHOLDERS),
+                       status_ru=outreach.STATUS_RU)
+
+    @app.post("/api/campaigns")
+    def api_campaign_save():
+        d = request.get_json(silent=True) or {}
+        cid = num(d.get("id"), 0, 0, 2**31) or None
+        new_id, err = outreach.save_campaign(_text(d.get("name"), 120),
+                                             d.get("steps"), cid)
+        if err:
+            return jsonify(ok=False, error=err)
+        return jsonify(ok=True, id=new_id)
+
+    @app.post("/api/campaigns/<int:cid>/state")
+    def api_campaign_state(cid):
+        d = request.get_json(silent=True) or {}
+        if not outreach.set_status(cid, _text(d.get("status"), 20)):
+            return jsonify(ok=False, error="не вышло")
+        return jsonify(ok=True)
+
+    @app.post("/api/campaigns/<int:cid>/delete")
+    def api_campaign_delete(cid):
+        return jsonify(ok=outreach.delete_campaign(cid))
+
+    @app.get("/api/campaigns/<int:cid>/rows")
+    def api_campaign_rows(cid):
+        return jsonify(ok=True, rows=outreach.rows(
+            cid, _text(request.args.get("status"), 20)))
+
+    @app.post("/api/campaigns/<int:cid>/preview")
+    def api_campaign_preview(cid):
+        d = request.get_json(silent=True) or {}
+        ids = [int(x) for x in (d.get("ids") or [])
+               if str(x).strip().isdigit()][:3]
+        got = outreach.preview(cid, ids)
+        if got is None:
+            return jsonify(ok=False, error="кампания не найдена")
+        return jsonify(ok=True, letters=got)
+
+    @app.post("/api/campaigns/<int:cid>/add")
+    def api_campaign_add(cid):
+        """Добавить в кампанию выбранные или всё, что сейчас в списке."""
+        d = request.get_json(silent=True) or {}
+        ids = [int(x) for x in (d.get("ids") or [])
+               if str(x).strip().isdigit()][:5000]
+        if not ids and d.get("filter"):
+            cond, args = _company_where(_text(d.get("q"), 200),
+                                        _text(d.get("only"), 40), "")
+            sql = "SELECT id FROM companies"
+            if cond:
+                sql += " WHERE " + cond
+            ids = [r["id"] for r in db.conn().execute(
+                sql + " ORDER BY score DESC, id LIMIT 5000", tuple(args))]
+        if not ids:
+            return jsonify(ok=False, error="ничего не выбрано")
+        got = outreach.enroll(cid, ids)
+        if got is None:
+            return jsonify(ok=False, error="кампания не найдена")
+        return jsonify(ok=True, result=got, text=_enroll_text(got))
+
+    @app.post("/api/outreach/<int:oid>/stop")
+    def api_outreach_stop(oid):
+        return jsonify(ok=outreach.stop_row(oid))
 
     @app.get("/api/blacklist")
     def api_blacklist():
@@ -1369,8 +1503,11 @@ def create_app():
         # Кэш обхода сайтов тоже чистим: он помнит, что сайт обходили на
         # этой неделе, и после очистки базы новый поиск пропускал бы те
         # же сайты, оставляя карточки без телефонов и почт.
+        # Очередь рассылки и журнал писем — вместе с компаниями: номера
+        # компаний начнутся заново, и чужая история писем досталась бы
+        # новым. Кампании и отписки остаются — это решения человека.
         for t in ("contacts", "signals", "notes", "companies", "logs",
-                  "tasks", "site_visits"):
+                  "tasks", "site_visits", "outreach", "sent_mail"):
             c.execute("DELETE FROM %s" % t)
         c.commit()
         return jsonify(ok=True)

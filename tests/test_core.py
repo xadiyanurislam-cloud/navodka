@@ -5,6 +5,8 @@
 или поздно краснеет не из-за нашей ошибки, и его перестают читать.
 """
 import datetime
+import email
+import email.policy
 import json
 import io
 import re
@@ -15,6 +17,8 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Заглушки почтовых серверов лежат рядом с тестами.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # База должна лежать во временной папке: иначе прогон тестов затрёт
 # рабочие данные пользователя.
@@ -6213,6 +6217,596 @@ class ManyPhones(unittest.TestCase):
         номер вставляют без пробелов."""
         self.assertIn("function prettyPhone", self.js)
         self.assertIn('data-copy="${v}">${shown}', self.js)
+
+
+# ── Рассылки ─────────────────────────────────────────────
+from app import mail, outreach                                # noqa: E402
+import fake_mail                                              # noqa: E402
+
+_MAIL_TABLES = ("outreach", "sent_mail", "campaigns", "mail_optout",
+                "contacts", "signals", "notes", "companies", "blacklist")
+
+
+def _mail_reset():
+    db.init()
+    c = db.conn()
+    for t in _MAIL_TABLES:
+        c.execute("DELETE FROM %s" % t)
+    c.execute("DELETE FROM settings WHERE key LIKE 'mail_%'")
+    c.commit()
+    outreach.STATE.update({"next_send_at": 0.0, "pause_until": 0.0,
+                           "last_error": "", "last_poll": 0.0,
+                           "poll_error": "", "poll_found": 0})
+
+
+def _company(name, director="", email="", owner="director", verified="ok",
+             source="сайт компании", stage="new", **extra):
+    row = dict({"name": name, "director": director}, **extra)
+    cid, _ = db.upsert_company(row)
+    if email:
+        db.add_contact(cid, "email", email, owner, 90, verified, source)
+    if stage != "new":
+        db.update_company_fields(cid, {"stage": stage})
+    return cid
+
+
+# Шаги по умолчанию с дописанной заготовкой — как их сохранит человек.
+_STEPS = [dict(st, body=st["body"].replace(outreach.PLACEHOLDER_GAP,
+                                           "Коротко о нас: делаем сайты."))
+          for st in outreach.DEFAULT_STEPS]
+
+# Будний день, 11 утра по местному времени: отправка в окне.
+_WEEKDAY = time.mktime((2026, 9, 23, 11, 0, 0, 0, 0, -1))
+
+
+class MailPresets(unittest.TestCase):
+    def test_known_services_fill_servers(self):
+        c = mail.conf("sales@yandex.ru", "pw")
+        self.assertEqual((c["smtp_host"], c["smtp_port"]), ("smtp.yandex.ru", 465))
+        self.assertEqual((c["imap_host"], c["imap_port"]), ("imap.yandex.ru", 993))
+        self.assertEqual(mail.conf("a@bk.ru", "pw")["smtp_host"], "smtp.mail.ru")
+        self.assertEqual(mail.conf("a@gmail.com", "pw")["imap_host"], "imap.gmail.com")
+
+    def test_own_domain_needs_server(self):
+        """Свой домен без сервера — сказать, чего не хватает, а не падать."""
+        why = mail.problem(mail.conf("sales@romashka.ru", "pw"))
+        self.assertIn("сервер отправки", why)
+        self.assertIn("romashka.ru", why)
+
+    def test_own_domain_on_yandex_gets_yandex_hint(self):
+        c = mail.conf("sales@romashka.ru", "pw", smtp_host="smtp.yandex.ru")
+        self.assertEqual(c["service"], "yandex")
+        self.assertEqual(mail.problem(c), "")
+
+    def test_missing_pieces_are_named(self):
+        self.assertIn("адрес", mail.problem(mail.conf("", "pw")))
+        self.assertIn("пароль", mail.problem(mail.conf("a@yandex.ru", "")))
+        self.assertIn("не похож", mail.problem(mail.conf("не почта", "pw")))
+
+    def test_bad_port_falls_back(self):
+        c = mail.conf("a@yandex.ru", "pw", smtp_port="абв", imap_port="99999")
+        self.assertEqual((c["smtp_port"], c["imap_port"]), (465, 993))
+
+
+class MailErrors(unittest.TestCase):
+    def test_wrong_password_names_app_password(self):
+        import smtplib
+        c = mail.conf("a@yandex.ru", "pw")
+        text, kind = mail.explain(smtplib.SMTPAuthenticationError(535, b"bad"), c)
+        self.assertEqual(kind, mail.GLOBAL)
+        self.assertIn("пароль приложения", text)
+        self.assertIn("id.yandex.ru", text)
+
+    def test_unknown_recipient_is_about_address(self):
+        import smtplib
+        e = smtplib.SMTPRecipientsRefused({"x@c.ru": (550, b"no such user")})
+        text, kind = mail.explain(e, mail.conf("a@yandex.ru", "pw"))
+        self.assertEqual(kind, mail.RECIPIENT)
+        self.assertIn("x@c.ru", text)
+
+    def test_spam_rejection_stops_everything(self):
+        import smtplib
+        e = smtplib.SMTPDataError(554, b"5.7.1 Message rejected under suspicion of SPAM")
+        text, kind = mail.explain(e, mail.conf("a@yandex.ru", "pw"))
+        self.assertEqual(kind, mail.GLOBAL)
+        self.assertIn("спам", text)
+
+    def test_password_never_leaks_into_text(self):
+        c = mail.conf("a@yandex.ru", "Sup3rSecretPw")
+        text, _ = mail.explain(OSError("login a Sup3rSecretPw failed"), c)
+        self.assertNotIn("Sup3rSecretPw", text)
+
+
+_REPLY = """From: Иван Петров <boss@romashka.ru>
+To: me@test.local
+Subject: Re: Ромашка: вопрос руководителю
+Message-ID: <r1@romashka.ru>
+In-Reply-To: {ref}
+References: {ref}
+Content-Type: text/plain; charset=utf-8
+
+{text}
+
+-----Original Message-----
+> старое письмо
+"""
+
+_BOUNCE = """From: MAILER-DAEMON@test.local
+To: me@test.local
+Subject: Undelivered Mail Returned to Sender
+Content-Type: multipart/report; report-type=delivery-status; boundary="B"
+
+--B
+Content-Type: text/plain
+
+Не удалось доставить письмо.
+--B
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; test.local
+Final-Recipient: rfc822; {addr}
+Action: failed
+Status: 5.1.1
+--B
+Content-Type: text/rfc822-headers
+
+Message-ID: {ref}
+To: {addr}
+--B--
+"""
+
+
+class MailParsing(unittest.TestCase):
+    def test_reply_is_linked_and_quote_cut(self):
+        item = mail.parse(_REPLY.format(ref="<m1@test.local>",
+                                        text="Да, интересно. Позвоните завтра.").encode())
+        self.assertEqual(item["from"], "boss@romashka.ru")
+        self.assertIn("<m1@test.local>", item["refs"])
+        self.assertEqual(item["text"], "Да, интересно. Позвоните завтра.")
+        self.assertFalse(item["bounce"])
+
+    def test_bounce_names_address_and_our_letter(self):
+        item = mail.parse(_BOUNCE.format(addr="nobody@c.ru", ref="<m9@test.local>").encode())
+        self.assertTrue(item["bounce"])
+        self.assertEqual(item["failed"], ["nobody@c.ru"])
+        self.assertIn("<m9@test.local>", item["bounce_refs"])
+
+    def test_auto_reply_is_not_an_answer(self):
+        raw = ("From: a@c.ru\nSubject: Автоответ: в отпуске до 1 октября\n"
+               "Auto-Submitted: auto-replied\n\nЯ в отпуске.\n").encode()
+        item = mail.parse(raw)
+        self.assertTrue(item["auto"])
+
+    def test_refusal_words(self):
+        for text in ("нет", "Нет, спасибо.", "Отпишите нас, пожалуйста",
+                     "Нам это не интересно", "Не пишите больше"):
+            self.assertTrue(mail.is_refusal(text), text)
+
+    def test_no_inside_sentence_is_not_refusal(self):
+        """«Нет, давайте в четверг» — это согласие, а не отказ."""
+        for text in ("Нет, давайте лучше в четверг созвонимся",
+                     "Добрый день! Интересно, пришлите цены",
+                     "Не сейчас, напишите в октябре"):
+            self.assertFalse(mail.is_refusal(text), text)
+
+    def test_unsubscribe_header_click(self):
+        self.assertTrue(mail.is_refusal("", "unsubscribe"))
+
+    def test_html_only_reply_is_read(self):
+        raw = ("From: a@c.ru\nSubject: Re: x\nContent-Type: text/html; charset=utf-8\n\n"
+               "<div>Да, <b>давайте</b> созвонимся</div><blockquote>старое</blockquote>").encode()
+        self.assertIn("давайте", mail.parse(raw)["text"])
+
+    def test_imap_date_is_english(self):
+        ts = time.mktime((2026, 3, 5, 12, 0, 0, 0, 0, -1))
+        self.assertEqual(mail.imap_since(ts), "05-Mar-2026")
+
+
+class LetterText(unittest.TestCase):
+    def test_empty_name_takes_comma_with_it(self):
+        v = {"имя": "", "компания": "Ромашка"}
+        self.assertEqual(outreach.fill("Здравствуйте, {имя}!", v), "Здравствуйте!")
+        self.assertEqual(outreach.fill("{имя}, добрый день!", v), "Добрый день!")
+        self.assertEqual(outreach.fill("Текст\n\n{имя}, добрый день!", v),
+                         "Текст\n\nДобрый день!")
+
+    def test_filled_values(self):
+        v = outreach.values_for({"director": "ПЕТРОВ ИВАН СЕРГЕЕВИЧ",
+                                 "name": 'ООО "РОМАШКА-ТРЕЙД"'}, "Подпись")
+        self.assertEqual(v["имя"], "Иван Сергеевич")
+        self.assertEqual(v["компания"], "Ромашка-Трейд")
+        self.assertEqual(outreach.fill("Здравствуйте, {имя}!", v),
+                         "Здравствуйте, Иван Сергеевич!")
+
+    def test_short_caps_name_is_kept(self):
+        """Аббревиатуру не превращаем в «Мтс»."""
+        self.assertEqual(outreach.company_title("ПАО МТС"), "МТС")
+
+    def test_empty_opener_leaves_no_hole(self):
+        got = outreach.fill("Здравствуйте!\n\n{первая_фраза}\n\nМы делаем…",
+                            {"первая_фраза": ""})
+        self.assertEqual(got, "Здравствуйте!\n\nМы делаем…")
+
+    def test_body_ends_with_opt_out_and_signature(self):
+        body = outreach.finish_body("Текст", "Текст", "Иван, +7 999")
+        self.assertTrue(body.endswith(mail.OPT_OUT_LINE))
+        self.assertIn("Иван, +7 999", body)
+        # Подпись, уже поставленная шаблоном, второй раз не дописывается.
+        body = outreach.finish_body("Текст\n\nИван, +7 999", "Текст\n\n{подпись}",
+                                    "Иван, +7 999")
+        self.assertEqual(body.count("Иван, +7 999"), 1)
+
+    def test_steps_validation(self):
+        _, err = outreach.clean_steps(outreach.DEFAULT_STEPS)
+        self.assertIn("допишите", err)
+        ok, err = outreach.clean_steps(_STEPS)
+        self.assertEqual(err, "")
+        self.assertEqual([s["delay_days"] for s in ok], [0, 3, 7])
+        _, err = outreach.clean_steps([{"subject": "", "body": "x"}])
+        self.assertIn("тема", err)
+        _, err = outreach.clean_steps([{"subject": "Т", "body": "Привет, {Имя}"}])
+        self.assertIn("{Имя}", err)
+        _, err = outreach.clean_steps({"subject": "x"})
+        self.assertTrue(err)
+        # Задержку ограничиваем: ноль у напоминания — это спам в тот же день.
+        got, _ = outreach.clean_steps([{"subject": "Т", "body": "a"},
+                                       {"delay_days": 0, "body": "b"},
+                                       {"delay_days": 999, "body": "c"},
+                                       {"delay_days": 5, "body": "лишний"}])
+        self.assertEqual([s["delay_days"] for s in got], [0, 1, 60])
+
+    def test_ai_mode_only_for_first_letter(self):
+        got, _ = outreach.clean_steps([{"mode": "ai"}, {"mode": "ai", "delay_days": 3,
+                                                        "body": "b"}])
+        self.assertEqual([s["mode"] for s in got], ["ai", "template"])
+
+    def test_follow_up_subject_is_reply(self):
+        steps, _ = outreach.clean_steps(_STEPS)
+        subj, _, _ = outreach.compose({"id": 0, "name": "Ромашка", "director": ""},
+                                      1, steps, "", first_subject="Тема 1")
+        self.assertEqual(subj, "Re: Тема 1")
+
+
+class Enrolment(unittest.TestCase):
+    def tearDown(self):
+        _mail_reset()
+
+    def setUp(self):
+        _mail_reset()
+        self.camp, err = outreach.save_campaign("Тест", _STEPS)
+        self.assertEqual(err, "")
+
+    def test_director_before_general(self):
+        cid = _company("ООО Альфа", "Иванов Иван", "info@alfa.ru", owner="general")
+        db.add_contact(cid, "email", "ivanov@alfa.ru", "director", 92, "unchecked",
+                       "сайт: фамилия в адресе")
+        _, addr, _ = outreach.pick_address(cid)
+        self.assertEqual(addr, "ivanov@alfa.ru")
+
+    def test_guess_and_bad_are_skipped(self):
+        cid = _company("ООО Бета", "Петров Пётр", "p.petrov@beta.ru",
+                       verified="unchecked", source="выведен по схеме домена")
+        db.add_contact(cid, "email", "old@beta.ru", "general", 80, "bad", "сайт")
+        got = outreach.enroll(self.camp, [cid])
+        self.assertEqual(got["added"], 0)
+        self.assertEqual(got["guess"], 1)
+        db.add_contact(cid, "email", "info@beta.ru", "general", 70, "unchecked", "сайт")
+        self.assertEqual(outreach.pick_address(cid)[1], "info@beta.ru")
+
+    def test_confirmed_guess_is_fine(self):
+        cid = _company("ООО Гамма", "Сидоров", "sidorov@gamma.ru", verified="ok",
+                       source="подтверждён почтовым сервером")
+        self.assertEqual(outreach.enroll(self.camp, [cid])["added"], 1)
+
+    def test_refusals_and_blacklist_are_blocked(self):
+        a = _company("ООО Отказ", "", "a@a.ru", stage="отказ")
+        b = _company("ООО Чёрный", "", "b@b.ru", inn="7700000001")
+        db.blacklist_add(b, "тест")
+        c = _company("ООО Отписка", "", "c@c.ru")
+        outreach.optout_add("c@c.ru", "тест")
+        got = outreach.enroll(self.camp, [a, b, c])
+        self.assertEqual(got["added"], 0)
+        self.assertEqual(got["blocked"], 2)
+        self.assertEqual(got["refused"], 1)
+
+    def test_one_company_one_active_campaign(self):
+        cid = _company("ООО Дельта", "", "d@d.ru")
+        other, _ = outreach.save_campaign("Другая", _STEPS)
+        self.assertEqual(outreach.enroll(self.camp, [cid])["added"], 1)
+        self.assertEqual(outreach.enroll(other, [cid])["busy"], 1)
+        self.assertEqual(outreach.enroll(self.camp, [cid])["busy"], 1)
+
+    def test_deleting_company_drops_its_queue(self):
+        cid = _company("ООО Эпсилон", "", "e@e.ru")
+        outreach.enroll(self.camp, [cid])
+        db.delete_company(cid)
+        n = db.conn().execute("SELECT COUNT(*) n FROM outreach").fetchone()["n"]
+        self.assertEqual(n, 0)
+
+    def test_editing_steps_requeues_finished(self):
+        cid = _company("ООО Зета", "", "z@z.ru")
+        one, _ = outreach.save_campaign("Одно", [_STEPS[0]])
+        outreach.enroll(one, [cid])
+        db.conn().execute("UPDATE outreach SET step=1, status='waiting', sent_at=? "
+                          "WHERE campaign_id=?", (int(_WEEKDAY), one))
+        db.conn().commit()
+        outreach.save_campaign("Одно", _STEPS[:2], one)
+        row = db.conn().execute("SELECT status, next_at FROM outreach "
+                                "WHERE campaign_id=?", (one,)).fetchone()
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["next_at"], int(_WEEKDAY) + 3 * 86400)
+
+
+class SendWindow(unittest.TestCase):
+    def tearDown(self):
+        _mail_reset()
+
+    def setUp(self):
+        _mail_reset()
+
+    def test_hours_and_weekends(self):
+        self.assertTrue(outreach.in_window(_WEEKDAY))
+        night = time.mktime((2026, 9, 23, 22, 0, 0, 0, 0, -1))
+        self.assertFalse(outreach.in_window(night))
+        saturday = time.mktime((2026, 9, 26, 11, 0, 0, 0, 0, -1))
+        self.assertFalse(outreach.in_window(saturday))
+        db.set_setting("mail_weekends", "1")
+        self.assertTrue(outreach.in_window(saturday))
+
+    def test_warmup_limits_new_mailbox(self):
+        db.set_setting("mail_day_limit", "40")
+        self.assertEqual(outreach.day_limit(_WEEKDAY), 15)
+        db.conn().execute("INSERT INTO sent_mail (company_id, sent_at) VALUES (1, ?)",
+                          (int(_WEEKDAY - 10 * 86400),))
+        db.conn().commit()
+        self.assertEqual(outreach.day_limit(_WEEKDAY), 25)
+        db.set_setting("mail_warmup", "0")
+        self.assertEqual(outreach.day_limit(_WEEKDAY), 40)
+
+
+class MailEndToEnd(unittest.TestCase):
+    """Отправка и ответы через настоящие SMTP и IMAP на локальном адресе."""
+
+    def setUp(self):
+        _mail_reset()
+        # Компании встают в очередь «сейчас», поэтому и отправку считаем
+        # от настоящего момента, а не от выдуманной даты в прошлом.
+        self.t = time.time() + 5
+        self.smtp = fake_mail.FakeSMTP()
+        self.imap = fake_mail.FakeIMAP()
+        for k, v in (("address", "me@test.local"), ("password", "secret"),
+                     ("name", "Иван Продавцов"), ("sign", "Иван, +7 999 000-00-00"),
+                     ("smtp_host", "127.0.0.1"), ("smtp_port", self.smtp.port),
+                     ("imap_host", "127.0.0.1"), ("imap_port", self.imap.port),
+                     ("warmup", "0")):
+            db.set_setting("mail_" + k, v)
+        self.camp, _ = outreach.save_campaign("Тест", _STEPS)
+        self.a = _company("ООО Альфа", "Иванов Иван Иванович", "boss@alfa.ru")
+        self.b = _company("ООО Бета", "Петров Пётр", "boss@beta.ru")
+        self.c = _company("ООО Гамма", "", "info@gamma.ru", owner="general")
+
+    def tearDown(self):
+        self.smtp.close()
+        self.imap.close()
+        _mail_reset()
+
+    def _sent(self, cid):
+        return [dict(r) for r in db.conn().execute(
+            "SELECT * FROM sent_mail WHERE company_id=? ORDER BY id", (cid,))]
+
+    def test_full_cycle(self):
+        outreach.enroll(self.camp, [self.a, self.b, self.c])
+        for _ in range(3):
+            self.assertEqual(outreach.tick(self.t, ignore_pause=True), "sent")
+        self.assertEqual(outreach.tick(self.t, ignore_pause=True), "nothing_due")
+        self.assertEqual(len(self.smtp.sent), 3)
+
+        raw = self.smtp.sent[0][2].decode("utf-8", "replace")
+        self.assertIn("List-Unsubscribe", raw)
+        letter = email.message_from_bytes(self.smtp.sent[0][2], policy=email.policy.default)
+        body = letter.get_content()
+        self.assertIn("Здравствуйте, Иван Иванович!", body)
+        self.assertIn(mail.OPT_OUT_LINE, body)
+        self.assertEqual(db.conn().execute("SELECT stage FROM companies WHERE id=?",
+                                           (self.a,)).fetchone()["stage"], "написали")
+
+        ref_a = self._sent(self.a)[0]["message_id"]
+        ref_c = self._sent(self.c)[0]["message_id"]
+        self.imap.add(_REPLY.format(ref=ref_a, text="Да, интересно. Звоните."))
+        self.imap.add(_REPLY.format(ref="<unknown@x>", text="Нет, спасибо.")
+                      .replace("boss@romashka.ru", "boss@beta.ru"))
+        self.imap.add(_BOUNCE.format(addr="info@gamma.ru", ref=ref_c))
+        got = outreach.poll(self.t + 3600)
+        self.assertEqual(got, {"replied": 1, "unsub": 1, "bounced": 1, "auto": 0})
+        self.assertFalse(self.imap.seen_flags_changed,
+                         "письма надо читать с PEEK — «прочитано» ставит человек")
+
+        st = {r["company_id"]: r["status"] for r in
+              db.conn().execute("SELECT company_id, status FROM outreach")}
+        self.assertEqual(st, {self.a: "replied", self.b: "unsub", self.c: "bounced"})
+        a = db.conn().execute("SELECT stage, next_date FROM companies WHERE id=?",
+                              (self.a,)).fetchone()
+        self.assertEqual(a["stage"], "ответили")
+        self.assertEqual(a["next_date"],
+                         datetime.date.fromtimestamp(self.t + 3600).isoformat())
+        self.assertTrue(outreach.opted_out("boss@beta.ru"))
+        self.assertEqual(db.conn().execute("SELECT stage FROM companies WHERE id=?",
+                                           (self.b,)).fetchone()["stage"], "отказ")
+        self.assertEqual(db.conn().execute(
+            "SELECT verified FROM contacts WHERE company_id=?", (self.c,)
+        ).fetchone()["verified"], "bad")
+        notes = " ".join(n["text"] for n in db.notes(self.a))
+        self.assertIn("Да, интересно", notes)
+
+        # Через неделю напоминаний не уходит никому: все трое вышли из цепочки.
+        self.assertEqual(outreach.tick(self.t + 8 * 86400, ignore_pause=True),
+                         "nothing_due")
+        # Повторный опрос тех же писем не разносит второй раз.
+        self.assertEqual(sum(outreach.poll(self.t + 7200).values()), 0)
+
+    def test_follow_up_goes_into_same_thread(self):
+        outreach.enroll(self.camp, [self.a])
+        outreach.tick(self.t, ignore_pause=True)
+        self.assertEqual(outreach.tick(self.t + 86400, ignore_pause=True),
+                         "nothing_due")
+        self.assertEqual(outreach.tick(self.t + 3 * 86400 + 60, ignore_pause=True),
+                         "sent")
+        first, second = self._sent(self.a)
+        self.assertEqual(second["subject"], "Re: " + first["subject"])
+        msg = email.message_from_bytes(self.smtp.sent[1][2], policy=email.policy.default)
+        self.assertEqual(msg["In-Reply-To"], first["message_id"])
+
+    def test_auto_reply_keeps_sequence(self):
+        outreach.enroll(self.camp, [self.a])
+        outreach.tick(self.t, ignore_pause=True)
+        ref = self._sent(self.a)[0]["message_id"]
+        self.imap.add("From: boss@alfa.ru\nSubject: Автоответ\nAuto-Submitted: auto-replied\n"
+                      "In-Reply-To: %s\n\nВ отпуске.\n" % ref)
+        self.assertEqual(outreach.poll(self.t + 60)["auto"], 1)
+        self.assertEqual(db.conn().execute("SELECT status FROM outreach").fetchone()["status"],
+                         "queued")
+
+    def test_unknown_recipient_marks_address(self):
+        self.smtp.reject_rcpt = {"boss@alfa.ru"}
+        outreach.enroll(self.camp, [self.a])
+        self.assertEqual(outreach.tick(self.t, ignore_pause=True), "bounced")
+        self.assertEqual(db.conn().execute(
+            "SELECT verified FROM contacts WHERE company_id=?", (self.a,)
+        ).fetchone()["verified"], "bad")
+
+    def test_spam_rejection_pauses_and_keeps_row(self):
+        self.smtp.spam = True
+        outreach.enroll(self.camp, [self.a])
+        self.assertEqual(outreach.tick(self.t, ignore_pause=True), "send_error")
+        self.assertIn("спам", outreach.STATE["last_error"])
+        self.assertGreater(outreach.STATE["pause_until"], self.t + 3600)
+        row = db.conn().execute("SELECT status, step FROM outreach").fetchone()
+        self.assertEqual((row["status"], row["step"]), ("queued", 0))
+        self.assertEqual(outreach.tick(self.t + 60), "paused")
+
+    def test_wrong_password_is_explained_without_password(self):
+        db.set_setting("mail_password", "WrongPassw0rd")
+        outreach.enroll(self.camp, [self.a])
+        self.assertEqual(outreach.tick(self.t, ignore_pause=True), "send_error")
+        self.assertIn("пароль", outreach.STATE["last_error"])
+        steps = mail.check(mail.conf_from_db())
+        self.assertFalse(steps[0][1])
+        self.assertFalse(steps[1][1])
+        self.assertNotIn("WrongPassw0rd", json.dumps(steps, ensure_ascii=False))
+        self.assertNotIn("WrongPassw0rd", outreach.STATE["last_error"])
+
+    def test_check_sends_test_letter(self):
+        steps = mail.check(mail.conf_from_db(), send_test=True)
+        self.assertTrue(all(s[1] for s in steps), steps)
+        self.assertEqual(self.smtp.sent[-1][1], ["me@test.local"])
+
+    def test_refusal_in_stage_after_enrol_stops_letter(self):
+        """Условия проверяются перед каждым письмом, а не только при добавлении."""
+        outreach.enroll(self.camp, [self.a])
+        db.update_company_fields(self.a, {"stage": "отказ"})
+        self.assertEqual(outreach.tick(self.t, ignore_pause=True), "stopped")
+        self.assertEqual(self.smtp.sent, [])
+
+    def test_day_limit_holds(self):
+        db.set_setting("mail_day_limit", "2")
+        outreach.enroll(self.camp, [self.a, self.b, self.c])
+        outreach.tick(self.t, ignore_pause=True)
+        outreach.tick(self.t, ignore_pause=True)
+        self.assertEqual(outreach.tick(self.t, ignore_pause=True), "day_limit")
+
+    def test_paused_campaign_sends_nothing(self):
+        outreach.enroll(self.camp, [self.a])
+        outreach.set_status(self.camp, "paused")
+        self.assertEqual(outreach.tick(self.t, ignore_pause=True), "nothing_due")
+
+
+class MailApi(unittest.TestCase):
+    def tearDown(self):
+        _mail_reset()
+
+    def setUp(self):
+        _mail_reset()
+        self.cl = web.create_app().test_client()
+
+    def test_campaign_create_add_and_list(self):
+        d = self.cl.post("/api/campaigns", json={
+            "name": "Москва", "steps": _STEPS}).get_json()
+        self.assertTrue(d["ok"], d)
+        cid = _company("ООО Альфа", "Иванов Иван", "boss@alfa.ru")
+        r = self.cl.post("/api/bulk", json={"ids": [cid], "action": "campaign",
+                                            "campaign": d["id"]}).get_json()
+        self.assertTrue(r["ok"], r)
+        self.assertIn("добавлено 1", r["text"])
+        lst = self.cl.get("/api/campaigns").get_json()
+        self.assertEqual(lst["campaigns"][0]["counts"], {"queued": 1})
+        prev = self.cl.post("/api/campaigns/%d/preview" % d["id"], json={}).get_json()
+        self.assertIn("Иван", prev["letters"][0]["letters"][0]["body"])
+        rows = self.cl.get("/api/campaigns/%d/rows" % d["id"]).get_json()["rows"]
+        self.assertEqual(rows[0]["status_ru"], "ждёт отправки")
+        self.assertTrue(self.cl.post("/api/outreach/%d/stop" % rows[0]["id"]).get_json()["ok"])
+
+    def test_add_by_filter(self):
+        d = self.cl.post("/api/campaigns", json={
+            "name": "Все", "steps": _STEPS}).get_json()
+        _company("ООО Альфа", "", "a@alfa.ru")
+        _company("ООО Бета", "", "b@beta.ru")
+        r = self.cl.post("/api/campaigns/%d/add" % d["id"],
+                         json={"filter": True, "q": "", "only": ""}).get_json()
+        self.assertEqual(r["result"]["added"], 2)
+
+    def test_junk_input_is_not_500(self):
+        for body in ({"name": ["x"], "steps": {"a": 1}}, {"name": "x", "steps": [1, 2]},
+                     {"name": "x", "steps": [{"subject": {}, "body": []}]}, None):
+            r = self.cl.post("/api/campaigns", json=body)
+            self.assertEqual(r.status_code, 200)
+            self.assertFalse(r.get_json()["ok"])
+        r = self.cl.post("/api/bulk", json={"ids": [1], "action": "campaign",
+                                            "campaign": "abc"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.cl.get("/api/campaigns/999/rows").status_code, 200)
+
+    def test_state_and_settings(self):
+        st = self.cl.get("/api/mail/state").get_json()
+        self.assertTrue(st["ok"])
+        self.assertFalse(st["configured"])
+        self.cl.post("/api/settings", json={"mail_address": "me@yandex.ru",
+                                            "mail_password": "pw", "mail_sign": "x" * 900})
+        st = self.cl.get("/api/mail/state").get_json()
+        self.assertTrue(st["configured"])
+        self.assertEqual(len(db.get_setting("mail_sign")), 900)
+
+    def test_page_has_mail_view_and_card(self):
+        html = self.cl.get("/").get_data(as_text=True)
+        for mark in ('id="view-mail"', 'data-view="mail"', 'id="s-mail-password"',
+                     'id="bulk-camp"', 'value="ответили"'):
+            self.assertIn(mark, html)
+        # Пароль прячется так же, как остальные ключи.
+        self.assertRegex(html, r'id="s-mail-password"[^>]*data-secret')
+
+    def test_clear_drops_queue_but_keeps_campaigns(self):
+        d = self.cl.post("/api/campaigns", json={
+            "name": "Москва", "steps": _STEPS}).get_json()
+        cid = _company("ООО Альфа", "", "a@alfa.ru")
+        outreach.enroll(d["id"], [cid])
+        self.cl.post("/api/clear")
+        c = db.conn()
+        self.assertEqual(c.execute("SELECT COUNT(*) n FROM outreach").fetchone()["n"], 0)
+        self.assertEqual(c.execute("SELECT COUNT(*) n FROM campaigns").fetchone()["n"], 1)
+
+
+class RepliedStageEverywhere(unittest.TestCase):
+    """Новая стадия должна быть везде, где перечислены стадии."""
+
+    def test_stage_lists_agree(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "app", "static", "app.js"), encoding="utf-8") as f:
+            js = f.read()
+        with open(os.path.join(root, "app", "templates", "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn('["ответили", "ответили"]', js)
+        self.assertIn('"ответили": "ответили"', js)
+        self.assertIn('<option value="ответили">', html)
+        self.assertIn("ответили", web.STAGE_NEXT)
 
 
 if __name__ == "__main__":

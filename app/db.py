@@ -158,6 +158,62 @@ CREATE TABLE IF NOT EXISTS searches (
     last_run    INTEGER,
     created_at  INTEGER
 );
+
+-- Рассылки. Кампания — это шаги (первое письмо и напоминания), а
+-- outreach — одна компания внутри кампании: какой шаг следующий и когда.
+CREATE TABLE IF NOT EXISTS campaigns (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    steps       TEXT,
+    status      TEXT DEFAULT 'active',   -- active | paused
+    created_at  INTEGER,
+    updated_at  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS outreach (
+    id          INTEGER PRIMARY KEY,
+    campaign_id INTEGER NOT NULL,
+    company_id  INTEGER NOT NULL,
+    contact_id  INTEGER,
+    email       TEXT NOT NULL,
+    step        INTEGER DEFAULT 0,       -- номер следующего шага
+    status      TEXT DEFAULT 'queued',   -- queued | waiting | replied | bounced | unsub | stopped | error
+    next_at     INTEGER,
+    sent_at     INTEGER,
+    tries       INTEGER DEFAULT 0,
+    error       TEXT,
+    created_at  INTEGER,
+    updated_at  INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_uniq ON outreach(campaign_id, company_id);
+CREATE INDEX IF NOT EXISTS idx_outreach_due ON outreach(status, next_at);
+
+-- Каждое отправленное письмо. Отдельно от outreach, потому что ответ
+-- приходит на конкретное письмо, а их у компании до трёх, и узнаём мы
+-- его по Message-ID.
+CREATE TABLE IF NOT EXISTS sent_mail (
+    id          INTEGER PRIMARY KEY,
+    outreach_id INTEGER,
+    campaign_id INTEGER,
+    company_id  INTEGER NOT NULL,
+    step        INTEGER,
+    email       TEXT,
+    subject     TEXT,
+    body        TEXT,
+    message_id  TEXT,
+    sent_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_sent_msgid ON sent_mail(message_id);
+CREATE INDEX IF NOT EXISTS idx_sent_email ON sent_mail(email);
+CREATE INDEX IF NOT EXISTS idx_sent_time  ON sent_mail(sent_at);
+
+-- Адреса, попросившие больше не писать. По адресу, а не по компании:
+-- компанию могут удалить и найти заново, а обещание остаётся.
+CREATE TABLE IF NOT EXISTS mail_optout (
+    email       TEXT PRIMARY KEY,
+    reason      TEXT,
+    created_at  INTEGER
+);
 """
 
 
@@ -340,7 +396,10 @@ def delete_company(company_id):
     карточке.
     """
     c = conn()
-    for table in ("contacts", "signals", "notes"):
+    # Рассылка по удалённой компании тоже снимается: иначе отправщик
+    # писал бы тем, кого человек из базы убрал, а номер строки потом
+    # достался бы новой компании вместе с чужой историей писем.
+    for table in ("contacts", "signals", "notes", "outreach", "sent_mail"):
         c.execute("DELETE FROM %s WHERE company_id=?" % table, (company_id,))
     c.execute("DELETE FROM companies WHERE id=?", (company_id,))
     c.commit()
@@ -760,7 +819,7 @@ def merge_companies(keep_id, drop_id):
                   "employees", "founded", "status", "hh_id"):
         if field in keep.keys() and not (keep[field] or "") and (drop[field] or ""):
             patch[field] = drop[field]
-    for table in ("contacts", "signals", "notes"):
+    for table in ("contacts", "signals", "notes", "outreach", "sent_mail"):
         try:
             c.execute("UPDATE OR IGNORE %s SET company_id=? WHERE company_id=?"
                       % table, (keep_id, drop_id))

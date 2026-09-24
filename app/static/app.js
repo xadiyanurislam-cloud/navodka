@@ -92,14 +92,15 @@ async function copy(text) {
 // по-русски: «new» в таблице среди русских строк читается как сбой, а
 // переименовать значение нельзя — оно уже лежит в чужих базах.
 const STAGES = [["new", "новая"], ["в работе", "в работе"],
-                ["написали", "написали"], ["созвон", "созвон"],
-                ["отказ", "отказ"]];
+                ["написали", "написали"], ["ответили", "ответили"],
+                ["созвон", "созвон"], ["отказ", "отказ"]];
 
 // ── Экраны ───────────────────────────────────────────────
 const VIEWS = {
   today: ["Сегодня", "Кому звонить и что нового"],
   base: ["База", "Найденное и обогащённое"],
   board: ["Воронка", "Компании по стадиям работы"],
+  mail: ["Рассылки", "Письма компаниям и ответы на них"],
   sources: ["Поиск", "Откуда брать компании"],
   settings: ["Настройки", "Ключи, обновления и папка с данными"],
 };
@@ -131,6 +132,7 @@ function showView(name) {
   if (name === "base") loadCompanies(true);
   if (name === "today") loadToday();
   if (name === "board") loadBoard();
+  if (name === "mail") loadMail();
 }
 
 // ── Сегодня ──────────────────────────────────────────────
@@ -138,7 +140,8 @@ function showView(name) {
 // приходят утром: кому звонить. Не «сколько всего компаний», а «кому
 // звонить сегодня» — цифры без этого списка не помогают начать работу.
 const STAGE_RU = {"new": "новые", "в работе": "в работе",
-                  "написали": "написали", "созвон": "созвон", "отказ": "отказ"};
+                  "написали": "написали", "ответили": "ответили",
+                  "созвон": "созвон", "отказ": "отказ"};
 
 function scoreBadge(n, size) {
   const v = Number(n) || 0;
@@ -1491,7 +1494,8 @@ $("s-save").onclick = async () => {
     proxy_url: $("s-proxy").value,
     hh_token: $("s-hh-token").value,
     yandex_key: $("s-yandex").value, vk_token: $("s-vk").value,
-    update_repo: $("s-upd-repo").value, update_token: $("s-upd-token").value});
+    update_repo: $("s-upd-repo").value, update_token: $("s-upd-token").value,
+    ...mailFields()});
   markKeys();
   findReady();
   const note = $("save-note");
@@ -1502,6 +1506,10 @@ $("s-save").onclick = async () => {
 function markKeys() {
   // Карточка источника должна сама сообщать, готова она к работе: иначе
   // человек жмёт «Найти» и получает ошибку вместо результата.
+  const mailReady = !!($("s-mail-address").value.trim() &&
+                        $("s-mail-password").value.trim());
+  $("tag-mail").classList.toggle("ready", mailReady);
+  $("tag-mail").textContent = mailReady ? "ящик указан" : "не настроена";
   for (const [input, tag] of [["s-gis", "tag-gis"], ["s-ai-key", "tag-ai"]]) {
     const ready = !!$(input).value.trim();
     const el = $(tag);
@@ -3045,6 +3053,401 @@ document.addEventListener("click", async (e) => {
   await copy(a.href);
   toast("Браузер не открылся — адрес скопирован, вставьте его сами");
 });
+
+
+// ── Рассылки ─────────────────────────────────────────────
+// Письма уходят сами, по одному, в рабочие часы. Экран отвечает на
+// три вопроса: идёт ли отправка (и если нет — почему), что в каждой
+// кампании, и кто ответил.
+function mailFields() {
+  return {
+    mail_address: $("s-mail-address").value,
+    mail_password: $("s-mail-password").value,
+    mail_name: $("s-mail-name").value,
+    mail_sign: $("s-mail-sign").value,
+    mail_smtp_host: $("s-mail-smtp-host").value,
+    mail_smtp_port: $("s-mail-smtp-port").value,
+    mail_imap_host: $("s-mail-imap-host").value,
+    mail_imap_port: $("s-mail-imap-port").value,
+    mail_day_limit: $("s-mail-limit").value,
+    mail_hour_from: $("s-mail-from").value,
+    mail_hour_to: $("s-mail-to").value,
+    mail_warmup: $("s-mail-warmup").checked ? "1" : "0",
+    mail_weekends: $("s-mail-weekends").checked ? "1" : "0",
+  };
+}
+
+// Серверы подставляются по домену — показываем, какие именно, прямо в
+// полях: «подставится сама» ничего не говорит, пока не видно, что.
+function mailHints() {
+  const dom = ($("s-mail-address").value.split("@")[1] || "").trim().toLowerCase();
+  const p = (window.MAIL_PRESETS || {})[dom];
+  $("s-mail-smtp-host").placeholder = p ? p.smtp.split(":")[0] : "smtp.вашдомен.ru";
+  $("s-mail-imap-host").placeholder = p ? p.imap.split(":")[0] : "imap.вашдомен.ru";
+}
+$("s-mail-address").addEventListener("input", mailHints);
+mailHints();
+
+async function mailCheck(sendTest) {
+  const out = $("mail-check-out");
+  out.innerHTML = `<p class="hint-sm">проверяю — до полуминуты на каждый сервер…</p>`;
+  await post("/api/settings", mailFields());
+  markKeys();
+  const d = await post("/api/mail/check", {send_test: sendTest});
+  if (!d || !d.steps) { out.innerHTML = `<p class="bad">не вышло</p>`; return; }
+  out.innerHTML = d.steps.map((x) => `
+    <div class="mc-row ${x.ok ? "good" : "bad"}">
+      <b>${x.ok ? "✓" : "✕"} ${esc(x.what)}</b><span>${esc(x.text)}</span>
+    </div>`).join("");
+}
+$("btn-mail-check").onclick = () => mailCheck(false);
+$("btn-mail-test").onclick = () => mailCheck(true);
+
+let camps = [], campMeta = {placeholders: [], defaults: [], status_ru: {}};
+let campOpen = null, campRowsFilter = "";
+
+function ago(sec) {
+  if (sec == null) return "ещё не проверяли";
+  if (sec < 60) return "только что";
+  if (sec < 3600) return Math.round(sec / 60) + " мин назад";
+  return Math.round(sec / 3600) + " ч назад";
+}
+
+function whenTs(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const dd = d.toLocaleDateString("ru-RU", {day: "numeric", month: "short"});
+  const tt = d.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
+  return `${dd}, ${tt}`;
+}
+
+async function loadMailState() {
+  const st = await get("/api/mail/state");
+  if (!st || !st.ok) return;
+  const nav = $("n-mail");
+  nav.hidden = !st.answer_waiting;
+  nav.textContent = st.answer_waiting;
+  let head, tone = "";
+  if (!st.configured) {
+    head = `Ящик не настроен — ${esc(st.problem)}.
+      <button class="btn sm primary" data-go="settings">Настроить почту</button>`;
+    tone = "warn";
+  } else if (st.last_error) {
+    head = `Отправка приостановлена: ${esc(st.last_error)}`;
+    tone = "bad";
+  } else if (!st.queued) {
+    head = "Очередь пуста. Добавьте компании в кампанию: «База» → отметьте → «В рассылку…».";
+  } else if (st.sent_today >= st.day_limit) {
+    head = `На сегодня всё: отправлено ${st.sent_today} из ${st.day_limit}. Продолжу завтра.`;
+  } else if (!st.in_window) {
+    head = `Сейчас не рабочее время (${esc(st.hours)}${st.weekends ? "" : ", по будням"}) — письма ждут.`;
+  } else if (!st.due) {
+    head = "Все письма на сегодня уже ушли, следующие шаги — по расписанию.";
+  } else {
+    head = `Идёт отправка: следующее письмо ${st.next_send_in
+      ? "через " + Math.ceil(st.next_send_in / 60) + " мин" : "вот-вот"}.`;
+    tone = "good";
+  }
+  $("mail-state").className = "mail-state " + tone;
+  $("mail-state").innerHTML = `
+    <div class="ms-head">${head}</div>
+    <div class="ms-nums">
+      <span><b>${st.sent_today}</b> из ${st.day_limit} сегодня</span>
+      <span><b>${st.queued}</b> в очереди</span>
+      <span><b>${st.replies_total}</b> ответили</span>
+      <span>ответы: ${st.can_read ? ago(st.last_poll_ago) : "IMAP не настроен"}
+        ${st.can_read ? `<button class="btn quiet sm" id="mail-poll">Проверить сейчас</button>` : ""}</span>
+    </div>
+    ${st.poll_error ? `<div class="ms-err">Ответы не читаются: ${esc(st.poll_error)}</div>` : ""}
+    <div class="ms-foot">Письма уходят, пока программа открыта.</div>`;
+  const pb = $("mail-poll");
+  if (pb) pb.onclick = async () => {
+    pb.disabled = true; pb.textContent = "проверяю…";
+    const d = await post("/api/mail/poll", {});
+    if (d && d.ok) {
+      const f = d.found || {};
+      toast(`Ответов: ${f.replied || 0}, отказов: ${f.unsub || 0}, возвратов: ${f.bounced || 0}`);
+    } else toast((d && d.error) || "не вышло");
+    loadMailState(); loadCampaigns();
+  };
+}
+
+async function loadCampaigns() {
+  const d = await get("/api/campaigns");
+  if (!d || !d.ok) return;
+  camps = d.campaigns;
+  campMeta = d;
+  fillBulkCamp();
+  if (!camps.length) {
+    $("camp-list").innerHTML = `<div class="blank">
+      <p><b>Кампаний пока нет.</b></p>
+      <p>Кампания — это первое письмо и до двух напоминаний. Создайте её,
+        потом в «Базе» отметьте компании и выберите «В рассылку…».</p></div>`;
+    return;
+  }
+  const n = (c, k) => (c.counts[k] || 0);
+  $("camp-list").innerHTML = camps.map((c) => `
+    <div class="camp ${c.status === "paused" ? "is-paused" : ""}">
+      <div class="camp-main">
+        <b>${esc(c.name)}</b>
+        <i>${c.steps.length} ${c.steps.length === 1 ? "письмо" : "письма"}
+          · ${c.status === "paused" ? "на паузе" : "идёт"}
+          · всего компаний ${c.total}, писем ушло ${c.letters}</i>
+      </div>
+      <div class="camp-nums">
+        <span title="ждут отправки">${n(c, "queued")}<em>в очереди</em></span>
+        <span title="всё отправлено, ждём ответа">${n(c, "waiting")}<em>ждём</em></span>
+        <span class="good">${n(c, "replied")}<em>ответили</em></span>
+        <span>${n(c, "unsub")}<em>отказ</em></span>
+        <span class="${n(c, "bounced") ? "bad" : ""}">${n(c, "bounced")}<em>возврат</em></span>
+      </div>
+      <div class="camp-do">
+        <button class="btn sm" data-camp-rows="${c.id}">Компании</button>
+        <button class="btn sm" data-camp-edit="${c.id}">Изменить</button>
+        <button class="btn sm" data-camp-toggle="${c.id}">${
+          c.status === "paused" ? "Продолжить" : "Пауза"}</button>
+        <button class="btn quiet sm danger" data-camp-del="${c.id}">Удалить</button>
+      </div>
+    </div>`).join("");
+  $("camp-list").querySelectorAll("[data-camp-edit]").forEach((b) => {
+    b.onclick = () => editCampaign(camps.find((c) => c.id == b.dataset.campEdit));
+  });
+  $("camp-list").querySelectorAll("[data-camp-rows]").forEach((b) => {
+    b.onclick = () => { campOpen = Number(b.dataset.campRows); campRowsFilter = ""; loadCampRows(); };
+  });
+  $("camp-list").querySelectorAll("[data-camp-toggle]").forEach((b) => {
+    b.onclick = async () => {
+      const c = camps.find((x) => x.id == b.dataset.campToggle);
+      await post(`/api/campaigns/${c.id}/state`,
+                 {status: c.status === "paused" ? "active" : "paused"});
+      loadCampaigns(); loadMailState();
+    };
+  });
+  $("camp-list").querySelectorAll("[data-camp-del]").forEach((b) => {
+    b.onclick = async () => {
+      const c = camps.find((x) => x.id == b.dataset.campDel);
+      if (!confirm(`Удалить кампанию «${c.name}»? Неотправленные письма не уйдут. ` +
+                   "Отправленные останутся в заметках компаний, ответы на них " +
+                   "программа по-прежнему узнает.")) return;
+      await post(`/api/campaigns/${c.id}/delete`, {});
+      if (campOpen === c.id) $("camp-rows").hidden = true;
+      loadCampaigns(); loadMailState();
+    };
+  });
+}
+
+function fillBulkCamp() {
+  const sel = $("bulk-camp");
+  const live = camps.filter((c) => c.status === "active");
+  sel.innerHTML = `<option value="">В рассылку…</option>` + (live.length
+    ? live.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("")
+    : `<option value="" disabled>сначала создайте кампанию в «Рассылках»</option>`);
+}
+
+$("bulk-camp").onchange = async (e) => {
+  const id = e.target.value;
+  e.target.value = "";
+  if (!id) return;
+  const d = await post("/api/bulk", {ids: [...picked], action: "campaign", campaign: Number(id)});
+  if (!d || !d.ok) { toast((d && d.error) || "не вышло"); return; }
+  toast("Рассылка: " + d.text);
+  picked.clear();
+  loadCompanies();
+};
+
+// Редактор. Поле, где стоял курсор, запоминается: нажатие на
+// подстановку уводит фокус на кнопку, и без этого вставлять было бы некуда.
+let lastField = null;
+function stepHtml(st, i) {
+  const on = i === 0 || !!st;
+  st = st || (campMeta.defaults[i] || {delay_days: i === 1 ? 3 : 7, subject: "", body: "", mode: "template"});
+  return `
+    <fieldset class="step-box ${on ? "" : "is-off"}" data-step="${i}">
+      <legend>
+        ${i === 0 ? "<b>Первое письмо</b>" : `<label class="opt"><input type="checkbox"
+          class="st-on" ${on ? "checked" : ""}> <b>Напоминание ${i}</b></label>`}
+        ${i > 0 ? `<span class="st-delay">через
+          <input type="number" class="st-days" min="1" max="60" value="${st.delay_days || 3}">
+          дн. после предыдущего, если не ответили</span>` : ""}
+      </legend>
+      ${i === 0 ? `<label class="opt st-mode-l"><input type="checkbox" class="st-ai"
+          ${st.mode === "ai" ? "checked" : ""}> Писать через ИИ — отдельное письмо
+          под каждую компанию по её карточке (нужен ключ ИИ и «что продаём»
+          в «ИИ-анализе»)</label>` : ""}
+      <div class="st-fields">
+        <label>Тема ${i > 0 ? `<em class="fld-hint">пусто — «Re:» к первому письму,
+            чтобы напоминание легло в ту же переписку</em>` : ""}
+          <input type="text" class="st-subj" maxlength="200" value="${esc(st.subject || "")}">
+        </label>
+        <label>Текст
+          <textarea class="st-body" rows="${i === 0 ? 9 : 5}">${esc(st.body || "")}</textarea>
+        </label>
+      </div>
+    </fieldset>`;
+}
+
+function syncStepBoxes() {
+  document.querySelectorAll("#camp-steps .step-box").forEach((box) => {
+    const on = box.dataset.step === "0" || box.querySelector(".st-on").checked;
+    box.classList.toggle("is-off", !on);
+    const ai = box.querySelector(".st-ai");
+    box.querySelector(".st-fields").hidden = !!(ai && ai.checked);
+  });
+}
+
+function editCampaign(c) {
+  $("camp-edit").hidden = false;
+  $("camp-edit").dataset.id = c ? c.id : "";
+  $("camp-edit-title").textContent = c ? "Кампания «" + c.name + "»" : "Новая кампания";
+  $("camp-name").value = c ? c.name : "";
+  const steps = c ? c.steps : campMeta.defaults;
+  $("camp-steps").innerHTML = [0, 1, 2].map((i) => stepHtml(steps[i], i)).join("");
+  $("camp-state").textContent = "";
+  $("camp-prev").innerHTML = "";
+  $("camp-steps").querySelectorAll("input, textarea").forEach((el) => {
+    el.addEventListener("focus", () => {
+      if (el.matches(".st-subj, .st-body")) lastField = el;
+    });
+    el.addEventListener("change", syncStepBoxes);
+  });
+  syncStepBoxes();
+  $("camp-edit").scrollIntoView({block: "start", behavior: "smooth"});
+}
+
+function readSteps() {
+  const out = [];
+  document.querySelectorAll("#camp-steps .step-box").forEach((box) => {
+    const i = Number(box.dataset.step);
+    if (i > 0 && !box.querySelector(".st-on").checked) return;
+    const ai = box.querySelector(".st-ai");
+    out.push({
+      delay_days: i === 0 ? 0 : Number(box.querySelector(".st-days").value) || 3,
+      mode: ai && ai.checked ? "ai" : "template",
+      subject: box.querySelector(".st-subj").value,
+      body: box.querySelector(".st-body").value,
+    });
+  });
+  return out;
+}
+
+async function saveCampaign() {
+  const id = $("camp-edit").dataset.id;
+  const d = await post("/api/campaigns", {id: id ? Number(id) : null,
+    name: $("camp-name").value, steps: readSteps()});
+  if (!d || !d.ok) {
+    $("camp-state").innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+    return null;
+  }
+  $("camp-edit").dataset.id = d.id;
+  $("camp-state").innerHTML = `<span class="good">сохранено</span>`;
+  loadCampaigns();
+  return d.id;
+}
+
+$("camp-new").onclick = () => editCampaign(null);
+$("camp-cancel").onclick = () => { $("camp-edit").hidden = true; };
+$("camp-save").onclick = saveCampaign;
+$("camp-preview").onclick = async () => {
+  const id = await saveCampaign();
+  if (!id) return;
+  const d = await post(`/api/campaigns/${id}/preview`, {});
+  if (!d || !d.ok) { $("camp-prev").innerHTML = `<p class="bad">${esc((d && d.error) || "не вышло")}</p>`; return; }
+  if (!d.letters.length) {
+    $("camp-prev").innerHTML = `<p class="hint-sm">В базе пока нет компаний с почтой — показать не на ком.</p>`;
+    return;
+  }
+  $("camp-prev").innerHTML = `<h3 class="prev-h">Так письма увидят три компании из базы</h3>` +
+    d.letters.map((x) => `
+    <div class="prev-co">
+      <p class="prev-to"><b>${esc(x.company)}</b> → ${x.email ? esc(x.email)
+        : `<span class="bad">не отправится: ${esc(x.why)}</span>`}</p>
+      ${x.letters.map((l) => `
+        <div class="prev-l">
+          <p class="prev-meta">Письмо ${l.step}${l.delay_days ? ` · через ${l.delay_days} дн.` : ""}</p>
+          ${l.note ? `<p class="hint-sm">${esc(l.note)}</p>` : `
+          <p class="letter-subj"><b>Тема:</b> ${esc(l.subject)}</p>
+          <pre class="letter-body">${esc(l.body)}</pre>`}
+        </div>`).join("")}
+    </div>`).join("");
+};
+
+function renderPhChips() {
+  $("ph-chips").innerHTML = (campMeta.placeholders || []).map(
+    (p) => `<button type="button" class="chip sm" data-ph="${esc(p)}">{${esc(p)}}</button>`).join(" ");
+  $("optout-line").textContent = window.MAIL_OPTOUT || "";
+  $("ph-chips").querySelectorAll("[data-ph]").forEach((b) => {
+    b.onclick = () => {
+      const f = lastField;
+      if (!f) { toast("Сначала поставьте курсор в тему или текст письма"); return; }
+      const ins = "{" + b.dataset.ph + "}";
+      const a = f.selectionStart ?? f.value.length, z = f.selectionEnd ?? a;
+      f.value = f.value.slice(0, a) + ins + f.value.slice(z);
+      f.focus();
+      f.selectionStart = f.selectionEnd = a + ins.length;
+    };
+  });
+}
+
+async function loadCampRows() {
+  if (!campOpen) return;
+  const c = camps.find((x) => x.id === campOpen);
+  $("camp-rows").hidden = false;
+  $("camp-rows-title").textContent = c ? "Компании: " + c.name : "Компании";
+  const ru = campMeta.status_ru || {};
+  $("camp-rows-chips").innerHTML = [["", "все"]].concat(Object.entries(ru)).map(
+    ([k, v]) => `<button class="chip ${campRowsFilter === k ? "is-active" : ""}"
+       data-rf="${esc(k)}">${esc(v)}</button>`).join("");
+  $("camp-rows-chips").querySelectorAll("[data-rf]").forEach((b) => {
+    b.onclick = () => { campRowsFilter = b.dataset.rf; loadCampRows(); };
+  });
+  const d = await get(`/api/campaigns/${campOpen}/rows?status=${encodeURIComponent(campRowsFilter)}`);
+  if (!d || !d.ok) return;
+  const total = c ? c.steps.length : 0;
+  $("camp-rows-list").innerHTML = d.rows.length ? `
+    <table class="mini">
+      <thead><tr><th>Компания</th><th>Адрес</th><th>Отправлено</th><th>Состояние</th>
+        <th>Когда</th><th></th></tr></thead>
+      <tbody>${d.rows.map((r) => `
+        <tr>
+          <td><a href="#" data-open-co="${r.company_id}">${esc(r.company)}</a></td>
+          <td>${esc(r.email)}</td>
+          <td>${Math.min(r.step, total)} из ${total}</td>
+          <td class="st-${esc(r.status)}">${esc(r.status_ru)}${r.error
+            ? `<em>${esc(r.error)}</em>` : ""}</td>
+          <td>${r.status === "queued" ? "след. " + whenTs(r.next_at)
+               : whenTs(r.sent_at)}</td>
+          <td>${["queued", "waiting", "error"].includes(r.status)
+            ? `<button class="btn quiet sm" data-stop-o="${r.id}">Остановить</button>` : ""}</td>
+        </tr>`).join("")}</tbody>
+    </table>` : `<div class="blank"><p>Здесь пусто.</p></div>`;
+  $("camp-rows-list").querySelectorAll("[data-open-co]").forEach((a) => {
+    a.onclick = (e) => { e.preventDefault(); openFromOtherView(Number(a.dataset.openCo)); };
+  });
+  $("camp-rows-list").querySelectorAll("[data-stop-o]").forEach((b) => {
+    b.onclick = async () => {
+      await post(`/api/outreach/${b.dataset.stopO}/stop`, {});
+      loadCampRows(); loadCampaigns(); loadMailState();
+    };
+  });
+}
+$("camp-rows-close").onclick = () => { $("camp-rows").hidden = true; campOpen = null; };
+
+async function loadMail() {
+  await loadCampaigns();
+  renderPhChips();
+  loadMailState();
+  if (campOpen) loadCampRows();
+}
+
+// Пока экран открыт, состояние отправки обновляется само: письма
+// уходят раз в несколько минут, и «следующее через 3 мин» без
+// обновления врёт уже через минуту.
+setInterval(() => { if (view === "mail") { loadMailState(); } }, 20000);
+// Список кампаний нужен и в «Базе» — для «В рассылку…», — а счётчик
+// ответов в меню должен появляться, даже когда экран не открыт.
+loadCampaigns();
+loadMailState();
+setInterval(() => { if (view !== "mail") loadMailState(); }, 60000);
 
 loadStats();
 // Через showView, а не напрямую: он же прячет то, что на этом экране

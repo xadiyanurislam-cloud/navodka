@@ -24,13 +24,14 @@ from .sources import (dadata, fns, gis2, hh, importer, osm,
 
 _thread = None
 _plans = None
+_mailer = None
 _stop = threading.Event()
 _current = {"task_id": None}
 
 
 # ── Запуск и остановка ───────────────────────────────────
 def start():
-    global _thread, _watch, _plans
+    global _thread, _watch, _plans, _mailer
     if _thread and _thread.is_alive():
         return
     recover()
@@ -45,6 +46,13 @@ def start():
         _plans = threading.Thread(target=_scheduler, name="navodka-plans",
                                   daemon=True)
         _plans.start()
+    # Рассылка — своим потоком: письма уходят по одному раз в несколько
+    # минут, и в общей очереди это заперло бы поиск на весь день.
+    if not (_mailer and _mailer.is_alive()):
+        from . import outreach
+        _mailer = threading.Thread(target=outreach.loop, name="navodka-mail",
+                                   daemon=True)
+        _mailer.start()
 
 
 def _scheduler():
