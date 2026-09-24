@@ -567,6 +567,18 @@ def upsert_company(row, phones=None):
         if found[k] in (None, "", 0):
             patch[k] = new
     if patch:
+        # ИНН и номер работодателя hh уникальны. Если новое значение уже
+        # стоит у другой карточки — это та же компания, и вместо падения
+        # на уникальности вторая карточка вливается в найденную.
+        for key in ("inn", "hh_id"):
+            val = str(patch.get(key) or "").strip()
+            if not val:
+                continue
+            other = c.execute("SELECT id FROM companies WHERE %s=? AND id<>?" % key,
+                              (val, found["id"])).fetchone()
+            if other is not None:
+                merge_companies(found["id"], other["id"])
+                c = conn()
         patch["updated_at"] = now()
         sets = ", ".join("%s=?" % k for k in patch)
         c.execute("UPDATE companies SET %s WHERE id=?" % sets,
@@ -877,9 +889,15 @@ def merge_companies(keep_id, drop_id):
     patch = {}
     for field in ("inn", "ogrn", "site", "director", "director_post",
                   "address", "region", "okved", "okved_name", "activity",
-                  "employees", "founded", "status", "hh_id"):
+                  "employees", "founded", "status", "hh_id", "next_step",
+                  "next_date", "note", "ai_summary", "ai_fit", "ai_why",
+                  "ai_hook", "ai_opener", "ai_kp", "callcenter"):
         if field in keep.keys() and not (keep[field] or "") and (drop[field] or ""):
             patch[field] = drop[field]
+    # Стадию берём ту, что дальше по работе: если по дублю уже звонили,
+    # эта отметка важнее «новой» у второй записи.
+    if (keep["stage"] or "new") == "new" and (drop["stage"] or "new") != "new":
+        patch["stage"] = drop["stage"]
     for table in ("contacts", "signals", "notes", "outreach", "sent_mail"):
         try:
             c.execute("UPDATE OR IGNORE %s SET company_id=? WHERE company_id=?"
@@ -1101,12 +1119,28 @@ def fill_company(company_id, patch, over=False):
         ready[key] = val
     if not ready:
         return {}
+    # ИНН уже записан у другой карточки — значит, это одна и та же
+    # компания, найденная дважды: вывеска «МТС» из карты и «ПАО МТС» из
+    # реестра. Раньше запись падала на уникальности ИНН и роняла всё
+    # обогащение посреди списка. Теперь вторая карточка вливается в эту:
+    # обогащение идёт по этой, и продолжать его надо здесь.
+    merged = ""
+    inn = str(ready.get("inn") or "").strip()
+    if inn:
+        other = c.execute("SELECT id, name FROM companies WHERE inn=? AND id<>?",
+                          (inn, company_id)).fetchone()
+        if other is not None:
+            merged = other["name"] or ""
+            merge_companies(company_id, other["id"])
+            c = conn()
     ready["updated_at"] = now()
     sets = ", ".join("%s=?" % k for k in ready)
     c.execute("UPDATE companies SET %s WHERE id=?" % sets,
               tuple(ready.values()) + (company_id,))
     c.commit()
     ready.pop("updated_at", None)
+    if merged:
+        ready["merged_with"] = merged
     return ready
 
 

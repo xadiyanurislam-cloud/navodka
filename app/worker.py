@@ -688,7 +688,10 @@ def task_enrich(task_id, params):
                 # Из ЕГРЮЛ приходит юридическое название — «ПАО ДВМП»
                 # вместо вывески «Fesco», — и upsert не узнавал исходную
                 # компанию: заводил вторую, а первая оставалась пустой.
-                db.fill_company(cid, info)
+                got = db.fill_company(cid, info)
+                if got.get("merged_with"):
+                    log("   это та же компания, что «%s» (тот же ИНН) — "
+                        "карточки склеены" % got["merged_with"])
                 row = db.conn().execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
             else:
                 log("   в ЕГРЮЛ по названию не нашлось", "warn")
@@ -803,7 +806,10 @@ def task_enrich(task_id, params):
         # прочитали. Берём его оттуда и переспрашиваем — теперь по
         # номеру, а не по названию.
         if res.get("inn") and not (row["inn"] or "").strip():
-            db.fill_company(cid, {"inn": res["inn"], "ogrn": res.get("ogrn")})
+            got = db.fill_company(cid, {"inn": res["inn"], "ogrn": res.get("ogrn")})
+            if got.get("merged_with"):
+                log("   это та же компания, что «%s» (тот же ИНН) — "
+                    "карточки склеены" % got["merged_with"])
             row = db.conn().execute("SELECT * FROM companies WHERE id=?",
                                     (cid,)).fetchone()
             log("   ИНН с сайта: %s" % res["inn"])

@@ -7159,5 +7159,41 @@ class NewSourcesInForm(unittest.TestCase):
         self.assertEqual(params["sources"], {"hh": True, "trudvsem": True, "superjob": False})
 
 
+class InnCollision(unittest.TestCase):
+    """Обогащение падало: «UNIQUE constraint failed: companies.inn»."""
+
+    def setUp(self):
+        db.init()
+        c = db.conn()
+        for t in ("contacts", "signals", "notes", "companies"):
+            c.execute("DELETE FROM %s" % t)
+        c.commit()
+
+    tearDown = setUp
+
+    def test_registry_inn_already_on_other_card_merges(self):
+        old, _ = db.upsert_company({"name": "ПАО МТС", "inn": "7740000076"})
+        db.update_company_fields(old, {"stage": "созвон"})
+        db.add_note(old, "звонили")
+        cur, _ = db.upsert_company({"name": "МТС", "site": "https://mts.ru"})
+        got = db.fill_company(cur, {"inn": "7740000076", "director": "Николаев"})
+        self.assertEqual(got["merged_with"], "ПАО МТС")
+        rows = db.conn().execute("SELECT * FROM companies").fetchall()
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual((r["id"], r["inn"], r["stage"]), (cur, "7740000076", "созвон"))
+        self.assertEqual(r["director"], "Николаев")
+        self.assertEqual(len(db.notes(cur)), 1)
+
+    def test_hh_id_collision_merges(self):
+        a, _ = db.upsert_company({"name": "Билайн", "hh_id": "4934"})
+        b, _ = db.upsert_company({"name": "ПАО ВымпелКом", "inn": "7713076301"})
+        got, new = db.upsert_company({"name": "ВымпелКом", "inn": "7713076301",
+                                      "hh_id": "4934"})
+        self.assertFalse(new)
+        n = db.conn().execute("SELECT COUNT(*) n FROM companies").fetchone()["n"]
+        self.assertEqual(n, 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
