@@ -210,6 +210,8 @@ def create_app():
             has_vk=bool(db.get_setting("vk_token", "")),
             yandex_key=db.get_setting("yandex_key", ""),
             vk_token=db.get_setting("vk_token", ""),
+            sj_key=db.get_setting("sj_key", ""),
+            has_sj=bool(db.get_setting("sj_key", "")),
             mail={k: db.get_setting("mail_" + k, "") for k in MAIL_KEYS},
             mail_presets=mail.presets_for_ui(),
             mail_optout_line=mail.OPT_OUT_LINE,
@@ -290,6 +292,9 @@ def create_app():
                 "yandex": bool(d.get("yandex", True)),
                 "dadata": bool(d.get("dadata", True)),
                 "hh": bool(d.get("hh", True)),
+                "trudvsem": bool(d.get("trudvsem", True)),
+                "superjob": bool(d.get("superjob", True)),
+                "fns": bool(d.get("fns", True)),
             },
             "synonyms": bool(d.get("synonyms", True)),
             "skip_empty": bool(d.get("skip_empty", True)),
@@ -317,6 +322,11 @@ def create_app():
             "in_title": bool(d.get("in_title", True)),
             "skip_agencies": bool(d.get("skip_agencies", True)),
             "max_open": num(d.get("max_open"), 0, 0, 5000),
+            "sources": {
+                "hh": bool(d.get("src_hh", True)),
+                "trudvsem": bool(d.get("src_trudvsem", True)),
+                "superjob": bool(d.get("src_superjob", True)),
+            },
             "then_enrich": bool(d.get("then_enrich")),
             "then_zakupki": bool(d.get("then_zakupki")),
             "then_ai": bool(d.get("then_ai")),
@@ -1128,7 +1138,7 @@ def create_app():
                     "update_repo", "update_token", "update_url",
                     "yandex_key", "vk_token", "ai_kind", "proxy_url",
                     "tg_api_id", "tg_api_hash", "tg_phone",
-                    "tg_proxy"):
+                    "tg_proxy", "sj_key"):
             if key in d:
                 db.set_setting(key, _text(d[key], 500))
         touched = False

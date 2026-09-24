@@ -1577,3 +1577,10 @@ table.mini .st-bounced,table.mini .st-error{color:var(--err)}
   .camp-nums{flex-wrap:wrap;gap:10px}
   .camp-nums span{min-width:0}
 }
+
+/* Где искать вакансии — строкой под условиями: три площадки, у каждой
+   своя подпись про ключ. */
+.vac-srcs{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:flex-start;
+  margin-top:14px;padding-top:12px;border-top:1px solid var(--line-2)}
+.vac-srcs .lbl{flex-basis:100%}
+.src-dedupe{margin-top:10px}

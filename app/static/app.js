@@ -425,6 +425,9 @@ function findForm() {
     yandex: $("q-yandex").checked,
     dadata: $("q-dadata").checked,
     hh: $("q-hh").checked,
+    fns: $("q-fns").checked,
+    trudvsem: $("q-trud").checked,
+    superjob: $("q-sj").checked,
     synonyms: $("q-also").checked,
     skip_empty: $("q-skip-empty").checked,
     then_enrich: $("q-then").checked,
@@ -450,6 +453,9 @@ function fillFindForm(p) {
   $("q-yandex").checked = src.yandex !== false;
   $("q-dadata").checked = src.dadata !== false;
   $("q-hh").checked = src.hh !== false;
+  $("q-fns").checked = src.fns !== false;
+  $("q-trud").checked = src.trudvsem !== false;
+  $("q-sj").checked = src.superjob !== false;
   $("q-also").checked = p.synonyms !== false;
   alsoNote();
   $("q-skip-empty").checked = p.skip_empty !== false;
@@ -462,7 +468,8 @@ function fillFindForm(p) {
 // заполнено при загрузке страницы и меняется сразу после сохранения,
 // так что перезагружать ничего не нужно.
 function hasKey(what) {
-  const el = $({gis: "s-gis", yandex: "s-yandex", dadata: "s-dadata"}[what]);
+  const el = $({gis: "s-gis", yandex: "s-yandex", dadata: "s-dadata",
+               sj: "s-sj"}[what]);
   return !!(el && el.value.trim());
 }
 
@@ -475,7 +482,11 @@ function findReady() {
   const f = findForm();
   const all = [[f.osm, "OSM", true], [f.gis, "2ГИС", hasKey("gis")],
                [f.yandex, "Яндекс", hasKey("yandex")],
-               [f.dadata, "ЕГРЮЛ", hasKey("dadata")], [f.hh, "hh.ru", true]];
+               [f.dadata, "ЕГРЮЛ", hasKey("dadata")], [f.hh, "hh.ru", true],
+               [f.trudvsem, "Работа России", true],
+               [f.superjob, "SuperJob", hasKey("sj")],
+               // ФНС нужен только без токена DaData — с токеном он молчит.
+               [f.fns && !(f.dadata && hasKey("dadata")), "ЕГРЮЛ ФНС", true]];
   const on = all.filter((s) => s[0] && s[2]).map((s) => s[1]);
   const off = all.filter((s) => s[0] && !s[2]).map((s) => s[1]);
   const box = $("find-ready");
@@ -489,13 +500,15 @@ function findReady() {
   box.classList.toggle("warn", !!on.length && !!off.length);
   return on.length;
 }
-["q-osm", "q-gis", "q-yandex", "q-dadata", "q-hh"].forEach((id) => { $(id).onchange = findReady; });
+["q-osm", "q-gis", "q-yandex", "q-dadata", "q-hh", "q-fns", "q-trud", "q-sj"]
+  .forEach((id) => { $(id).onchange = findReady; });
 findReady();
 
 $("btn-find").onclick = async () => {
   const f = findForm();
   if (!f.query) { $("q-text").focus(); toast("Впишите, кого ищем"); return; }
-  if (!f.osm && !f.gis && !f.yandex && !f.dadata && !f.hh) {
+  if (!f.osm && !f.gis && !f.yandex && !f.dadata && !f.hh && !f.fns &&
+      !f.trudvsem && !f.superjob) {
     toast("Выберите хотя бы один источник"); return; }
   // Отмечены только те, у кого нет ключа, — поиск вернётся пустым.
   if (!findReady()) {
@@ -554,6 +567,9 @@ function searchForm() {
     in_title: $("f-title").checked,
     skip_agencies: $("f-noagency").checked,
     max_open: $("f-maxopen").value,
+    src_hh: $("f-src-hh").checked,
+    src_trudvsem: $("f-src-trud").checked,
+    src_superjob: $("f-src-sj").checked,
     then_enrich: $("f-then").checked,
     then_zakupki: $("f-then-zak").checked,
     then_ai: $("f-then-ai").checked,
@@ -571,6 +587,10 @@ function fillSearchForm(p) {
   $("f-title").checked = p.in_title !== false;
   $("f-noagency").checked = p.skip_agencies !== false;
   $("f-maxopen").value = String(p.max_open || 0);
+  const vs = p.sources || {};
+  $("f-src-hh").checked = vs.hh !== false;
+  $("f-src-trud").checked = vs.trudvsem !== false;
+  $("f-src-sj").checked = vs.superjob !== false;
   $("f-then").checked = !!p.then_enrich;
   $("f-then-zak").checked = !!p.then_zakupki;
   $("f-then-ai").checked = !!p.then_ai;
@@ -1494,6 +1514,7 @@ $("s-save").onclick = async () => {
     proxy_url: $("s-proxy").value,
     hh_token: $("s-hh-token").value,
     yandex_key: $("s-yandex").value, vk_token: $("s-vk").value,
+    sj_key: $("s-sj").value,
     update_repo: $("s-upd-repo").value, update_token: $("s-upd-token").value,
     ...mailFields()});
   markKeys();
@@ -1517,7 +1538,10 @@ function markKeys() {
     el.textContent = ready ? "ключ есть" : "нужен ключ";
   }
   // Карточки источников на «Поиске» — там же, где человек их отмечает.
-  for (const [what, yes, no] of [["gis", "ключ есть", "нет ключа"],
+  const sjNote = $("f-sj-note");
+  if (sjNote) sjNote.textContent = hasKey("sj") ? "ключ есть"
+    : "нужен бесплатный ключ в «Настройках»";
+  for (const [what, yes, no] of [["gis", "ключ есть", "нет ключа"], ["sj", "ключ есть", "нет ключа"],
                                  ["yandex", "ключ есть", "нет ключа"],
                                  ["dadata", "токен есть", "нет токена"]]) {
     const ready = hasKey(what), badge = $("src-key-" + what);

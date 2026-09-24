@@ -424,7 +424,37 @@ def _short_name(name):
     return s if len(s) >= 4 else ""
 
 
-def upsert_company(row):
+def norm_region(region):
+    """«г. Москва», «город Москва», «Москва г» → «Москва».
+
+    Источники пишут город по-разному, а по городу вместе с названием
+    опознаётся компания без ИНН. Работа России отдаёт «г. Москва», hh —
+    «Москва», и без приведения одна компания жила двумя строками.
+    """
+    s = re.sub(r"\s+", " ", (region or "").strip())
+    s = re.sub(r"^(г\.|г|город|гор\.)\s+", "", s, flags=re.I)
+    s = re.sub(r"\s+(г\.?|город)$", "", s, flags=re.I)
+    return s.strip()
+
+
+def phone_key(raw):
+    """Телефон как ключ компании: «+7XXXXXXXXXX» или пусто.
+
+    Бесплатные 8-800 ключом не служат: такой номер бывает у сети с
+    десятком юрлиц и у аутсорсного колл-центра, отвечающего за чужие
+    компании, — склейка по нему смешала бы разных.
+    """
+    d = re.sub(r"\D", "", raw or "")
+    if len(d) != 11 or d[0] not in "78":
+        return ""
+    if d[1:3] == "80":
+        return ""
+    if len(set(d[1:])) <= 2:
+        return ""
+    return "+7" + d[1:]
+
+
+def upsert_company(row, phones=None):
     """Добавить компанию или дополнить существующую.
 
     Дедупликация по ИНН, а при его отсутствии — по идентификатору работодателя
@@ -432,11 +462,19 @@ def upsert_company(row):
     и склейка по имени смешала бы разные юрлица в одно.
     """
     c = conn()
+    if row.get("region"):
+        row = dict(row, region=norm_region(row["region"]))
     inn = (row.get("inn") or "").strip()
     hh_id = (row.get("hh_id") or "").strip()
+    ogrn = (row.get("ogrn") or "").strip()
     found = None
     if inn:
         found = c.execute("SELECT * FROM companies WHERE inn=?", (inn,)).fetchone()
+    # ОГРН так же однозначен, как ИНН: у юрлица он один на всю жизнь.
+    if found is None and ogrn:
+        found = c.execute("SELECT * FROM companies WHERE ogrn=?", (ogrn,)).fetchone()
+        if found is not None and inn and (found["inn"] or "").strip() not in ("", inn):
+            found = None
     if found is None and hh_id:
         found = c.execute("SELECT * FROM companies WHERE hh_id=?", (hh_id,)).fetchone()
 
@@ -476,6 +514,29 @@ def upsert_company(row):
                     continue
                 found = x
                 break
+
+    # Совпадение по телефону. Справочник знает вывеску и телефон, портал
+    # вакансий — юрлицо и тот же телефон, и других общих признаков у них
+    # может не быть вовсе. Номер, который висит на нескольких компаниях
+    # сразу (приёмная бизнес-центра, общий колл-центр), ключом не служит.
+    if found is None and phones:
+        for ph in phones[:4]:
+            key = phone_key(ph)
+            if not key:
+                continue
+            owners = c.execute(
+                "SELECT DISTINCT company_id FROM contacts WHERE kind='phone' "
+                "AND value=? LIMIT 3", (key,)).fetchall()
+            if len(owners) != 1:
+                continue
+            x = c.execute("SELECT * FROM companies WHERE id=?",
+                          (owners[0]["company_id"],)).fetchone()
+            if x is None:
+                continue
+            if inn and (x["inn"] or "").strip() and x["inn"].strip() != inn:
+                continue
+            found = x
+            break
 
     # Возвращаем признак новизны вместе с идентификатором: по нему видно,
     # сколько компаний поиск принёс впервые, а сколько уже лежало. Без
@@ -848,14 +909,29 @@ def find_duplicates():
     """
     import re as _re
     rows = conn().execute(
-        "SELECT id, name, inn, site, score, region FROM companies "
+        "SELECT id, name, inn, ogrn, site, score, region FROM companies "
         "ORDER BY id").fetchall()
     by_id = {r["id"]: r for r in rows}
+    # Телефоны — только те, что принадлежат одной-двум компаниям. Номер
+    # на пяти карточках — это приёмная или общий колл-центр, а не признак
+    # того, что все пять — одна фирма.
+    phones_of, owners = {}, {}
+    for t in conn().execute("SELECT company_id, value FROM contacts "
+                            "WHERE kind='phone'"):
+        key = phone_key(t["value"])
+        if key:
+            phones_of.setdefault(t["company_id"], set()).add(key)
+            owners.setdefault(key, set()).add(t["company_id"])
     seen, pairs = {}, []
     for r in rows:
         keys = []
         if (r["inn"] or "").strip():
             keys.append("инн:" + r["inn"].strip())
+        if (r["ogrn"] or "").strip():
+            keys.append("огрн:" + r["ogrn"].strip())
+        for key in sorted(phones_of.get(r["id"], ())):
+            if len(owners.get(key, ())) == 2:
+                keys.append("тел:" + key)
         host = host_of(r["site"])
         if host:
             keys.append("сайт:" + host)
@@ -868,7 +944,7 @@ def find_duplicates():
             # «Дентал» в Петербурге — разные компании, а программа
             # предлагала их склеить, и человек соглашался: кнопка
             # называется «Склеить», а не «Проверьте, точно ли это одно».
-            keys.append("имя:%s|%s" % (name, (r["region"] or "").lower()))
+            keys.append("имя:%s|%s" % (name, norm_region(r["region"]).lower()))
         hit = next((seen[k] for k in keys if k in seen), None)
         if hit is not None and hit != r["id"]:
             # Разные ИНН — разные юрлица, и никакое совпадение названия

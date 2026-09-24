@@ -305,4 +305,44 @@ def run():
         out.append(_row("Госзакупки", r.status_code == 200,
                         "ответ %s" % r.status_code, ms))
 
+    # 7. Работа России — без ключа.
+    from .sources import superjob, trudvsem
+    r, ms, err = _get(s, trudvsem.BASES[0], {"text": "оператор", "limit": 1})
+    if err:
+        r, ms, err = _get(s, trudvsem.BASES[1], {"text": "оператор", "limit": 1})
+    if err:
+        out.append(_row("Работа России", False, err, hint=abroad))
+    else:
+        try:
+            total = int((r.json().get("meta") or {}).get("total") or 0)
+        except Exception:
+            total = 0
+        out.append(_row("Работа России", r.status_code == 200 and total > 0,
+                        "ответ %s, вакансий %d" % (r.status_code, total), ms))
+
+    # 8. SuperJob — только с ключом.
+    sj = db.get_setting("sj_key", "")
+    if not sj:
+        out.append(_row("SuperJob", None, "ключ не задан", hint=(
+            "Бесплатный ключ — на api.superjob.ru, вставляется в "
+            "«Настройки» → «Ключ SuperJob».")))
+    else:
+        t0 = time.time()
+        try:
+            rr = s.get(superjob.URL, params={"keyword": "оператор", "count": 1},
+                       headers={"X-Api-App-Id": sj}, timeout=15)
+            ok = rr.status_code == 200
+            note = "ключ принят" if ok else superjob.explain(rr.status_code, None)
+        except Exception as e:
+            ok, note = False, "%s: %s" % (type(e).__name__, str(e)[:120])
+        out.append(_row("SuperJob", ok, note, int((time.time() - t0) * 1000)))
+
+    # 9. ЕГРЮЛ на сайте ФНС — без ключа.
+    r, ms, err = _get(s, "https://egrul.nalog.ru/index.html", timeout=15)
+    if err:
+        out.append(_row("ЕГРЮЛ (сайт ФНС)", False, err, hint=abroad))
+    else:
+        out.append(_row("ЕГРЮЛ (сайт ФНС)", r.status_code == 200,
+                        "ответ %s" % r.status_code, ms))
+
     return out

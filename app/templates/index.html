@@ -246,9 +246,31 @@
                     <span class="src-h">ЕГРЮЛ</span>
                     <b id="src-key-dadata" class="{{ 'ok' if has_dadata else 'need' }}">{{ 'токен есть' if has_dadata else 'нет токена' }}</b>
                     <em id="src-hint-dadata" data-yes="Сразу отдаёт ИНН и ФИО руководителя"
-                        data-no='Будет пропущен — <a href="https://dadata.ru/api/suggest/party/">взять токен бесплатно</a>'>{% if has_dadata %}Сразу отдаёт ИНН и ФИО руководителя{% else %}Будет пропущен — <a href="https://dadata.ru/api/suggest/party/">взять токен бесплатно</a>{% endif %}</em>
+                        data-no='Без токена его заменит «ЕГРЮЛ с сайта ФНС»'>{% if has_dadata %}Сразу отдаёт ИНН и ФИО руководителя{% else %}Без токена его заменит «ЕГРЮЛ с сайта ФНС»{% endif %}</em>
+                  </span></label>
+                <label class="src"><input id="q-fns" type="checkbox" checked>
+                  <span class="src-b">
+                    <span class="src-h">ЕГРЮЛ с сайта ФНС</span>
+                    <b class="ok">без ключа</b>
+                    <em>Тот же реестр напрямую: ИНН, руководитель, адрес. Когда есть токен DaData, не нужен</em>
+                  </span></label>
+                <label class="src"><input id="q-trud" type="checkbox" checked>
+                  <span class="src-b">
+                    <span class="src-h">Работа России</span>
+                    <b class="ok">без ключа</b>
+                    <em>Госпортал вакансий: сразу ИНН и контакты работодателя</em>
+                  </span></label>
+                <label class="src" data-src="sj"><input id="q-sj" type="checkbox" checked>
+                  <span class="src-b">
+                    <span class="src-h">SuperJob</span>
+                    <b id="src-key-sj" class="{{ 'ok' if has_sj else 'need' }}">{{ 'ключ есть' if has_sj else 'нет ключа' }}</b>
+                    <em id="src-hint-sj" data-yes="Работодатели, которых нет на hh"
+                        data-no='Будет пропущен — <a href="https://api.superjob.ru/register">взять ключ бесплатно</a>'>{% if has_sj %}Работодатели, которых нет на hh{% else %}Будет пропущен — <a href="https://api.superjob.ru/register">взять ключ бесплатно</a>{% endif %}</em>
                   </span></label>
               </div>
+              <p class="hint-sm src-dedupe">Одна и та же компания из разных источников
+                 сводится в одну карточку — по ИНН, ОГРН, сайту, телефону и названию
+                 с городом. После каждого поиска программа ещё раз ищет и склеивает дубли.</p>
             </div>
           </section>
 
@@ -388,6 +410,15 @@
                   <label class="opt"><input id="f-noagency" type="checkbox" checked>
                     <span>Без кадровых агентств<em>вакансий у них сотни, а продавать им нечего</em></span></label>
                 </div>
+              </div>
+              <div class="vac-srcs">
+                <span class="lbl">Где искать вакансии</span>
+                <label class="opt"><input id="f-src-hh" type="checkbox" checked>
+                  <span>hh.ru<em>без ключа</em></span></label>
+                <label class="opt"><input id="f-src-trud" type="checkbox" checked>
+                  <span>Работа России<em>без ключа, сразу ИНН и контакты</em></span></label>
+                <label class="opt"><input id="f-src-sj" type="checkbox" checked>
+                  <span>SuperJob<em id="f-sj-note">{{ 'ключ есть' if has_sj else 'нужен бесплатный ключ в «Настройках»' }}</em></span></label>
               </div>
             </div>
           </section>
@@ -747,6 +778,12 @@
       <em>Второй справочник рядом с 2ГИС, отдаёт ещё и соцсети компаний.
           Нужен сервис <b>«Поиск по организациям»</b>.
           <a href="https://developer.tech.yandex.ru/services/">где взять ключ</a></em>
+    </label>
+    <label>Ключ SuperJob
+      <input id="s-sj" type="password" data-secret value="{{ sj_key }}" placeholder="Secret key">
+      <em>Вакансии и работодатели с SuperJob — тех, кого нет на hh.
+          Бесплатно: зарегистрируйте приложение и скопируйте <b>Secret key</b>.
+          <a href="https://api.superjob.ru/register">где взять ключ</a></em>
     </label>
     <label>Сервисный ключ ВКонтакте
       <input id="s-vk" type="password" data-secret value="{{ vk_token }}" placeholder="сервисный ключ">

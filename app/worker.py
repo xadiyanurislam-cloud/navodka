@@ -19,8 +19,9 @@ import requests
 
 from . import (ai, db, enrich, geo, net, profile, score, settings, social,
                trades, verify)
-from .sources import (dadata, fns, gis2, hh, importer, osm,
-                      site as site_src, tg, vk, yandex, zakupki)
+from .sources import (dadata, egrul, fns, gis2, hh, importer, osm,
+                      site as site_src, superjob, tg, trudvsem, vk, yandex,
+                      zakupki)
 
 _thread = None
 _plans = None
@@ -266,12 +267,23 @@ def task_hh_search(task_id, params):
     # них меньше всего: до генерального там не дойти, закупки идут через
     # тендер. Ноль — порога нет.
     max_open = int(params.get("max_open") or 0)
+    use = params.get("sources") or {}
+    want_hh = use.get("hh", True)
+    want_trud = use.get("trudvsem", True)
+    sj_key = db.get_setting("sj_key", "")
+    want_sj = use.get("superjob", True) and bool(sj_key)
 
     def log(msg, level="info"):
         db.log(task_id, msg, level)
 
+    if use.get("superjob", True) and not sj_key:
+        log("SuperJob пропущен: не задан ключ — «Настройки» → «Ключ SuperJob», "
+            "он бесплатный.", "warn")
+    if not (want_hh or want_trud or want_sj):
+        raise RuntimeError("не выбран ни один источник вакансий")
+
     errors = []
-    queries_left = True
+    queries_left = want_hh
     employers, seen = [], set()
     # Поиск по номеру вместо перебора списка: на тысяче работодателей
     # перебор превращался в миллион сравнений.
@@ -328,6 +340,17 @@ def task_hh_search(task_id, params):
         if _should_stop():
             break
     employers.sort(key=lambda x: -x["vacancies"])
+
+    # Другие площадки — теми же запросами по тем же регионам. Их
+    # работодатели сводятся с hh не здесь, а при записи в базу: у Работы
+    # России есть ИНН, у SuperJob — сайт, и склейка идёт по ним.
+    others = _other_vacancies(queries, areas, period, pages, in_title,
+                              skip_agencies, want_trud, want_sj, sj_key,
+                              log, errors)
+    if not employers and others:
+        a2, k2 = _save_others(task_id, others, max_open, log)
+        _finish_vacancy_search(task_id, params, log, a2, k2)
+        return
     if not employers:
         # Отказ источника — это не «готово». Раньше задача в обоих случаях
         # заканчивалась успехом, и человек видел бодрое «готово» при нуле
@@ -396,10 +419,19 @@ def task_hh_search(task_id, params):
     total = db.conn().execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
     # Повторный прогон без этих цифр выглядит холостым: компаний столько
     # же, и непонятно, нашлось ли что-нибудь новое.
-    log("Готово. Новых: %d, уже было: %d%s. Всего в базе: %d"
+    log("hh.ru: новых %d, уже было %d%s. Всего в базе: %d"
         % (added, known,
            (", пропущено из чёрного списка: %d" % skipped) if skipped else "",
            total))
+    if others:
+        a2, k2 = _save_others(task_id, others, max_open, log)
+        added, known = added + a2, known + k2
+    _finish_vacancy_search(task_id, params, log, added, known)
+
+
+def _finish_vacancy_search(task_id, params, log, added, known):
+    """Склейка дублей и постановка обогащения после поиска по вакансиям."""
+    _auto_dedupe(log)
     # Ставим обогащение по факту находок, а не только новых.
     #
     # Обогащение и так берёт только тех, у кого его ещё не было, поэтому
@@ -422,6 +454,173 @@ def task_hh_search(task_id, params):
         log("Обогащение поставлено в очередь.")
     elif params.get("then_enrich"):
         log("Обогащать нечего: ничего не найдено.", "warn")
+
+
+# ── Другие площадки вакансий ─────────────────────────────
+def _area_names():
+    return {code: name for code, name in hh.AREAS}
+
+
+def _other_vacancies(queries, areas, period, pages, in_title, skip_agencies,
+                     want_trud, want_sj, sj_key, log, errors):
+    """Работодатели с Работы России и SuperJob: [(работодатель, город)].
+
+    Регион hh переводится в то, что понимает каждая площадка: Работе
+    России нужен номер субъекта, SuperJob — название города.
+    """
+    names = _area_names()
+    out = []
+    for text in queries:
+        for area in areas:
+            if _should_stop():
+                return out
+            city = names.get(str(area), "")
+            whole = city in ("", "Россия")
+            if want_trud:
+                code = "" if whole else geo.region_code(city)
+                log("Работа России: «%s», %s" % (text, city or "вся Россия"))
+                for emp in trudvsem.search(text, region=code, period=period,
+                                           pages=pages, in_title=in_title,
+                                           skip_agencies=skip_agencies,
+                                           on_log=log, should_stop=_should_stop,
+                                           errors=errors):
+                    if not whole and not _in_city(emp, city):
+                        continue
+                    out.append((emp, "" if whole else city))
+            if want_sj:
+                if city == "Московская область":
+                    log("SuperJob ищет по городам, а не по областям — "
+                        "Московскую область пропускаю.", "warn")
+                else:
+                    log("SuperJob: «%s», %s" % (text, city or "вся Россия"))
+                    for emp in superjob.search(text, sj_key,
+                                               town="" if whole else city,
+                                               period=period, pages=pages,
+                                               in_title=in_title,
+                                               skip_agencies=skip_agencies,
+                                               on_log=log,
+                                               should_stop=_should_stop,
+                                               errors=errors):
+                        out.append((emp, "" if whole else city))
+    return out
+
+
+def _in_city(emp, city):
+    """Работодатель из этого города, если регион шире города.
+
+    Работа России ищет по субъекту: на «Новосибирск» она вернёт всю
+    область. Город, который сам себе субъект, отсевать незачем; в
+    остальных смотрим, не назван ли город в регионе или в адресе.
+    """
+    if city in geo.CITY_SUBJECTS or city == "Московская область":
+        return True
+    where = " ".join([emp.get("region") or "", emp.get("address") or ""]).lower()
+    return not where.strip() or city.lower().replace("ё", "е") in where.replace("ё", "е")
+
+
+def _merge_vacancy_signals(cid, emp):
+    """Вакансии с новой площадки — к уже известным, без двойного счёта.
+
+    Одна и та же вакансия часто висит и на hh, и на Работе России.
+    Сложение удвоило бы её, поэтому число берётся наибольшее, а названия
+    сливаются в один список.
+    """
+    try:
+        have = int(db.get_signal(cid, "hh_vacancies") or 0)
+    except ValueError:
+        have = 0
+    db.add_signal(cid, "hh_vacancies", max(have, emp.get("vacancies") or 0))
+    titles = [t for t in (db.get_signal(cid, "hh_titles") or "").split(" | ") if t]
+    for t in emp.get("titles") or []:
+        if t not in titles:
+            titles.append(t)
+    if titles:
+        db.add_signal(cid, "hh_titles", " | ".join(titles[:12]))
+    if emp.get("fresh") is not None:
+        old = db.get_signal(cid, "hh_fresh_days")
+        try:
+            old = int(old)
+        except (TypeError, ValueError):
+            old = None
+        if old is None or old > emp["fresh"]:
+            db.add_signal(cid, "hh_fresh_days", emp["fresh"])
+    sal = [x for x in (emp.get("salaries") or []) if 15000 < x < 1000000]
+    if sal and not db.get_signal(cid, "hh_salary"):
+        db.add_signal(cid, "hh_salary", "%d–%d ₽" % (min(sal), max(sal)))
+    srcs = [x for x in (db.get_signal(cid, "vac_sources") or "").split(", ") if x]
+    if emp.get("source") and emp["source"] not in srcs:
+        srcs.append(emp["source"])
+        db.add_signal(cid, "vac_sources", ", ".join(srcs))
+    if emp.get("url"):
+        db.add_signal(cid, "vac_url_" + ("sj" if emp.get("source") == superjob.SOURCE
+                                         else "trud"), emp["url"])
+    if emp.get("contact_person"):
+        db.add_signal(cid, "vac_contact", emp["contact_person"])
+
+
+def _save_others(task_id, others, max_open, log):
+    """Записать работодателей с других площадок. Возвращает (новых, было)."""
+    added = known = skipped = 0
+    db.update_task(task_id, total=len(others), done=0)
+    for i, (emp, city) in enumerate(others, 1):
+        if _should_stop():
+            break
+        db.update_task(task_id, done=i)
+        if db.is_blacklisted({"inn": emp.get("inn"), "name": emp["name"]}):
+            skipped += 1
+            continue
+        region = city or emp.get("region") or ""
+        cid, is_new = db.upsert_company({
+            "name": emp["name"], "inn": emp.get("inn") or "",
+            "ogrn": emp.get("ogrn") or "",
+            "site": site_src.normalize_url(emp.get("site") or ""),
+            "region": region, "source": emp.get("source") or "",
+        }, phones=emp.get("phones"))
+        added += 1 if is_new else 0
+        known += 0 if is_new else 1
+        origin = "%s: вакансия" % emp.get("source")
+        for ph in (emp.get("phones") or [])[:3]:
+            ok = site_src._clean_phone(ph)
+            if ok:
+                db.add_contact(cid, "phone", ok, "hr", 80, "unchecked", origin)
+        for addr in (emp.get("emails") or [])[:3]:
+            addr = addr.strip().lower()
+            if "@" in addr:
+                db.add_contact(cid, "email", addr, site_src.guess_owner(addr),
+                               80, "unchecked", origin)
+        if emp.get("sj_id"):
+            db.add_signal(cid, "sj_id", emp["sj_id"])
+        _merge_vacancy_signals(cid, emp)
+        _rescore(cid)
+    by_src = {}
+    for emp, _ in others:
+        by_src[emp.get("source")] = by_src.get(emp.get("source"), 0) + 1
+    log("Другие площадки (%s): новых %d, уже было %d%s."
+        % (", ".join("%s — %d" % kv for kv in by_src.items()), added, known,
+           (", из чёрного списка %d" % skipped) if skipped else ""))
+    return added, known
+
+
+def _auto_dedupe(log):
+    """Склеить дубли сразу после поиска, не дожидаясь кнопки «Дубли».
+
+    Одна компания приходит из разных источников под разными именами,
+    и пока ИНН не известен, это две строки. После каждого поиска ключей
+    становится больше — ИНН с портала вакансий, телефон из справочника, —
+    и склеивать лучше сразу, пока по дублю никто не начал работать.
+    """
+    try:
+        pairs = db.find_duplicates()
+    except Exception as e:
+        log("Проверка дублей не удалась: %s" % str(e)[:160], "warn")
+        return 0
+    done = 0
+    for keep, drop in pairs:
+        if db.merge_companies(keep, drop):
+            done += 1
+    if done:
+        log("Склеено дублей между источниками: %d." % done)
+    return done
 
 
 # ── Задача: обогащение ───────────────────────────────────
@@ -1372,14 +1571,26 @@ def task_find(task_id, params):
     want_yandex = use.get("yandex", True) and bool(yandex_key)
     want_egrul = use.get("dadata", True) and bool(dadata_token)
     want_hh = use.get("hh", True)
+    sj_key = db.get_setting("sj_key", "")
+    want_trud = use.get("trudvsem", True)
+    want_sj = use.get("superjob", True) and bool(sj_key)
+    # ЕГРЮЛ с сайта ФНС — тот же реестр, что у DaData. Когда DaData
+    # подключена, спрашивать реестр второй раз незачем: ответ тот же,
+    # а ФНС за частые запросы показывает капчу.
+    want_fns = use.get("fns", True) and not want_egrul
 
     if use.get("gis", True) and not gis_key:
         log("2ГИС пропущен: не задан ключ Places API.", "warn")
     if use.get("yandex", True) and not yandex_key:
         log("Яндекс пропущен: не задан ключ Геопоиска.", "warn")
-    if use.get("dadata", True) and not dadata_token:
+    if use.get("dadata", True) and not dadata_token and want_fns:
+        log("Токена DaData нет — ЕГРЮЛ беру прямо с сайта ФНС, без ключа.")
+    elif use.get("dadata", True) and not dadata_token:
         log("ЕГРЮЛ пропущен: не задан токен DaData.", "warn")
-    if not (want_osm or want_gis or want_yandex or want_egrul or want_hh):
+    if use.get("superjob", True) and not sj_key:
+        log("SuperJob пропущен: не задан ключ (бесплатный) — «Настройки».", "warn")
+    if not (want_osm or want_gis or want_yandex or want_egrul or want_hh
+            or want_trud or want_sj or want_fns):
         raise RuntimeError("не включён ни один источник — задайте ключи в «Настройках»")
 
     log("Ищу «%s» по городам: %s"
@@ -1408,6 +1619,7 @@ def task_find(task_id, params):
             per_city += 1
         if want_hh and c["hh"]:
             per_city += 1
+        per_city += sum(1 for w in (want_trud, want_sj, want_fns) if w)
         # Каждое близкое слово — полный обход источников заново.
         steps += per_city * len(words)
     db.update_task(task_id, total=steps, done=0)
@@ -1444,9 +1656,18 @@ def task_find(task_id, params):
         # «Дентал» в Москве и «Дентал» в Петербурге — разные компании, а
         # склеивались в одну: у объединённой оставался город первой, и
         # вторая исчезала из выдачи совсем.
+        ogrn = (row.get("ogrn") or "").strip()
+        if ogrn:
+            out.append("огрн:" + ogrn)
+        # Телефон — общий знаменатель справочников и порталов вакансий:
+        # у карты нет ИНН, у портала нет вывески, а номер у них один.
+        for ph in (row.get("phones") or [])[:3]:
+            key = db.phone_key(ph)
+            if key:
+                out.append("тел:" + key)
         name = norm_name(row.get("name"))
         if name:
-            out.append("имя:%s|%s" % (name, (row.get("region") or "").lower()))
+            out.append("имя:%s|%s" % (name, db.norm_region(row.get("region")).lower()))
         return out
 
     def full():
@@ -1483,7 +1704,9 @@ def task_find(task_id, params):
                       "founded", "employees"):
             if not (old.get(field) or "") and new.get(field):
                 old[field] = new[field]
-        for field in ("phones", "emails", "links"):
+        if new.get("vac") and not old.get("vac"):
+            old["vac"] = new["vac"]
+        for field in ("phones", "emails", "links", "titles"):
             have = old.setdefault(field, []) or []
             for v in (new.get(field) or []):
                 if v not in have:
@@ -1593,6 +1816,56 @@ def task_find(task_id, params):
                     time.sleep(0.3)
                 did("hh.ru · %s" % where)
 
+            if want_trud and not full():
+                _say(task_id, log, "Работа России · %s" % where)
+                whole = city["name"] == geo.WHOLE
+                for emp in trudvsem.search(word, region=city.get("region") or "",
+                                           period=30, pages=min(pages, 5),
+                                           in_title=False, on_log=log,
+                                           should_stop=_should_stop,
+                                           errors=errors):
+                    if not whole and not _in_city(emp, city["name"]):
+                        continue
+                    add({"name": emp["name"], "inn": emp["inn"],
+                         "ogrn": emp["ogrn"], "site": emp["site"],
+                         "address": emp.get("address") or "",
+                         "region": emp["region"] if whole else city["name"],
+                         "phones": emp["phones"], "emails": emp["emails"],
+                         "titles": emp["titles"], "vac": emp},
+                        trudvsem.SOURCE)
+                did("Работа России · %s" % where)
+
+            if want_sj and not full():
+                _say(task_id, log, "SuperJob · %s" % where)
+                whole = city["name"] == geo.WHOLE
+                for emp in superjob.search(word, sj_key,
+                                           town="" if whole else city["name"],
+                                           period=30, pages=min(pages, 5),
+                                           in_title=False, on_log=log,
+                                           should_stop=_should_stop,
+                                           errors=errors):
+                    add({"name": emp["name"], "site": emp["site"],
+                         "region": emp["region"] if whole else city["name"],
+                         "phones": emp["phones"], "emails": emp["emails"],
+                         "titles": emp["titles"], "vac": emp},
+                        superjob.SOURCE)
+                did("SuperJob · %s" % where)
+
+            if want_fns and not full():
+                _say(task_id, log, "ЕГРЮЛ ФНС · %s" % where)
+                whole = city["name"] == geo.WHOLE
+                before = len(errors)
+                for it in egrul.search(word, region=city.get("region") or "",
+                                       city="" if whole else city["name"],
+                                       pages=min(pages, 5), on_log=log,
+                                       should_stop=_should_stop, errors=errors,
+                                       city_is_subject=(whole or city["name"]
+                                                        in geo.CITY_SUBJECTS)):
+                    add(dict(it, phones=[], emails=[]), egrul.SOURCE)
+                if len(errors) > before and "капч" in errors[-1]:
+                    want_fns = False
+                did("ЕГРЮЛ ФНС · %s" % where)
+
     if not rows:
         # Молчаливый ноль — худший исход: непонятно, то ли таких компаний
         # нет, то ли источник отказал.
@@ -1622,6 +1895,8 @@ def task_find(task_id, params):
             off.append("OpenStreetMap")
         if not want_hh:
             off.append("hh.ru")
+        if not want_sj:
+            off.append("SuperJob")
         why = ("Не работали: %s — из-за ключей или отказа источника. "
                % ", ".join(off)) if off else ""
         log("Нашлось мало — всего %d. %sПопробуйте слово короче "
@@ -1655,7 +1930,9 @@ def task_find(task_id, params):
         links = row.pop("links", []) or []
         about = row.pop("about", "")
         open_vac = row.pop("open_vacancies", 0)
-        cid, is_new = db.upsert_company(row)
+        row.pop("titles", None)
+        vac = row.pop("vac", None)
+        cid, is_new = db.upsert_company(row, phones=phones)
         added += 1 if is_new else 0
         known += 0 if is_new else 1
         # Откуда контакт — видно в карточке, и это не украшение: телефон
@@ -1685,6 +1962,11 @@ def task_find(task_id, params):
             db.add_signal(cid, "hh_about", about)
         if open_vac:
             db.add_signal(cid, "hh_open_all", open_vac)
+        # Компания пришла с портала вакансий — значит, она нанимает, и
+        # названия вакансий говорят, кого: операторов на телефон или
+        # продавцов в зал. Для отметки «продают по телефону» это главное.
+        if vac:
+            _merge_vacancy_signals(cid, vac)
         _rescore(cid)
         db.update_task(task_id, done=i)
 
@@ -1702,6 +1984,7 @@ def task_find(task_id, params):
     # По факту находок, а не только новых: обогащение и так берёт лишь
     # тех, у кого его ещё не было, а прерванный прогон иначе оставлял
     # компании пустыми навсегда.
+    _auto_dedupe(log)
     if params.get("then_enrich") and (added or known) \
             and not _chain_stopped(task_id, "обогащение"):
         db.create_task("enrich", {

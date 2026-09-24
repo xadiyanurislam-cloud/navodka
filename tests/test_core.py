@@ -30,6 +30,16 @@ settings.db_path = lambda: os.path.join(_TMP, "test.sqlite3")
 from app import (ai, db, diag, enrich, export, geo, net, profile, score,  # noqa: E402
                  social, trades, update, web, worker)
 from app.sources import dadata, fns, gis2, hh, importer, site, tg, zakupki  # noqa: E402
+from app.sources import egrul, superjob, trudvsem                  # noqa: E402
+
+# Новые площадки включены по умолчанию и в старых сохранённых наборах.
+# В тестах сеть не трогаем: их поиск по умолчанию молчит, а тесты самих
+# площадок зовут настоящие функции, подставляя ответ сервера.
+_REAL_SEARCH = {"trud": trudvsem.search, "sj": superjob.search,
+                "fns": egrul.search}
+trudvsem.search = lambda *a, **kw: []
+superjob.search = lambda *a, **kw: []
+egrul.search = lambda *a, **kw: []
 
 
 class Transliteration(unittest.TestCase):
@@ -3827,11 +3837,11 @@ class SearchScreen(unittest.TestCase):
 
     def test_sources_are_tiles_with_key_state(self):
         """Видно с первого взгляда, что отработает, а что молча пропустят."""
-        self.assertEqual(self.html.count('class="src"'), 5)
+        self.assertEqual(self.html.count('class="src"'), 8)
         self.assertIn("else 'need'", self.html)
         # Значок и подсказка обновляются сразу после сохранения ключа —
         # для этого у них есть и свой id, и оба варианта текста.
-        for what in ("gis", "yandex", "dadata"):
+        for what in ("gis", "yandex", "dadata", "sj"):
             self.assertIn('id="src-key-%s"' % what, self.html)
             self.assertIn('id="src-hint-%s"' % what, self.html)
         js = io.open(os.path.join(os.path.dirname(__file__), "..", "app",
@@ -6807,6 +6817,346 @@ class RepliedStageEverywhere(unittest.TestCase):
         self.assertIn('"ответили": "ответили"', js)
         self.assertIn('<option value="ответили">', html)
         self.assertIn("ответили", web.STAGE_NEXT)
+
+
+# ── Новые источники и склейка между ними ─────────────────
+class _Resp:
+    def __init__(self, data, status=200):
+        self._data, self.status_code = data, status
+
+    def json(self):
+        if isinstance(self._data, Exception):
+            raise self._data
+        return self._data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise __import__("requests").HTTPError(str(self.status_code))
+
+
+class _Sess:
+    """Сессия, отвечающая заранее заготовленными ответами по очереди."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append(("GET", url, dict(params or {}), dict(headers or {})))
+        return self.answers.pop(0)
+
+    def post(self, url, data=None, timeout=None):
+        self.calls.append(("POST", url, dict(data or {}), {}))
+        return self.answers.pop(0)
+
+
+def _trud_vac(i, inn="7701234567", name="ООО «Ромашка»", title="Оператор колл-центра",
+              phone="+7 (495) 123-45-67", email="hr@romashka.ru", region="г. Москва",
+              agency=False, created="2026-09-20"):
+    return {"vacancy": {
+        "id": "v%d" % i, "job-name": title, "creation-date": created,
+        "salary_min": 50000, "salary_max": 70000,
+        "region": {"region_code": "7700000000000", "name": region},
+        "company": {"inn": inn, "ogrn": "1027700000000", "name": name,
+                    "site": "https://romashka.ru/?utm_source=trud",
+                    "hr-agency": agency},
+        "contact_list": [{"contact_type": "Телефон", "contact_value": phone},
+                         {"contact_type": "Эл. почта", "contact_value": email}],
+        "contact_person": "Иванова Анна",
+        "addresses": {"address": [{"location": "г. Москва, ул. Ленина, 1"}]},
+        "vac_url": "https://trudvsem.ru/vacancy/card/x/v%d" % i}}
+
+
+class TrudvsemSource(unittest.TestCase):
+    def test_parse_and_fold_by_inn(self):
+        data = {"meta": {"total": 3}, "results": {"vacancies": [
+            _trud_vac(1), _trud_vac(2, title="Старший оператор колл-центра"),
+            _trud_vac(3, inn="7709999999", name="ООО Кадры", agency=True)]}}
+        rows, total = trudvsem.parse(data, "оператор колл-центра", in_title=True,
+                                     today=datetime.date(2026, 9, 24))
+        self.assertEqual(total, 3)
+        self.assertEqual(len(rows), 2, "агентство отсекается")
+        emps = list(trudvsem.fold(rows).values())
+        self.assertEqual(len(emps), 1)
+        e = emps[0]
+        self.assertEqual((e["inn"], e["vacancies"]), ("7701234567", 2))
+        self.assertEqual(e["fresh"], 4)
+        self.assertIn("hr@romashka.ru", e["emails"])
+        self.assertIn("+7 (495) 123-45-67", e["phones"])
+        self.assertIn("Ленина", e["address"])
+
+    def test_title_filter_is_local(self):
+        self.assertTrue(trudvsem.title_matches("Операторы колл-центров", "оператор колл-центра"))
+        self.assertFalse(trudvsem.title_matches("Курьер", "оператор колл-центра"))
+
+    def test_region_code_is_13_digits(self):
+        self.assertEqual(trudvsem.region_param("77"), "7700000000000")
+        self.assertEqual(trudvsem.region_param(""), "")
+
+    def test_search_pages_and_stops(self):
+        page = {"meta": {"total": 150}, "results": {"vacancies":
+                [_trud_vac(i, inn=str(7700000000 + i)) for i in range(100)]}}
+        last = {"meta": {"total": 150}, "results": {"vacancies":
+                [_trud_vac(100 + i, inn=str(7800000000 + i)) for i in range(50)]}}
+        sess = _Sess([_Resp(page), _Resp(last)])
+        got = _REAL_SEARCH["trud"]("оператор", region="77", pages=5, in_title=False,
+                                   session=sess, pause=0)
+        self.assertEqual(len(got), 150)
+        self.assertEqual(len(sess.calls), 2)
+        self.assertIn("/region/7700000000000", sess.calls[0][1])
+        self.assertEqual(sess.calls[1][2]["offset"], 1)
+
+    def test_refusal_is_reported_not_raised(self):
+        errs = []
+        sess = _Sess([_Resp({}, 503), _Resp({}, 503)])
+        got = _REAL_SEARCH["trud"]("x", session=sess, errors=errs, pause=0)
+        self.assertEqual(got, [])
+        self.assertIn("503", errs[0])
+
+    def test_junk_answer_is_empty(self):
+        for junk in (None, [], {"results": []}, {"results": {"vacancies": [1, {"vacancy": 5}]}}):
+            self.assertEqual(trudvsem.parse(junk)[0], [])
+
+
+class SuperJobSource(unittest.TestCase):
+    DATA = {"total": 2, "more": False, "objects": [
+        {"id": 11, "profession": "Оператор call-центра", "date_published": 1000,
+         "payment_from": 40000, "payment_to": 60000, "town": {"title": "Москва"},
+         "client": {"id": 501, "title": "Альфа Логистик", "url": "https://alfa-log.ru",
+                    "link": "https://www.superjob.ru/clients/alfa-501.html"},
+         "agency": {"id": 1}, "phones": [{"number": "74957654321"}]},
+        {"id": 12, "profession": "Менеджер", "client": {"id": 777, "title": "Кадровое агентство Плюс"},
+         "agency": {"id": 2}}]}
+
+    def test_parse_skips_agencies(self):
+        rows, more = superjob.parse(self.DATA, now=1000 + 86400 * 2)
+        self.assertFalse(more)
+        self.assertEqual([r["name"] for r in rows], ["Альфа Логистик"])
+        self.assertEqual(rows[0]["fresh"], 2)
+        self.assertEqual(rows[0]["phones"], ["74957654321"])
+
+    def test_title_search_and_key_header(self):
+        sess = _Sess([_Resp(self.DATA)])
+        got = _REAL_SEARCH["sj"]("оператор", "KEY", town="Москва", period=30,
+                                 session=sess, pause=0)
+        self.assertEqual(len(got), 1)
+        _, _, params, headers = sess.calls[0]
+        self.assertEqual(headers["X-Api-App-Id"], "KEY")
+        self.assertEqual(params["keywords[0][srws]"], 1)
+        self.assertEqual(params["period"], 0)
+        self.assertEqual(params["town"], "Москва")
+
+    def test_no_key_no_request(self):
+        sess = _Sess([])
+        self.assertEqual(_REAL_SEARCH["sj"]("x", "", session=sess), [])
+        self.assertEqual(sess.calls, [])
+
+    def test_bad_key_is_explained(self):
+        errs = []
+        sess = _Sess([_Resp({"error": {"code": 403, "message": "Invalid app key"}}, 403)])
+        _REAL_SEARCH["sj"]("x", "BAD", session=sess, errors=errs, pause=0)
+        self.assertIn("ключ", errs[0])
+
+    def test_depth_limit(self):
+        """API отдаёт не больше 500 вакансий — глубже не просим."""
+        more = dict(self.DATA, more=True)
+        sess = _Sess([_Resp(more) for _ in range(10)])
+        _REAL_SEARCH["sj"]("x", "KEY", pages=20, session=sess, pause=0)
+        self.assertEqual(len(sess.calls), 5)
+
+
+class EgrulFnsSource(unittest.TestCase):
+    ROWS = {"rows": [
+        {"c": "ООО \"РОМАШКА\"", "n": "ОБЩЕСТВО...", "i": "2632000001", "o": "1022601000001",
+         "g": "ГЕНЕРАЛЬНЫЙ ДИРЕКТОР: ПЕТРОВ ИВАН ИВАНОВИЧ", "k": "ul",
+         "a": "357500, СТАВРОПОЛЬСКИЙ КРАЙ, Г. ПЯТИГОРСК, УЛ. МИРА, Д.1", "tot": "3"},
+        {"c": "ООО \"РОМАШКА-ЮГ\"", "i": "2634000002", "o": "1", "k": "ul",
+         "a": "355000, СТАВРОПОЛЬСКИЙ КРАЙ, Г. СТАВРОПОЛЬ", "tot": "3"},
+        {"c": "ООО \"СТАРАЯ РОМАШКА\"", "i": "2632000003", "k": "ul", "e": "01.01.2020",
+         "a": "Г. ПЯТИГОРСК", "tot": "3"}]}
+
+    def test_city_filter_and_closed_skipped(self):
+        got, total = egrul.parse(self.ROWS, city="Пятигорск", filter_city=True)
+        self.assertEqual(total, 3)
+        self.assertEqual([g["inn"] for g in got], ["2632000001"])
+        self.assertEqual(got[0]["director"], "Петров Иван Иванович")
+        self.assertEqual(got[0]["director_post"], "Генеральный директор")
+
+    def test_two_step_with_wait(self):
+        sess = _Sess([_Resp({"t": "TOKEN", "captchaRequired": False}),
+                      _Resp({"status": "wait"}), _Resp(self.ROWS)])
+        orig = time.sleep
+        time.sleep = lambda *_: None
+        try:
+            got = _REAL_SEARCH["fns"]("ромашка", region="26", city="Пятигорск",
+                                      pages=1, session=sess, city_is_subject=False)
+        finally:
+            time.sleep = orig
+        self.assertEqual(len(got), 1)
+        self.assertEqual(sess.calls[0][2]["region"], "26")
+        self.assertIn("/search-result/TOKEN", sess.calls[1][1])
+
+    def test_captcha_is_reported(self):
+        errs = []
+        sess = _Sess([_Resp({"captchaRequired": True})])
+        self.assertEqual(_REAL_SEARCH["fns"]("x", session=sess, errors=errs), [])
+        self.assertIn("капч", errs[0])
+
+
+class RegionCodes(unittest.TestCase):
+    def test_every_city_has_subject(self):
+        for c in geo.cities():
+            if c["name"] != geo.WHOLE:
+                self.assertRegex(c["region"], r"^\d\d$", c["name"])
+
+    def test_known_codes(self):
+        self.assertEqual(geo.region_code("Пятигорск"), "26")
+        self.assertEqual(geo.region_code("Уфа"), "02")
+        self.assertEqual(geo.region_code("Химки"), "50")
+        self.assertEqual(geo.region_code("Московская область"), "50")
+        self.assertEqual(geo.region_code("Россия"), "")
+
+
+class CrossSourceDedupe(unittest.TestCase):
+    def setUp(self):
+        db.init()
+        c = db.conn()
+        for t in ("contacts", "signals", "notes", "companies", "outreach", "sent_mail"):
+            c.execute("DELETE FROM %s" % t)
+        c.commit()
+
+    def tearDown(self):
+        self.setUp()
+
+    def test_region_spelling_is_one_city(self):
+        self.assertEqual(db.norm_region("г. Москва"), "Москва")
+        self.assertEqual(db.norm_region("город Казань"), "Казань")
+        self.assertEqual(db.norm_region("Москва г"), "Москва")
+        a, _ = db.upsert_company({"name": "ООО Ромашка", "region": "Москва"})
+        b, new = db.upsert_company({"name": "Ромашка", "region": "г. Москва"})
+        self.assertEqual(a, b)
+        self.assertFalse(new)
+
+    def test_phone_links_map_and_vacancy_portal(self):
+        """У карты нет ИНН, у портала нет вывески — общий у них телефон."""
+        a, _ = db.upsert_company({"name": "Стоматология Улыбка", "region": "Москва"})
+        db.add_contact(a, "phone", "+74951112233", "general", 85, "unchecked", "2ГИС")
+        b, new = db.upsert_company({"name": "ООО «Дент-Сервис»", "inn": "7701111111",
+                                    "region": "Москва"}, phones=["8 (495) 111-22-33"])
+        self.assertEqual(a, b)
+        self.assertFalse(new)
+        inn = db.conn().execute("SELECT inn FROM companies WHERE id=?", (a,)).fetchone()["inn"]
+        self.assertEqual(inn, "7701111111")
+
+    def test_toll_free_and_shared_phones_do_not_link(self):
+        a, _ = db.upsert_company({"name": "Сеть А", "region": "Москва"})
+        db.add_contact(a, "phone", "+78001002030", "general", 85, "unchecked", "2ГИС")
+        b, new = db.upsert_company({"name": "Сеть Б", "region": "Москва"},
+                                   phones=["88001002030"])
+        self.assertTrue(new, "8-800 ключом не служит")
+        c1, _ = db.upsert_company({"name": "Офис 1", "region": "Москва"})
+        c2, _ = db.upsert_company({"name": "Офис 2", "region": "Москва"})
+        for cid in (c1, c2):
+            db.add_contact(cid, "phone", "+74950000011", "general", 85, "unchecked", "2ГИС")
+        _, new = db.upsert_company({"name": "Офис 3", "region": "Москва"},
+                                   phones=["+74950000011"])
+        self.assertTrue(new, "номер приёмной на нескольких компаниях — не ключ")
+
+    def test_phone_never_joins_different_inn(self):
+        a, _ = db.upsert_company({"name": "А", "inn": "7700000001", "region": "Москва"})
+        db.add_contact(a, "phone", "+74951234000", "general", 85, "unchecked", "x")
+        _, new = db.upsert_company({"name": "Б", "inn": "7700000002", "region": "Москва"},
+                                   phones=["+74951234000"])
+        self.assertTrue(new)
+
+    def test_ogrn_links(self):
+        a, _ = db.upsert_company({"name": "Бета", "ogrn": "1027700000055"})
+        b, new = db.upsert_company({"name": "ООО Бета-Плюс", "ogrn": "1027700000055"})
+        self.assertEqual(a, b)
+
+    def test_find_duplicates_uses_phone_pairs(self):
+        a, _ = db.upsert_company({"name": "Альфа", "region": "Москва"})
+        b, _ = db.upsert_company({"name": "Совсем другое имя", "region": "Казань"})
+        for cid in (a, b):
+            db.add_contact(cid, "phone", "+74959998877", "general", 85, "unchecked", "x")
+        self.assertIn((a, b), db.find_duplicates())
+
+    def test_find_merges_map_and_portal_in_one_run(self):
+        """Одна компания из карты и с портала вакансий — одна строка."""
+        from app.sources import osm
+        was = osm.search
+        try:
+            osm.search = lambda q, city, **kw: [{
+                "name": "Улыбка", "site": "", "address": "Москва", "rubric": "стоматология",
+                "phones": ["+7 495 111-22-33"], "emails": [], "links": []}]
+            trudvsem.search = lambda *a, **kw: [{
+                "name": "ООО «Дент-Сервис»", "inn": "7701111111", "ogrn": "",
+                "site": "", "region": "г. Москва", "address": "г. Москва",
+                "phones": ["8 (495) 111-22-33"], "emails": ["hr@dent.ru"],
+                "titles": ["Администратор колл-центра"], "vacancies": 2,
+                "salaries": [], "fresh": 3, "source": trudvsem.SOURCE,
+                "url": "", "contact_person": ""}]
+            tid = db.create_task("find", {})
+            worker.task_find(tid, {
+                "query": "стоматология", "cities": ["Москва"], "synonyms": False,
+                "sources": {"osm": True, "gis": False, "yandex": False,
+                            "dadata": False, "hh": False, "trudvsem": True,
+                            "superjob": False, "fns": False}})
+        finally:
+            osm.search = was
+            trudvsem.search = lambda *a, **kw: []
+        rows = db.conn().execute("SELECT * FROM companies").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["inn"], "7701111111")
+        self.assertIn("Работа России", rows[0]["source"])
+        self.assertIn("колл-центра", db.get_signal(rows[0]["id"], "hh_titles"))
+
+    def test_vacancy_search_without_hh(self):
+        """hh выключен — вакансии приходят с других площадок и не теряются."""
+        trudvsem.search = lambda *a, **kw: [{
+            "name": "ООО Звонок", "inn": "7702222222", "ogrn": "", "site": "zvonok.ru",
+            "region": "г. Москва", "address": "г. Москва", "phones": ["+7 495 222-33-44"],
+            "emails": ["job@zvonok.ru"], "titles": ["Оператор колл-центра"],
+            "vacancies": 3, "salaries": [55000], "fresh": 1,
+            "source": trudvsem.SOURCE, "url": "u", "contact_person": "Анна"}]
+        try:
+            tid = db.create_task("hh_search", {})
+            worker.task_hh_search(tid, {
+                "queries": ["оператор колл-центра"], "areas": ["1"],
+                "sources": {"hh": False, "trudvsem": True, "superjob": False}})
+        finally:
+            trudvsem.search = lambda *a, **kw: []
+        row = db.conn().execute("SELECT * FROM companies").fetchone()
+        self.assertEqual((row["inn"], row["region"]), ("7702222222", "Москва"))
+        self.assertEqual(db.get_signal(row["id"], "hh_vacancies"), "3")
+        self.assertEqual(db.get_signal(row["id"], "vac_contact"), "Анна")
+        kinds = {r["kind"] for r in db.conn().execute(
+            "SELECT kind FROM contacts WHERE company_id=?", (row["id"],))}
+        self.assertEqual(kinds, {"phone", "email"})
+
+    def test_vacancies_are_not_double_counted(self):
+        cid, _ = db.upsert_company({"name": "X"})
+        db.add_signal(cid, "hh_vacancies", 5)
+        worker._merge_vacancy_signals(cid, {"vacancies": 3, "titles": ["A"],
+                                            "source": "SuperJob"})
+        self.assertEqual(db.get_signal(cid, "hh_vacancies"), "5")
+        self.assertEqual(db.get_signal(cid, "vac_sources"), "SuperJob")
+
+
+class NewSourcesInForm(unittest.TestCase):
+    def test_page_has_new_sources(self):
+        html = web.create_app().test_client().get("/").get_data(as_text=True)
+        for mark in ('id="q-trud"', 'id="q-sj"', 'id="q-fns"', 'id="f-src-trud"',
+                     'id="f-src-sj"', 'id="s-sj"'):
+            self.assertIn(mark, html)
+
+    def test_params_carry_sources(self):
+        cl = web.create_app().test_client()
+        cl.post("/api/searches", json={"name": "т", "kind": "hh_search",
+                                       "queries": ["x"], "src_superjob": False})
+        saved = [r for r in db.list_searches() if r["name"] == "т"][-1]
+        params = saved["params"] if isinstance(saved["params"], dict) else json.loads(saved["params"])
+        self.assertEqual(params["sources"], {"hh": True, "trudvsem": True, "superjob": False})
 
 
 if __name__ == "__main__":
