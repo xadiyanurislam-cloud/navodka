@@ -962,6 +962,21 @@ thead th{background:var(--surface-2)}
   font-size:12px;color:var(--ink);font-weight:550}
 .keys > label em{font-weight:400;color:var(--ink-3);min-height:34px}
 .keys > label input{background:var(--surface)}
+/* Карточка hh — та же рамка, только внутри не одна подпись, а подпись и
+   свёрток обмена ключей. Стиль переносится на обёртку, а сама подпись
+   внутри остаётся голой, иначе получилась бы рамка в рамке. */
+.keys > .key-card{
+  background:var(--surface-2);border:1px solid var(--line-2);
+  border-radius:12px;padding:13px 14px;display:flex;flex-direction:column;
+  gap:7px;font-size:12px;color:var(--ink);font-weight:550}
+.keys > .key-card > label{gap:7px;font-size:12px;color:var(--ink);font-weight:550}
+.keys > .key-card > label em{font-weight:400;color:var(--ink-3);min-height:34px}
+.keys > .key-card input{background:var(--surface)}
+.hh-swap > summary{cursor:pointer;font-weight:500;color:var(--ink-2);
+  font-size:12px;padding:2px 0}
+.hh-swap > summary:hover{color:var(--accent)}
+.hh-swap[open]{display:flex;flex-direction:column;gap:7px}
+.hh-swap .hint-sm{margin:2px 0 0;font-weight:400}
 
 .ai-cfg{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
   gap:12px;margin-top:16px;padding-top:16px;border-top:1px solid var(--line-2)}

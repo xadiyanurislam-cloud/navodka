@@ -676,6 +676,7 @@
           <b>сервисный</b> ключ — он бессрочный.
           <a href="https://vk.com/apps?act=manage">где взять ключ</a></em>
     </label>
+    <div class="key-card">
     <label>Токен hh.ru
       <input id="s-hh-token" type="password" data-secret value="{{ hh_token }}"
              placeholder="нужен, только если hh отвечает 403">
@@ -683,6 +684,21 @@
           отвечает 403 всем способам — зарегистрируйте приложение.
           <a href="https://dev.hh.ru/admin">кабинет разработчика hh</a></em>
     </label>
+      <details class="hh-swap">
+        <summary>Есть Client Id и Client Secret — получить токен</summary>
+        <p class="hint-sm">Кабинет hh выдаёт не токен, а эту пару. Впишите
+           её сюда — программа один раз обменяет её на токен и сохранит.
+           Секрет нигде не хранится. Повторное получение отзывает прежний
+           токен.</p>
+        <input id="s-hh-cid" type="text" placeholder="Client Id" autocomplete="off">
+        <input id="s-hh-secret" type="password" data-secret
+               placeholder="Client Secret" autocomplete="off">
+        <div class="upd-line">
+          <button class="btn sm" id="btn-hh-token">Получить токен</button>
+          <span class="upd-state" id="hh-token-state"></span>
+        </div>
+      </details>
+    </div>
     <label>Ключ ИИ
       <input id="s-ai-key" type="password" data-secret value="{{ ai_key }}" placeholder="sk-…">
       <em>Подойдёт OpenAI, Claude и любой посредник. Ключ хранится только

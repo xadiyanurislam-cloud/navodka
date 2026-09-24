@@ -1702,6 +1702,35 @@ $("btn-ai-check2").onclick = async () => {
     : `<span class="bad">${esc(d.note)}</span>`;
 };
 
+// Кабинет hh выдаёт не токен, а пару Client Id и Client Secret, и поле
+// «Токен hh.ru» её не принимает. Обмен делаем здесь, одной кнопкой:
+// посылать человека в командную строку ради одного запроса незачем.
+if ($("btn-hh-token")) {
+  $("btn-hh-token").onclick = async () => {
+    const note = $("hh-token-state");
+    const cid = $("s-hh-cid").value.trim();
+    const secret = $("s-hh-secret").value.trim();
+    if (!cid || !secret) {
+      note.innerHTML = `<span class="bad">нужны оба: Client Id и Client Secret</span>`;
+      return;
+    }
+    note.textContent = "спрашиваю hh…";
+    const d = await post("/api/hh/token", {client_id: cid, client_secret: secret});
+    // Секрет стираем в любом случае: на экране ему делать нечего.
+    $("s-hh-secret").value = "";
+    if (!d || !d.ok) {
+      note.innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+      return;
+    }
+    $("s-hh-cid").value = "";
+    // Токен ставим в поле сразу: иначе следующее «Сохранить» отправит
+    // пустое поле и затрёт только что полученный токен.
+    $("s-hh-token").value = d.token || "";
+    note.textContent = `токен получен и сохранён (${d.masked})`;
+    toast("Токен hh.ru сохранён");
+  };
+}
+
 $("s-open-data").onclick = async () => {
   const d = await post("/api/reveal", {});
   if (!d || !d.ok) toast((d && d.error) || "папка не открылась");

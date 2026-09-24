@@ -535,6 +535,26 @@ def create_app():
         db.set_setting("tg_proxy", url)
         return jsonify(ok=True, proxy=tg.label_proxy(url))
 
+    @app.post("/api/hh/token")
+    def api_hh_token():
+        """client_id и client_secret с dev.hh.ru — в токен приложения.
+
+        Сохраняется только токен. Секрет после обмена не нужен, и держать
+        его в базе значит просто хранить лишний ключ.
+        """
+        d = request.get_json(silent=True) or {}
+        token, err = hh.app_token(_text(d.get("client_id"), 200),
+                                  _text(d.get("client_secret"), 200))
+        if not token:
+            return jsonify(ok=False, error=err)
+        db.set_setting("hh_token", token)
+        # Токен возвращаем целиком: он встаёт в поле «Токен hh.ru». Иначе
+        # поле остаётся пустым, и следующее «Сохранить» затирает только
+        # что полученный токен пустой строкой. Тайной от страницы он не
+        # является — при загрузке она и так получает его в это же поле.
+        return jsonify(ok=True, token=token,
+                       masked=token[:4] + "…" + token[-4:])
+
     @app.post("/api/tg/forget")
     def api_tg_forget():
         for key in ("tg_device",):

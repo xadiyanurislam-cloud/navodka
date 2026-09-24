@@ -372,3 +372,84 @@ def employer_details(employer_id, session=None, timeout=20, ua=None):
         "open_vacancies": d.get("open_vacancies") or 0,
         "hh_url": d.get("alternate_url") or "",
     }
+
+
+# ── Токен приложения ─────────────────────────────────────
+#
+# dev.hh.ru выдаёт не токен, а пару client_id и client_secret. Программе
+# нужен токен: она подставляет его в заголовок Bearer. Обменять пару на
+# токен — один запрос, и делать его руками из командной строки человеку
+# незачем.
+#
+# Из документации hh (hhru/api, authorization_for_application.md): токен
+# приложения получают один раз; повторный запрос выдаёт новый и отзывает
+# прежний; после первой выдачи актуальный токен виден и в кабинете
+# dev.hh.ru/admin. Адрес метода hh переносил с hh.ru/oauth/token на
+# api.hh.ru/token, поэтому пробуем оба — новый первым.
+TOKEN_URLS = ("https://api.hh.ru/token", "https://hh.ru/oauth/token")
+
+
+def app_token(client_id, client_secret, transports=None):
+    """Обменять client_id и client_secret на токен приложения.
+
+    Возвращает (токен, ошибка). Секрет никуда не сохраняется: после
+    обмена он не нужен, а хранить ключ, которым больше не пользуешься, —
+    значит просто держать его лишний раз под рукой у того, кто войдёт.
+    """
+    client_id = (client_id or "").strip()
+    client_secret = (client_secret or "").strip()
+    if not client_id or not client_secret:
+        return "", "Нужны оба значения: client_id и client_secret"
+
+    if transports is None:
+        from .. import net
+        # Токен ещё не получен, поэтому способы без него: отпечаток
+        # браузера и обычный запрос. hh режет «не браузерное» рукопожатие
+        # и здесь, так что порядок тот же, что у поиска.
+        transports = [t for t in net.hh_transports()
+                      if "токен" not in t.name]
+
+    data = {"grant_type": "client_credentials",
+            "client_id": client_id, "client_secret": client_secret}
+    last = "hh не ответил"
+    for url in TOKEN_URLS:
+        for t in transports:
+            try:
+                r = t.session.post(url, data=data, timeout=20)
+            except Exception as e:
+                last = "%s: не дозвонился (%s)" % (t.name, str(e)[:100])
+                continue
+            try:
+                body = r.json()
+            except Exception:
+                body = {}
+            token = (body or {}).get("access_token") or ""
+            if r.status_code == 200 and token:
+                return token, ""
+            # Ошибки OAuth приходят в стандартном виде: error и описание.
+            # Показываем их как есть — по ним видно, что не так: неверная
+            # пара, приложение не одобрено, слишком частые запросы.
+            err = (body or {}).get("error_description") or \
+                (body or {}).get("error") or ""
+            if r.status_code == 404:
+                last = "%s — адрес не найден" % url
+                break          # этот адрес не тот, пробуем следующий
+            if r.status_code == 403 and not err:
+                last = "%s: hh ответил 403" % t.name
+                continue       # режут рукопожатие — пробуем другой способ
+            return "", explain_token_error(r.status_code, err)
+    return "", last
+
+
+def explain_token_error(code, err):
+    """Отказ hh — словами, а не кодом."""
+    low = (err or "").lower()
+    if "invalid_client" in low or "client" in low and "not found" in low:
+        return ("hh не узнал пару client_id и client_secret. Проверьте, что "
+                "скопированы целиком и не перепутаны местами")
+    if "unauthorized_client" in low:
+        return ("Приложение ещё не одобрено hh — после одобрения токен "
+                "выдадут той же кнопкой")
+    if "too many" in low or code == 429:
+        return "hh просит подождать — слишком частые запросы токена"
+    return "hh отказал (%s)%s" % (code, (": " + err[:160]) if err else "")

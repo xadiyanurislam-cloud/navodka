@@ -3056,6 +3056,83 @@ class TelegramImportsTwoFiles(unittest.TestCase):
         self.assertFalse(got["ok"])
 
 
+class HhAppToken(unittest.TestCase):
+    """Кабинет hh выдаёт Client Id и Client Secret, а программе нужен
+    токен. Обмен — одним запросом, без сети в тесте."""
+
+    class Resp(object):
+        def __init__(self, code, body):
+            self.status_code, self._body = code, body
+
+        def json(self):
+            return self._body
+
+    class Sess(object):
+        def __init__(self, answers):
+            self.answers, self.calls = list(answers), []
+
+        def post(self, url, data=None, timeout=None):
+            self.calls.append((url, dict(data or {})))
+            return self.answers.pop(0)
+
+    class T(object):
+        def __init__(self, name, sess):
+            self.name, self.session = name, sess
+
+    def run_with(self, *answers):
+        sess = self.Sess(answers)
+        tok, err = hh.app_token("id", "secret", [self.T("способ", sess)])
+        return tok, err, sess
+
+    def test_pair_becomes_a_token(self):
+        tok, err, sess = self.run_with(
+            self.Resp(200, {"access_token": "APPLXXXX", "token_type": "bearer"}))
+        self.assertEqual((tok, err), ("APPLXXXX", ""))
+        url, data = sess.calls[0]
+        self.assertEqual(data["grant_type"], "client_credentials")
+        self.assertEqual((data["client_id"], data["client_secret"]),
+                         ("id", "secret"))
+
+    def test_moved_endpoint_falls_back(self):
+        """hh переносил метод; 404 на новом адресе — пробуем старый."""
+        tok, err, sess = self.run_with(
+            self.Resp(404, {}),
+            self.Resp(200, {"access_token": "APPLYYYY"}))
+        self.assertEqual(tok, "APPLYYYY")
+        self.assertEqual([c[0] for c in sess.calls], list(hh.TOKEN_URLS))
+
+    def test_wrong_pair_is_explained(self):
+        tok, err, _ = self.run_with(
+            self.Resp(400, {"error": "invalid_client"}))
+        self.assertEqual(tok, "")
+        self.assertIn("не узнал пару", err)
+
+    def test_empty_fields_do_not_go_to_hh(self):
+        tok, err = hh.app_token("", "secret", [])
+        self.assertEqual(tok, "")
+        self.assertIn("оба значения", err)
+
+    def test_the_secret_is_not_stored(self):
+        """Секрет после обмена не нужен — в базе его быть не должно."""
+        db.init()
+        saved = hh.app_token
+        hh.app_token = lambda cid, sec, transports=None: ("APPLZZZZ", "")
+        try:
+            got = web.create_app().test_client().post(
+                "/api/hh/token",
+                json={"client_id": "id", "client_secret": "СЕКРЕТ"}).get_json()
+        finally:
+            hh.app_token = saved
+        self.assertTrue(got["ok"])
+        self.assertEqual(db.get_setting("hh_token"), "APPLZZZZ")
+        # И токен возвращается целиком: без него поле остаётся пустым, и
+        # следующее «Сохранить» затирает только что полученный токен.
+        self.assertEqual(got["token"], "APPLZZZZ")
+        stored = [r["value"] for r in db.conn().execute(
+            "SELECT value FROM settings")]
+        self.assertNotIn("СЕКРЕТ", " ".join(str(v) for v in stored))
+
+
 class RubbishInputDoesNotCrash(unittest.TestCase):
     """Пятисотая ошибка — всегда ошибка в коде, а не в запросе.
 
