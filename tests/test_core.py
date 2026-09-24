@@ -7460,5 +7460,61 @@ class FindSeveralKinds(unittest.TestCase):
         self.assertEqual(asked, ["производство тентов", "пошив палаток"])
 
 
+class EnrichSurvivesMerges(unittest.TestCase):
+    """Обогащение падало: «'NoneType' object is not subscriptable» на
+    филиале, который в том же прогоне склеился с головной компанией."""
+
+    def setUp(self):
+        db.init()
+        db.set_active(db.projects()[0]["id"])
+        c = db.conn()
+        for t in ("contacts", "signals", "notes", "companies", "tasks", "logs"):
+            c.execute("DELETE FROM %s" % t)
+        c.commit()
+        db.set_setting("dadata_token", "T")
+        self.was = dadata.by_name
+
+    def tearDown(self):
+        dadata.by_name = self.was
+        db.set_setting("dadata_token", "")
+
+    def _run(self):
+        tid = db.create_task("enrich", {})
+        worker.task_enrich(tid, {"limit": 10, "fns": False})
+        logs = " ".join(r["text"] for r in db.conn().execute(
+            "SELECT text FROM logs WHERE task_id=?", (tid,)))
+        return logs
+
+    def test_branch_merged_mid_run_is_skipped(self):
+        head, _ = db.upsert_company({"name": "МТС"})
+        branch, _ = db.upsert_company({"name": "ФИЛИАЛ ПАО МТС В АЛТАЙСКОМ КРАЕ",
+                                       "inn": "7740000076"})
+        db.set_score(head, 90)
+        db.set_score(branch, 10)
+        dadata.by_name = lambda name, token, **kw: (
+            {"inn": "7740000076", "director": "Николаев Вячеслав"} if name == "МТС" else {})
+        logs = self._run()
+        self.assertIn("склеена с другой карточкой", logs)
+        rows = db.conn().execute("SELECT id, inn FROM companies").fetchall()
+        self.assertEqual([(r["id"], r["inn"]) for r in rows], [(head, "7740000076")])
+
+    def test_one_failure_does_not_stop_the_run(self):
+        a, _ = db.upsert_company({"name": "Ломается"})
+        b, _ = db.upsert_company({"name": "Работает"})
+        db.set_score(a, 90)
+        db.set_score(b, 10)
+
+        def by_name(name, token, **kw):
+            if name == "Ломается":
+                raise ValueError("источник ответил мусором")
+            return {"director": "Иванов Иван"}
+        dadata.by_name = by_name
+        logs = self._run()
+        self.assertIn("сбой", logs)
+        self.assertEqual(db.conn().execute(
+            "SELECT director FROM companies WHERE id=?", (b,)).fetchone()["director"],
+            "Иванов Иван")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

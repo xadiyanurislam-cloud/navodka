@@ -724,344 +724,372 @@ def task_enrich(task_id, params):
             break
         cid = row["id"]
         crawls.fill(i - 1)
-        found_lpr = False        # контакт первого лица найден, а не выведен
-        guessed_lpr = False      # выведен по схеме домена — это догадка
-        step_t0 = time.time()
-        log("[%d/%d] %s" % (i, len(rows), row["name"]))
+        # Список прогона выбран заранее, а по ходу карточки склеиваются:
+        # филиал с ИНН головной компании вливается в неё, как только та
+        # получит свой ИНН. До удалённой строки цикл доходит позже — её
+        # надо пропустить, а не падать на ней всем прогоном.
+        fresh = db.conn().execute("SELECT * FROM companies WHERE id=?",
+                                  (cid,)).fetchone()
+        if fresh is None:
+            log("[%d/%d] %s — уже склеена с другой карточкой, пропускаю"
+                % (i, len(rows), row["name"]))
+            db.update_task(task_id, done=i)
+            continue
+        row = fresh
+        # Сбой на одной компании не обрывает прогон на пятьсот: пишем
+        # в журнал и идём к следующей.
+        try:
+            found_lpr = False        # контакт первого лица найден, а не выведен
+            guessed_lpr = False      # выведен по схеме домена — это догадка
+            step_t0 = time.time()
+            log("[%d/%d] %s" % (i, len(rows), row["name"]))
 
-        # 1. ЕГРЮЛ: ФИО руководителя, ИНН, ОКВЭД, адрес.
-        if token and not (row["director"] or "").strip():
-            info = dadata.by_inn(row["inn"], token, session=http) if row["inn"] \
-                else dadata.by_name(row["name"], token, session=http)
-            info.pop("opf", None)
-            # Ликвидируемая компания — не лид. Отметить это надо до того,
-            # как продавец потратит на неё звонок.
-            if info.get("status") and info["status"] != "ACTIVE":
-                log("   ВНИМАНИЕ: статус в ЕГРЮЛ — %s" % info["status"], "warn")
-            if info:
-                # Именно в эту строку, а не upsert по содержимому ответа.
-                # Из ЕГРЮЛ приходит юридическое название — «ПАО ДВМП»
-                # вместо вывески «Fesco», — и upsert не узнавал исходную
-                # компанию: заводил вторую, а первая оставалась пустой.
-                got = db.fill_company(cid, info)
+            # 1. ЕГРЮЛ: ФИО руководителя, ИНН, ОКВЭД, адрес.
+            if token and not (row["director"] or "").strip():
+                info = dadata.by_inn(row["inn"], token, session=http) if row["inn"] \
+                    else dadata.by_name(row["name"], token, session=http)
+                info.pop("opf", None)
+                # Ликвидируемая компания — не лид. Отметить это надо до того,
+                # как продавец потратит на неё звонок.
+                if info.get("status") and info["status"] != "ACTIVE":
+                    log("   ВНИМАНИЕ: статус в ЕГРЮЛ — %s" % info["status"], "warn")
+                if info:
+                    # Именно в эту строку, а не upsert по содержимому ответа.
+                    # Из ЕГРЮЛ приходит юридическое название — «ПАО ДВМП»
+                    # вместо вывески «Fesco», — и upsert не узнавал исходную
+                    # компанию: заводил вторую, а первая оставалась пустой.
+                    got = db.fill_company(cid, info)
+                    if got.get("merged_with"):
+                        log("   это та же компания, что «%s» (тот же ИНН) — "
+                            "карточки склеены" % got["merged_with"])
+                    row = db.conn().execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
+                    if row is None:
+                        log("   карточка склеена с другой — пропускаю")
+                        db.update_task(task_id, done=i)
+                        continue
+                else:
+                    log("   в ЕГРЮЛ по названию не нашлось", "warn")
+
+            # 2. Сайт: почты, телефоны, телеграм, технографика.
+            emails_found, res = [], {}
+            if (row["site"] or "").strip():
+                res = crawls.take(cid, row["site"])
+                if res.get("skipped"):
+                    log("   сайт обходили на днях — беру, что уже есть в базе")
+                if res.get("error"):
+                    log("   сайт не открылся: %s" % res["error"], "warn")
+                for addr in res["emails"]:
+                    owner = site_src.guess_owner(addr)
+                    db.add_contact(cid, "email", addr, owner, 90, "unchecked", "сайт компании")
+                    emails_found.append(addr)
+                for ph in res["phones"]:
+                    db.add_contact(cid, "phone", ph, "general", 90, "unchecked", "сайт компании")
+                # Имя переменной не tg: так зовётся модуль проверки номеров,
+                # и цикл затенял его до конца функции — ровно та ловушка, про
+                # которую ниже сказано в случае с net. Обращений к модулю
+                # после цикла сейчас нет, но это везение, а не устройство.
+                for nick in res["telegram"]:
+                    db.add_contact(cid, "telegram", "@" + nick, "general", 70,
+                                   "unchecked", "сайт компании")
+
+                # Соцсети компании — теми адресами, что она сама опубликовала.
+                # Имя переменной не net: так зовётся модуль сетевого слоя, и
+                # цикл затенял его до конца функции. Сейчас после цикла к нему
+                # не обращаются, но это вопрос везения, а не устройства.
+                for _net, title, url in social.as_links(res.get("socials") or {}):
+                    db.add_contact(cid, "social", url, "general", 85, "unchecked",
+                                   "сайт: %s" % title)
+                for group, titles in (res.get("tech") or {}).items():
+                    db.add_signal(cid, "tech_" + group, ", ".join(titles))
+                if res["pages"]:
+                    log("   страниц обойдено %d, почт %d, телефонов %d"
+                        % (res["pages"], len(res["emails"]), len(res["phones"])))
+
+                # Адрес руководителя, НАЙДЕННЫЙ на сайте, а не выведенный по
+                # схеме. Это принципиально другая находка: ящик существует, мы
+                # лишь опознали, чей он по фамилии из ЕГРЮЛ.
+                if (row["director"] or "").strip():
+                    for addr in enrich.match_emails(row["director"], res["emails"]):
+                        db.add_contact(cid, "email", addr, "director", 92,
+                                       "unchecked", "сайт: фамилия в адресе")
+                        found_lpr = True
+                        log("   почта руководителя найдена на сайте: %s" % addr)
+
+                    # Контакты, стоящие рядом с фамилией на странице. Так
+                    # устроены разделы «Руководство»: имя, должность и тут же
+                    # телефон с почтой — по имени ящика такой не опознать.
+                    # Профили, опубликованные рядом с ФИО в разделе
+                    # «Руководство»: компания сама указала, как с ним связаться.
+                    for _net, title, url in social.as_links(
+                            social.near_person(res.get("text") or [], row["director"])):
+                        db.add_contact(cid, "social", url, "director", 88,
+                                       "unchecked", "рядом с ФИО: %s" % title)
+                        found_lpr = True
+                        log("   профиль руководителя на сайте: %s" % url)
+
+                    near = site_src.near_person(res.get("text") or [], row["director"])
+                    for addr in near["emails"]:
+                        db.add_contact(cid, "email", addr, "director", 88,
+                                       "unchecked", "рядом с ФИО на сайте")
+                        found_lpr = True
+                    for ph in near["phones"]:
+                        db.add_contact(cid, "phone", ph, "director", 88,
+                                       "unchecked", "рядом с ФИО на сайте")
+                        found_lpr = True
+                    if near["emails"] or near["phones"]:
+                        log("   рядом с ФИО на странице: почт %d, телефонов %d"
+                            % (len(near["emails"]), len(near["phones"])))
+
+                # Кто указан на страницах «Команда» и «Руководство». Это
+                # полезно и когда ФИО из ЕГРЮЛ уже есть (подтверждает, что
+                # человек действующий), и особенно когда его нет: у ИП и у
+                # филиалов в ЕГРЮЛ руководителя не найти, а на сайте он
+                # представлен.
+                crew = site_src.people(res.get("text") or [])
+                bosses = [p for p in crew if p["boss"]]
+                if bosses:
+                    db.add_signal(cid, "site_people", "; ".join(
+                        "%s — %s" % (p["fio"], p["post"]) for p in bosses[:4]))
+                    known_fio = (row["director"] or "").strip()
+                    if not known_fio:
+                        top = bosses[0]
+                        db.update_company_fields(cid, {"director": top["fio"],
+                                                       "director_post": top["post"]})
+                        row = db.conn().execute("SELECT * FROM companies WHERE id=?",
+                                                (cid,)).fetchone()
+                        log("   руководитель со страницы сайта: %s — %s"
+                            % (top["fio"], top["post"]))
+                    else:
+                        same = [p for p in bosses
+                                if enrich.same_person(known_fio, p["fio"])]
+                        if same:
+                            db.add_signal(cid, "director_on_site", "да")
+                            log("   ФИО из ЕГРЮЛ подтверждено на сайте")
+
+            # 2.5. Реквизиты с сайта — и второй заход в ЕГРЮЛ.
+            #
+            # Это самый частый случай пустой карточки. В справочнике стоит
+            # вывеска — «Fesco», «Дента-Люкс», — а в ЕГРЮЛ та же компания
+            # записана как ПАО «ДВМП» или ООО «Стоматология плюс», и по
+            # вывеске юрлицо не находится. Без ИНН дальше не спросить ни
+            # ЕГРЮЛ, ни ФНС: карточка остаётся без руководителя, без
+            # выручки, без численности и без года — то есть без всего, ради
+            # чего её открывают.
+            #
+            # Сам ИНН при этом лежит в подвале сайта, который мы только что
+            # прочитали. Берём его оттуда и переспрашиваем — теперь по
+            # номеру, а не по названию.
+            if res.get("inn") and not (row["inn"] or "").strip():
+                got = db.fill_company(cid, {"inn": res["inn"], "ogrn": res.get("ogrn")})
                 if got.get("merged_with"):
                     log("   это та же компания, что «%s» (тот же ИНН) — "
                         "карточки склеены" % got["merged_with"])
-                row = db.conn().execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
+                row = db.conn().execute("SELECT * FROM companies WHERE id=?",
+                                        (cid,)).fetchone()
+                if row is None:
+                    log("   карточка склеена с другой — пропускаю")
+                    db.update_task(task_id, done=i)
+                    continue
+                log("   ИНН с сайта: %s" % res["inn"])
+                if token:
+                    info = dadata.by_inn(res["inn"], token, session=http)
+                    info.pop("opf", None)
+                    if info:
+                        if info.get("status") and info["status"] != "ACTIVE":
+                            log("   ВНИМАНИЕ: статус в ЕГРЮЛ — %s"
+                                % info["status"], "warn")
+                        # over=True: ответ пришёл по ИНН, то есть надёжнее
+                        # того, что могло стоять раньше по названию.
+                        db.fill_company(cid, info, over=True)
+                        row = db.conn().execute(
+                            "SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
+                        log("   ЕГРЮЛ по ИНН с сайта: %s%s"
+                            % (info.get("name") or "",
+                               (" · " + info["director"]) if info.get("director") else ""))
+                    else:
+                        log("   ЕГРЮЛ по ИНН с сайта ничего не дал", "warn")
+
+            # 3. Профиль: чем занимается и есть ли телефонные продажи.
+            #    Второй вопрос важнее: компания, которая не продаёт по телефону,
+            #    не купит ничего про звонки, сколько бы у неё ни было выручки.
+            res = res if (row["site"] or "").strip() else {}
+            titles = [t for t in (db.get_signal(cid, "hh_titles") or "").split(" | ") if t]
+            found_signs = profile.call_signals(res, titles, res.get("phones") or [])
+            cc = profile.verdict(found_signs)
+            patch = {"callcenter": cc["label"]}
+            if cc["why"]:
+                db.add_signal(cid, "cc_why", ", ".join(cc["why"]))
+            db.add_signal(cid, "cc_score", cc["score"])
+            act = profile.activity(row, {"hh_about": db.get_signal(cid, "hh_about")}, res)
+            if act:
+                patch["activity"] = act
+            if res.get("cms"):
+                patch["cms"] = res["cms"]
+            # Цифры, которые компания вынесла на главную. В разговоре на них
+            # ссылаться удобнее, чем на отчётность: «вы пишете, что работаете
+            # с 2011 года» звучит иначе, чем «по данным ФНС».
+            for key, sig in (("self_year", "self_year"), ("self_staff", "self_staff"),
+                             ("self_branches", "self_branches")):
+                if res.get(key):
+                    db.add_signal(cid, sig, res[key])
+            model = []
+            if res.get("shop"):
+                model.append("интернет-магазин")
+            if res.get("prices"):
+                model.append("цены на сайте")
+            elif res.get("no_prices"):
+                model.append("цена по запросу")
+            if res.get("app"):
+                model.append("мобильное приложение")
+            if model:
+                db.add_signal(cid, "sales_model", ", ".join(model))
+            if res.get("last_post"):
+                db.add_signal(cid, "last_post", res["last_post"])
+            for num in (res.get("tollfree") or []):
+                db.add_contact(cid, "phone", num, "general", 90, "unchecked",
+                               "бесплатный номер с сайта")
+            db.update_company_fields(cid, patch)
+            row = db.conn().execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
+            log("   телефонные продажи: %s%s"
+                % (cc["label"], (" — " + ", ".join(cc["why"][:3])) if cc["why"] else ""))
+
+            # 4. Кандидаты в адрес руководителя по схеме домена.
+            #
+            # Домен берём у сайта, а не у первой попавшейся почты. На сайте
+            # рядом с корпоративными адресами сплошь и рядом лежит почта на
+            # бесплатной службе — своя у бухгалтера, партнёрская, оставшаяся
+            # с прошлого подрядчика. Раньше схему строили по первой из
+            # найденных, и у компании с info@gmail.com «адресом руководителя»
+            # оказывался ivanov@gmail.com: ящик какого-то Иванова, которых
+            # там десятки тысяч.
+            site_host = ""
+            if (row["site"] or ""):
+                site_host = (row["site"].split("//")[-1].split("/")[0]
+                             .replace("www.", "").lower())
+            own = [e for e in emails_found
+                   if site_host and e.lower().endswith("@" + site_host)]
+            if site_host:
+                domain = site_host
+            elif emails_found:
+                domain = emails_found[0].split("@")[1].lower()
             else:
-                log("   в ЕГРЮЛ по названию не нашлось", "warn")
+                domain = ""
+            # Примеры для угадывания схемы — только с этого же домена: по
+            # чужим адресам видно чужие привычки именования.
+            emails_found = own or ([] if site_host else emails_found)
 
-        # 2. Сайт: почты, телефоны, телеграм, технографика.
-        emails_found, res = [], {}
-        if (row["site"] or "").strip():
-            res = crawls.take(cid, row["site"])
-            if res.get("skipped"):
-                log("   сайт обходили на днях — беру, что уже есть в базе")
-            if res.get("error"):
-                log("   сайт не открылся: %s" % res["error"], "warn")
-            for addr in res["emails"]:
-                owner = site_src.guess_owner(addr)
-                db.add_contact(cid, "email", addr, owner, 90, "unchecked", "сайт компании")
-                emails_found.append(addr)
-            for ph in res["phones"]:
-                db.add_contact(cid, "phone", ph, "general", 90, "unchecked", "сайт компании")
-            # Имя переменной не tg: так зовётся модуль проверки номеров,
-            # и цикл затенял его до конца функции — ровно та ловушка, про
-            # которую ниже сказано в случае с net. Обращений к модулю
-            # после цикла сейчас нет, но это везение, а не устройство.
-            for nick in res["telegram"]:
-                db.add_contact(cid, "telegram", "@" + nick, "general", 70,
-                               "unchecked", "сайт компании")
-
-            # Соцсети компании — теми адресами, что она сама опубликовала.
-            # Имя переменной не net: так зовётся модуль сетевого слоя, и
-            # цикл затенял его до конца функции. Сейчас после цикла к нему
-            # не обращаются, но это вопрос везения, а не устройства.
-            for _net, title, url in social.as_links(res.get("socials") or {}):
-                db.add_contact(cid, "social", url, "general", 85, "unchecked",
-                               "сайт: %s" % title)
-            for group, titles in (res.get("tech") or {}).items():
-                db.add_signal(cid, "tech_" + group, ", ".join(titles))
-            if res["pages"]:
-                log("   страниц обойдено %d, почт %d, телефонов %d"
-                    % (res["pages"], len(res["emails"]), len(res["phones"])))
-
-            # Адрес руководителя, НАЙДЕННЫЙ на сайте, а не выведенный по
-            # схеме. Это принципиально другая находка: ящик существует, мы
-            # лишь опознали, чей он по фамилии из ЕГРЮЛ.
-            if (row["director"] or "").strip():
-                for addr in enrich.match_emails(row["director"], res["emails"]):
-                    db.add_contact(cid, "email", addr, "director", 92,
-                                   "unchecked", "сайт: фамилия в адресе")
-                    found_lpr = True
-                    log("   почта руководителя найдена на сайте: %s" % addr)
-
-                # Контакты, стоящие рядом с фамилией на странице. Так
-                # устроены разделы «Руководство»: имя, должность и тут же
-                # телефон с почтой — по имени ящика такой не опознать.
-                # Профили, опубликованные рядом с ФИО в разделе
-                # «Руководство»: компания сама указала, как с ним связаться.
-                for _net, title, url in social.as_links(
-                        social.near_person(res.get("text") or [], row["director"])):
-                    db.add_contact(cid, "social", url, "director", 88,
-                                   "unchecked", "рядом с ФИО: %s" % title)
-                    found_lpr = True
-                    log("   профиль руководителя на сайте: %s" % url)
-
-                near = site_src.near_person(res.get("text") or [], row["director"])
-                for addr in near["emails"]:
-                    db.add_contact(cid, "email", addr, "director", 88,
-                                   "unchecked", "рядом с ФИО на сайте")
-                    found_lpr = True
-                for ph in near["phones"]:
-                    db.add_contact(cid, "phone", ph, "director", 88,
-                                   "unchecked", "рядом с ФИО на сайте")
-                    found_lpr = True
-                if near["emails"] or near["phones"]:
-                    log("   рядом с ФИО на странице: почт %d, телефонов %d"
-                        % (len(near["emails"]), len(near["phones"])))
-
-            # Кто указан на страницах «Команда» и «Руководство». Это
-            # полезно и когда ФИО из ЕГРЮЛ уже есть (подтверждает, что
-            # человек действующий), и особенно когда его нет: у ИП и у
-            # филиалов в ЕГРЮЛ руководителя не найти, а на сайте он
-            # представлен.
-            crew = site_src.people(res.get("text") or [])
-            bosses = [p for p in crew if p["boss"]]
-            if bosses:
-                db.add_signal(cid, "site_people", "; ".join(
-                    "%s — %s" % (p["fio"], p["post"]) for p in bosses[:4]))
-                known_fio = (row["director"] or "").strip()
-                if not known_fio:
-                    top = bosses[0]
-                    db.update_company_fields(cid, {"director": top["fio"],
-                                                   "director_post": top["post"]})
-                    row = db.conn().execute("SELECT * FROM companies WHERE id=?",
-                                            (cid,)).fetchone()
-                    log("   руководитель со страницы сайта: %s — %s"
-                        % (top["fio"], top["post"]))
+            cands = enrich.candidates(row["director"], domain, emails_found) if domain else []
+            if cands:
+                verdicts = {}
+                if do_verify:
+                    verdicts = verify.check([a for a, _ in cands[:6]])
+                keep, why = enrich.keep_candidates(cands, verdicts)
+                for addr, conf in keep:
+                    v = verdicts.get(addr, "unchecked")
+                    if db.add_contact(cid, "email", addr, "director",
+                                      conf if v != "ok" else 95, v, why):
+                        guessed_lpr = True
+                if keep:
+                    log("   кандидатов в почту руководителя: %d, оставили %d — %s"
+                        % (len(cands), len(keep), why))
                 else:
-                    same = [p for p in bosses
-                            if enrich.same_person(known_fio, p["fio"])]
+                    log("   все кандидаты в почту руководителя отвергнуты сервером")
+
+            # 5. ФНС: выручка и размер. Отсеивает и микробизнес без бюджета,
+            #    и корпорации с полугодовым согласованием — оба одинаково
+            #    бесполезны, но по названию их не отличить.
+            if row["inn"] and params.get("fns", True):
+                fin = fns.by_inn(row["inn"], session=http)
+                if fin.get("employees"):
+                    db.update_company_fields(cid, {"employees": fin["employees"]})
+                if fin.get("revenue"):
+                    db.add_signal(cid, "revenue", fin["revenue"])
+                    db.add_signal(cid, "revenue_year", fin.get("year") or "")
+                    db.add_signal(cid, "profit", fin.get("profit") or 0)
+                    db.add_signal(cid, "size", fns.size_band(fin["revenue"]))
+                    # Ряд по годам — чтобы в карточке был не один столбик, а
+                    # линия: по ней видно, что с компанией происходит.
+                    series = fin.get("series") or []
+                    if series:
+                        db.add_signal(cid, "revenue_series", ";".join(
+                            "%s:%d" % (r["year"], r["revenue"]) for r in series))
+                    label, pct = fns.growth(series)
+                    if label:
+                        db.update_company_fields(cid, {"growth": "%s %+d%%" % (label, pct)})
+                    log("   выручка %s: %.1f млн ₽ (%s)%s"
+                        % (fin.get("year") or "—", fin["revenue"] / 1e6,
+                           fns.size_band(fin["revenue"]),
+                           (", " + label) if label else ""))
+
+            # 5.5. ВКонтакте: контактные лица, которые компания указала сама.
+            #      Это единственный честный способ выйти на личный профиль
+            #      руководителя: не поиск по ФИО среди однофамильцев, а
+            #      контакт, опубликованный самой компанией для связи.
+            vk_token = db.get_setting("vk_token", "")
+            if vk_token and params.get("vk", True):
+                found_lpr = _vk_contacts(cid, row, vk_token, http, log) or found_lpr
+
+            # 6. Госзакупки: контактное лицо с прямым телефоном и почтой. Это
+            #    не общий ящик с сайта, а живой контакт конкретного человека.
+            if row["inn"] and params.get("zakupki"):
+                z = zakupki.contacts_by_inn(row["inn"], session=http)
+                if z:
+                    # Если контактное лицо в закупках — тот же человек, что
+                    # руководитель в ЕГРЮЛ, это прямой рабочий контакт первого
+                    # лица. Сверяем по фамилии: отчество и инициалы в ЕИС
+                    # пишут как придётся.
+                    same = False
+                    forms = enrich.surname_forms(row["director"])
+                    person_last = (z.get("person") or "").split()
+                    if person_last and forms:
+                        from app.enrich import translit as _tr
+                        same = _tr(person_last[0]) in forms or \
+                            _tr(person_last[0], alt=True) in forms
+                    who = "director" if same else "unknown"
                     if same:
-                        db.add_signal(cid, "director_on_site", "да")
-                        log("   ФИО из ЕГРЮЛ подтверждено на сайте")
+                        found_lpr = True
+                        log("   контакт из закупок — это сам руководитель")
+                    if z.get("email"):
+                        db.add_contact(cid, "email", z["email"], who, 95 if same else 92,
+                                       "unchecked", "госзакупки")
+                    if z.get("phone"):
+                        db.add_contact(cid, "phone", z["phone"], who, 95 if same else 92,
+                                       "unchecked", "госзакупки")
+                    if z.get("person"):
+                        db.add_signal(cid, "zakupki_person", z["person"])
+                    db.add_signal(cid, "zakupki_url", z.get("url", ""))
+                    log("   в закупках: %s" % (z.get("person") or "контакт найден"))
 
-        # 2.5. Реквизиты с сайта — и второй заход в ЕГРЮЛ.
-        #
-        # Это самый частый случай пустой карточки. В справочнике стоит
-        # вывеска — «Fesco», «Дента-Люкс», — а в ЕГРЮЛ та же компания
-        # записана как ПАО «ДВМП» или ООО «Стоматология плюс», и по
-        # вывеске юрлицо не находится. Без ИНН дальше не спросить ни
-        # ЕГРЮЛ, ни ФНС: карточка остаётся без руководителя, без
-        # выручки, без численности и без года — то есть без всего, ради
-        # чего её открывают.
-        #
-        # Сам ИНН при этом лежит в подвале сайта, который мы только что
-        # прочитали. Берём его оттуда и переспрашиваем — теперь по
-        # номеру, а не по названию.
-        if res.get("inn") and not (row["inn"] or "").strip():
-            got = db.fill_company(cid, {"inn": res["inn"], "ogrn": res.get("ogrn")})
-            if got.get("merged_with"):
-                log("   это та же компания, что «%s» (тот же ИНН) — "
-                    "карточки склеены" % got["merged_with"])
-            row = db.conn().execute("SELECT * FROM companies WHERE id=?",
-                                    (cid,)).fetchone()
-            log("   ИНН с сайта: %s" % res["inn"])
-            if token:
-                info = dadata.by_inn(res["inn"], token, session=http)
-                info.pop("opf", None)
-                if info:
-                    if info.get("status") and info["status"] != "ACTIVE":
-                        log("   ВНИМАНИЕ: статус в ЕГРЮЛ — %s"
-                            % info["status"], "warn")
-                    # over=True: ответ пришёл по ИНН, то есть надёжнее
-                    # того, что могло стоять раньше по названию.
-                    db.fill_company(cid, info, over=True)
-                    row = db.conn().execute(
-                        "SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
-                    log("   ЕГРЮЛ по ИНН с сайта: %s%s"
-                        % (info.get("name") or "",
-                           (" · " + info["director"]) if info.get("director") else ""))
-                else:
-                    log("   ЕГРЮЛ по ИНН с сайта ничего не дал", "warn")
+            # Чем кончился поиск первого лица.
+            #
+            # Признак читают четверо: счётчик в шапке, фильтр «Контакт ГД
+            # найден», выгрузка и сама оценка — там на нём висит четверть
+            # веса. До сих пор его никто не записывал: переменная считалась
+            # по всему обогащению и молча пропадала в конце. Счётчик стоял на
+            # нуле при любом числе находок, фильтр не показывал ничего, а
+            # двадцать пять баллов в оценке были недостижимы.
+            if found_lpr:
+                db.add_signal(cid, "lpr_contact", "найден")
+                lpr_now += 1
+            elif guessed_lpr:
+                db.add_signal(cid, "lpr_contact", "выведен")
+                lpr_guessed_now += 1
 
-        # 3. Профиль: чем занимается и есть ли телефонные продажи.
-        #    Второй вопрос важнее: компания, которая не продаёт по телефону,
-        #    не купит ничего про звонки, сколько бы у неё ни было выручки.
-        res = res if (row["site"] or "").strip() else {}
-        titles = [t for t in (db.get_signal(cid, "hh_titles") or "").split(" | ") if t]
-        found_signs = profile.call_signals(res, titles, res.get("phones") or [])
-        cc = profile.verdict(found_signs)
-        patch = {"callcenter": cc["label"]}
-        if cc["why"]:
-            db.add_signal(cid, "cc_why", ", ".join(cc["why"]))
-        db.add_signal(cid, "cc_score", cc["score"])
-        act = profile.activity(row, {"hh_about": db.get_signal(cid, "hh_about")}, res)
-        if act:
-            patch["activity"] = act
-        if res.get("cms"):
-            patch["cms"] = res["cms"]
-        # Цифры, которые компания вынесла на главную. В разговоре на них
-        # ссылаться удобнее, чем на отчётность: «вы пишете, что работаете
-        # с 2011 года» звучит иначе, чем «по данным ФНС».
-        for key, sig in (("self_year", "self_year"), ("self_staff", "self_staff"),
-                         ("self_branches", "self_branches")):
-            if res.get(key):
-                db.add_signal(cid, sig, res[key])
-        model = []
-        if res.get("shop"):
-            model.append("интернет-магазин")
-        if res.get("prices"):
-            model.append("цены на сайте")
-        elif res.get("no_prices"):
-            model.append("цена по запросу")
-        if res.get("app"):
-            model.append("мобильное приложение")
-        if model:
-            db.add_signal(cid, "sales_model", ", ".join(model))
-        if res.get("last_post"):
-            db.add_signal(cid, "last_post", res["last_post"])
-        for num in (res.get("tollfree") or []):
-            db.add_contact(cid, "phone", num, "general", 90, "unchecked",
-                           "бесплатный номер с сайта")
-        db.update_company_fields(cid, patch)
-        row = db.conn().execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
-        log("   телефонные продажи: %s%s"
-            % (cc["label"], (" — " + ", ".join(cc["why"][:3])) if cc["why"] else ""))
-
-        # 4. Кандидаты в адрес руководителя по схеме домена.
-        #
-        # Домен берём у сайта, а не у первой попавшейся почты. На сайте
-        # рядом с корпоративными адресами сплошь и рядом лежит почта на
-        # бесплатной службе — своя у бухгалтера, партнёрская, оставшаяся
-        # с прошлого подрядчика. Раньше схему строили по первой из
-        # найденных, и у компании с info@gmail.com «адресом руководителя»
-        # оказывался ivanov@gmail.com: ящик какого-то Иванова, которых
-        # там десятки тысяч.
-        site_host = ""
-        if (row["site"] or ""):
-            site_host = (row["site"].split("//")[-1].split("/")[0]
-                         .replace("www.", "").lower())
-        own = [e for e in emails_found
-               if site_host and e.lower().endswith("@" + site_host)]
-        if site_host:
-            domain = site_host
-        elif emails_found:
-            domain = emails_found[0].split("@")[1].lower()
-        else:
-            domain = ""
-        # Примеры для угадывания схемы — только с этого же домена: по
-        # чужим адресам видно чужие привычки именования.
-        emails_found = own or ([] if site_host else emails_found)
-
-        cands = enrich.candidates(row["director"], domain, emails_found) if domain else []
-        if cands:
-            verdicts = {}
-            if do_verify:
-                verdicts = verify.check([a for a, _ in cands[:6]])
-            keep, why = enrich.keep_candidates(cands, verdicts)
-            for addr, conf in keep:
-                v = verdicts.get(addr, "unchecked")
-                if db.add_contact(cid, "email", addr, "director",
-                                  conf if v != "ok" else 95, v, why):
-                    guessed_lpr = True
-            if keep:
-                log("   кандидатов в почту руководителя: %d, оставили %d — %s"
-                    % (len(cands), len(keep), why))
-            else:
-                log("   все кандидаты в почту руководителя отвергнуты сервером")
-
-        # 5. ФНС: выручка и размер. Отсеивает и микробизнес без бюджета,
-        #    и корпорации с полугодовым согласованием — оба одинаково
-        #    бесполезны, но по названию их не отличить.
-        if row["inn"] and params.get("fns", True):
-            fin = fns.by_inn(row["inn"], session=http)
-            if fin.get("employees"):
-                db.update_company_fields(cid, {"employees": fin["employees"]})
-            if fin.get("revenue"):
-                db.add_signal(cid, "revenue", fin["revenue"])
-                db.add_signal(cid, "revenue_year", fin.get("year") or "")
-                db.add_signal(cid, "profit", fin.get("profit") or 0)
-                db.add_signal(cid, "size", fns.size_band(fin["revenue"]))
-                # Ряд по годам — чтобы в карточке был не один столбик, а
-                # линия: по ней видно, что с компанией происходит.
-                series = fin.get("series") or []
-                if series:
-                    db.add_signal(cid, "revenue_series", ";".join(
-                        "%s:%d" % (r["year"], r["revenue"]) for r in series))
-                label, pct = fns.growth(series)
-                if label:
-                    db.update_company_fields(cid, {"growth": "%s %+d%%" % (label, pct)})
-                log("   выручка %s: %.1f млн ₽ (%s)%s"
-                    % (fin.get("year") or "—", fin["revenue"] / 1e6,
-                       fns.size_band(fin["revenue"]),
-                       (", " + label) if label else ""))
-
-        # 5.5. ВКонтакте: контактные лица, которые компания указала сама.
-        #      Это единственный честный способ выйти на личный профиль
-        #      руководителя: не поиск по ФИО среди однофамильцев, а
-        #      контакт, опубликованный самой компанией для связи.
-        vk_token = db.get_setting("vk_token", "")
-        if vk_token and params.get("vk", True):
-            found_lpr = _vk_contacts(cid, row, vk_token, http, log) or found_lpr
-
-        # 6. Госзакупки: контактное лицо с прямым телефоном и почтой. Это
-        #    не общий ящик с сайта, а живой контакт конкретного человека.
-        if row["inn"] and params.get("zakupki"):
-            z = zakupki.contacts_by_inn(row["inn"], session=http)
-            if z:
-                # Если контактное лицо в закупках — тот же человек, что
-                # руководитель в ЕГРЮЛ, это прямой рабочий контакт первого
-                # лица. Сверяем по фамилии: отчество и инициалы в ЕИС
-                # пишут как придётся.
-                same = False
-                forms = enrich.surname_forms(row["director"])
-                person_last = (z.get("person") or "").split()
-                if person_last and forms:
-                    from app.enrich import translit as _tr
-                    same = _tr(person_last[0]) in forms or \
-                        _tr(person_last[0], alt=True) in forms
-                who = "director" if same else "unknown"
-                if same:
-                    found_lpr = True
-                    log("   контакт из закупок — это сам руководитель")
-                if z.get("email"):
-                    db.add_contact(cid, "email", z["email"], who, 95 if same else 92,
-                                   "unchecked", "госзакупки")
-                if z.get("phone"):
-                    db.add_contact(cid, "phone", z["phone"], who, 95 if same else 92,
-                                   "unchecked", "госзакупки")
-                if z.get("person"):
-                    db.add_signal(cid, "zakupki_person", z["person"])
-                db.add_signal(cid, "zakupki_url", z.get("url", ""))
-                log("   в закупках: %s" % (z.get("person") or "контакт найден"))
-
-        # Чем кончился поиск первого лица.
-        #
-        # Признак читают четверо: счётчик в шапке, фильтр «Контакт ГД
-        # найден», выгрузка и сама оценка — там на нём висит четверть
-        # веса. До сих пор его никто не записывал: переменная считалась
-        # по всему обогащению и молча пропадала в конце. Счётчик стоял на
-        # нуле при любом числе находок, фильтр не показывал ничего, а
-        # двадцать пять баллов в оценке были недостижимы.
-        if found_lpr:
-            db.add_signal(cid, "lpr_contact", "найден")
-            lpr_now += 1
-        elif guessed_lpr:
-            db.add_signal(cid, "lpr_contact", "выведен")
-            lpr_guessed_now += 1
-
-        db.add_signal(cid, "enriched", int(time.time()))
-        _rescore(cid)
-        db.update_task(task_id, done=i)
-        # Долгая компания — не беда сама по себе: чужой сервер думает
-        # столько, сколько думает. Но если жалуются на зависание, по
-        # журналу должно быть видно, на ком именно оно случилось.
-        spent = time.time() - step_t0
-        if spent > 25:
-            log("   заняла %.0f с — это много. Обычно виноват медленный "
-                "сайт компании." % spent, "warn")
+            db.add_signal(cid, "enriched", int(time.time()))
+            _rescore(cid)
+            db.update_task(task_id, done=i)
+            # Долгая компания — не беда сама по себе: чужой сервер думает
+            # столько, сколько думает. Но если жалуются на зависание, по
+            # журналу должно быть видно, на ком именно оно случилось.
+            spent = time.time() - step_t0
+            if spent > 25:
+                log("   заняла %.0f с — это много. Обычно виноват медленный "
+                    "сайт компании." % spent, "warn")
+        except Exception as e:
+            log("   %s: сбой — %s. Иду дальше."
+                % (row["name"] if row is not None else cid, str(e)[:200]), "warn")
+            db.update_task(task_id, done=i)
+            continue
 
     crawls.close()
     if _stall["worst"] > 2:
