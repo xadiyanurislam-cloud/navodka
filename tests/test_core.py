@@ -4585,8 +4585,10 @@ class ScoreBreakdown(unittest.TestCase):
         d = self.app.get("/api/score/legend").get_json()
         self.assertEqual(d["max"], 100)
         keys = {x["key"] for x in d["legend"]}
-        self.assertEqual(keys, set(score.WEIGHTS),
+        self.assertEqual(keys, set(score.WEIGHTS) - {"ai_fit"},
                          "в справке не все слагаемые")
+        generic = {x["key"] for x in score.legend("generic")}
+        self.assertEqual(generic, set(score.WEIGHTS) - set(score.PHONE_ONLY))
         self.assertTrue(all(x["why"] for x in d["legend"]))
 
 
@@ -7193,6 +7195,269 @@ class InnCollision(unittest.TestCase):
         self.assertFalse(new)
         n = db.conn().execute("SELECT COUNT(*) n FROM companies").fetchone()["n"]
         self.assertEqual(n, 1)
+
+
+# ── Проекты ──────────────────────────────────────────────
+class _ProjectsBase(unittest.TestCase):
+    def setUp(self):
+        db.init()
+        db.set_active(db.projects()[0]["id"])
+        c = db.conn()
+        for t in ("contacts", "signals", "notes", "companies", "outreach",
+                  "sent_mail", "campaigns", "tasks", "searches", "blacklist"):
+            c.execute("DELETE FROM %s" % t)
+        c.execute("DELETE FROM settings WHERE key LIKE 'mail_%' OR key IN "
+                  "('ai_offer','ai_icp','ai_terms','ai_key')")
+        c.commit()
+        outreach._STATES.clear()
+
+    def tearDown(self):
+        for p in db.projects()[1:]:
+            db.delete_project(p["id"])
+        db.set_active(db.projects()[0]["id"])
+        db.conn().execute("DELETE FROM settings WHERE key IN ('ai_key')")
+        db.conn().commit()
+        outreach._STATES.clear()
+
+
+class ProjectsIsolation(_ProjectsBase):
+    def test_first_project_is_the_main_base(self):
+        first = db.projects()[0]
+        self.assertEqual(first["path"], db.main_path())
+        self.assertTrue(first["name"])
+
+    def test_bases_do_not_mix_but_keys_are_shared(self):
+        main_id = db.projects()[0]["id"]
+        a, _ = db.upsert_company({"name": "Звонки-Клиент", "inn": "7700000011"})
+        db.add_note(a, "из основного")
+        db.set_setting("ai_offer", "аналитика звонков")
+        db.set_setting("ai_key", "KEY-1")
+        b = db.create_project("ПВХ", about="продаём ПВХ", buyer="тентовые мастерские",
+                              score_mode="generic")
+        db.set_active(b["id"])
+        self.assertEqual(db.conn().execute("SELECT COUNT(*) n FROM companies").fetchone()["n"], 0)
+        self.assertEqual(db.get_setting("ai_key"), "KEY-1", "ключи общие")
+        self.assertEqual(db.get_setting("ai_offer"), "", "описание — своё")
+        db.set_setting("ai_offer", "ПВХ-ткани")
+        x, new = db.upsert_company({"name": "Звонки-Клиент", "inn": "7700000011"})
+        self.assertTrue(new, "та же фирма в другом проекте — своя карточка")
+        db.update_company_fields(x, {"stage": "созвон"})
+        self.assertEqual(db.score_mode(), "generic")
+        db.set_active(main_id)
+        self.assertEqual(db.get_setting("ai_offer"), "аналитика звонков")
+        row = db.conn().execute("SELECT stage FROM companies WHERE inn='7700000011'").fetchone()
+        self.assertEqual(row["stage"] or "new", "new")
+        self.assertEqual(len(db.notes(a)), 1)
+        self.assertEqual(db.score_mode(), "phone_sales")
+
+    def test_active_survives_restart(self):
+        b = db.create_project("Второй")
+        db.set_active(b["id"])
+        db._state["active"] = ""
+        db.init()
+        self.assertEqual(db.current_path(), b["path"])
+
+    def test_delete_removes_file_and_main_is_protected(self):
+        b = db.create_project("Удаляемый")
+        self.assertTrue(os.path.exists(b["path"]))
+        self.assertFalse(db.delete_project(db.projects()[0]["id"]))
+        self.assertTrue(db.delete_project(b["id"]))
+        self.assertFalse(os.path.exists(b["path"]))
+        self.assertIsNone(db.get_project(b["id"]))
+
+    def test_carry_keeps_project_in_pool_threads(self):
+        import threading as _t
+        b = db.create_project("Пул")
+        got = []
+        with db.pinned(b["path"]):
+            fn = db.carry(lambda: got.append(db.current_path()))
+        th = _t.Thread(target=fn)
+        th.start()
+        th.join()
+        self.assertEqual(got, [b["path"]])
+
+
+class ProjectsBackground(_ProjectsBase):
+    def test_task_writes_where_it_was_queued(self):
+        b = db.create_project("Фон")
+        worker.HANDLERS["_test_add"] = lambda tid, params: db.upsert_company(
+            {"name": "Из задачи Б"})
+        try:
+            with db.pinned(b["path"]):
+                db.create_task("_test_add", {})
+            # Окно переключили на первый проект — задача всё равно идёт в Б.
+            db.set_active(db.projects()[0]["id"])
+            path, row = worker._next_task()
+            self.assertEqual(path, b["path"])
+            with db.pinned(path):
+                worker._run_task(path, row)
+        finally:
+            worker.HANDLERS.pop("_test_add", None)
+        self.assertEqual(db.conn().execute(
+            "SELECT COUNT(*) n FROM companies WHERE name='Из задачи Б'").fetchone()["n"], 0)
+        with db.pinned(b["path"]):
+            self.assertEqual(db.conn().execute(
+                "SELECT COUNT(*) n FROM companies WHERE name='Из задачи Б'").fetchone()["n"], 1)
+            self.assertEqual(db.conn().execute(
+                "SELECT status FROM tasks").fetchone()["status"], "done")
+
+    def test_mail_of_two_projects_is_independent(self):
+        a_srv = fake_mail.FakeSMTP(user="a@test.local")
+        b_srv = fake_mail.FakeSMTP(user="b@test.local", spam=True)
+        try:
+            b = db.create_project("Рассылка Б")
+            ts = time.time() + 5
+            for path, srv, addr in ((db.main_path(), a_srv, "a@test.local"),
+                                    (b["path"], b_srv, "b@test.local")):
+                with db.pinned(path):
+                    for k, v in (("address", addr), ("password", "secret"),
+                                 ("smtp_host", "127.0.0.1"), ("smtp_port", srv.port),
+                                 ("warmup", "0")):
+                        db.set_setting("mail_" + k, v)
+                    camp, _ = outreach.save_campaign("К", _STEPS)
+                    cid = _company("ООО Цель " + addr, "", "boss@target-%s.ru" % addr[0])
+                    outreach.enroll(camp, [cid])
+            with db.pinned(b["path"]):
+                self.assertEqual(outreach.tick(ts, ignore_pause=True), "send_error")
+                self.assertTrue(outreach.STATE["last_error"])
+            with db.pinned(db.main_path()):
+                self.assertEqual(outreach.STATE["last_error"], "")
+                # Пауза после ошибки ящика Б на проект А не распространяется.
+                self.assertEqual(outreach.STATE["pause_until"], 0.0)
+                self.assertEqual(outreach.tick(ts, ignore_pause=True), "sent")
+            self.assertEqual(len(a_srv.sent), 1)
+            self.assertEqual(a_srv.sent[0][0], "a@test.local")
+        finally:
+            a_srv.close()
+            b_srv.close()
+
+
+class ProjectSetupAi(unittest.TestCase):
+    def _with_answer(self, text):
+        was = ai.ask
+        ai.ask = lambda *a, **kw: (text, "")
+        try:
+            return ai.project_setup("Продаём ПВХ-ткани оптом", "Производители тентов")
+        finally:
+            ai.ask = was
+
+    def test_parses_and_cleans(self):
+        d, err = self._with_answer(json.dumps({
+            "find": ["производство тентов", "Производство тентов", "пошив палаток"],
+            "vacancies": ["сварщик ПВХ", "оператор ТВЧ"], "icp": "тентовые цеха",
+            "offer": "", "phone_sales": False, "okved": ["13.92"], "name": "ПВХ"},
+            ensure_ascii=False))
+        self.assertEqual(err, "")
+        self.assertEqual(d["find"], ["производство тентов", "пошив палаток"])
+        self.assertEqual(d["score_mode"], "generic")
+        self.assertEqual(d["offer"], "Продаём ПВХ-ткани оптом")
+
+    def test_phone_sales_flag(self):
+        d, _ = self._with_answer('{"find": ["стоматология"], "phone_sales": true}')
+        self.assertEqual(d["score_mode"], "phone_sales")
+
+    def test_garbage_and_empty(self):
+        self.assertTrue(self._with_answer("не JSON вовсе")[1])
+        self.assertTrue(self._with_answer('{"find": [], "vacancies": []}')[1])
+        self.assertTrue(ai.project_setup("", "x")[1])
+
+
+class GenericScore(unittest.TestCase):
+    def test_generic_ignores_telephony_and_counts_ai_fit(self):
+        company = {"director": "", "site": "", "ai_fit": 72}
+        sig = {"tech_calltracking": "Calltouch"}
+        phone, _ = score.compute(company, sig, [], mode="phone_sales")
+        gen, parts = score.compute(company, sig, [], mode="generic")
+        keys = {p["key"] for p in parts}
+        self.assertNotIn("calltracking", keys)
+        self.assertIn("ai_fit", keys)
+        self.assertEqual(phone, score.WEIGHTS["calltracking"])
+        self.assertEqual(gen, score.WEIGHTS["ai_fit"])
+
+    def test_weak_fit_gets_a_third(self):
+        gen, _ = score.compute({"director": "", "site": "", "ai_fit": 45}, {}, [],
+                               mode="generic")
+        self.assertEqual(gen, score.WEIGHTS["ai_fit"] // 3)
+
+
+class ProjectsApi(_ProjectsBase):
+    def setUp(self):
+        super().setUp()
+        self.cl = web.create_app().test_client()
+
+    def test_create_activate_and_list(self):
+        d = self.cl.post("/api/projects", json={
+            "name": "ПВХ", "about": "ПВХ-ткани", "buyer": "тентовики",
+            "find": ["производство тентов", "пошив палаток"],
+            "vacancies": ["сварщик ПВХ"], "cities": ["Москва", "Нигдеград"],
+            "score_mode": "generic", "run": True}).get_json()
+        self.assertTrue(d["ok"], d)
+        self.assertEqual(d["tasks"], 2)
+        lst = self.cl.get("/api/projects").get_json()["projects"]
+        cur = [p for p in lst if p["active"]][0]
+        self.assertEqual((cur["name"], cur["score_mode"]), ("ПВХ", "generic"))
+        kinds = sorted(r["kind"] for r in db.conn().execute("SELECT kind FROM tasks"))
+        self.assertEqual(kinds, ["find", "hh_search"])
+        params = json.loads(db.conn().execute(
+            "SELECT params FROM tasks WHERE kind='find'").fetchone()["params"])
+        self.assertEqual(params["query"], "производство тентов, пошив палаток")
+        self.assertEqual(params["cities"], ["Москва"])
+        self.assertEqual(db.get_setting("ai_offer"), "ПВХ-ткани")
+        html = self.cl.get("/").get_data(as_text=True)
+        self.assertIn('class="mode-generic"', html)
+        self.assertIn("Проект «ПВХ»", html)
+        main_id = db.projects()[0]["id"]
+        self.assertTrue(self.cl.post("/api/projects/%d/activate" % main_id).get_json()["ok"])
+        self.assertEqual(db.conn().execute("SELECT COUNT(*) n FROM tasks").fetchone()["n"], 0)
+
+    def test_setup_without_key_is_explained(self):
+        d = self.cl.post("/api/projects/setup", json={"about": "a", "buyer": "b"}).get_json()
+        self.assertFalse(d["ok"])
+        self.assertIn("ключ", d["error"])
+
+    def test_junk_is_not_500(self):
+        for body in (None, {"name": ["x"]}, {"name": "x", "find": {"a": 1}},
+                     {"name": "x", "find": "одна строка", "cities": "Москва"}):
+            r = self.cl.post("/api/projects", json=body)
+            self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.cl.post("/api/projects/999/activate").status_code, 200)
+        self.assertFalse(self.cl.post("/api/projects/999/delete").get_json()["ok"])
+        self.assertFalse(self.cl.post("/api/projects/%d/delete" % db.projects()[0]["id"])
+                         .get_json()["ok"])
+
+    def test_mode_change_rescores(self):
+        cid, _ = db.upsert_company({"name": "Коллтрекинг"})
+        db.add_signal(cid, "tech_calltracking", "Calltouch")
+        worker._rescore(cid)
+        before = db.conn().execute("SELECT score FROM companies WHERE id=?", (cid,)).fetchone()[0]
+        pid = db.projects()[0]["id"]
+        self.cl.post("/api/projects/%d" % pid, json={"score_mode": "generic"})
+        after = db.conn().execute("SELECT score FROM companies WHERE id=?", (cid,)).fetchone()[0]
+        db.update_project(pid, score_mode="phone_sales")
+        self.assertGreater(before, after)
+
+
+class FindSeveralKinds(unittest.TestCase):
+    def test_comma_separated_kinds_are_all_searched(self):
+        from app.sources import osm
+        asked = []
+        was = osm.search
+        try:
+            osm.search = lambda q, city, **kw: asked.append(q) or []
+            db.init()
+            tid = db.create_task("find", {})
+            try:
+                worker.task_find(tid, {
+                    "query": "производство тентов, пошив палаток", "cities": ["Москва"],
+                    "synonyms": False,
+                    "sources": {"osm": True, "gis": False, "yandex": False, "dadata": False,
+                                "hh": False, "trudvsem": False, "superjob": False,
+                                "fns": False}})
+            except RuntimeError:
+                pass
+        finally:
+            osm.search = was
+        self.assertEqual(asked, ["производство тентов", "пошив палаток"])
 
 
 if __name__ == "__main__":

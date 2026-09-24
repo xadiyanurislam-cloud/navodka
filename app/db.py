@@ -10,6 +10,8 @@
 потоками, а у нас фоновый воркер пишет одновременно с тем, как интерфейс
 читает таблицу.
 """
+import contextlib
+import os
 import re
 import json
 import sqlite3
@@ -217,18 +219,246 @@ CREATE TABLE IF NOT EXISTS mail_optout (
 """
 
 
-def conn():
-    c = getattr(_local, "conn", None)
+# ── Проекты ──────────────────────────────────────────────
+# У каждого своего бизнеса — свой проект со своей базой: компании,
+# воронка, заметки, чёрный список, рассылки. Одна и та же фирма бывает
+# лидом для двух проектов, и стадия у неё в каждом своя.
+#
+# Главная база — файл, с которого программа начиналась. В ней лежат
+# список проектов и общие ключи, и она же — база первого проекта: так
+# у тех, кто обновился, ничего никуда не переезжает.
+PROJECTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS projects (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    file        TEXT DEFAULT '',     -- пусто — главная база
+    about       TEXT,                -- чем занимается наша компания
+    buyer       TEXT,                -- кто конечный покупатель
+    score_mode  TEXT DEFAULT 'phone_sales',   -- phone_sales | generic
+    created_at  INTEGER
+);
+"""
+
+# Ключи, общие для всех проектов: источники, модель, прокси, Telegram,
+# обновления. Вводятся один раз. Всё остальное — описание клиента, «что
+# продаём», условия, ящик рассылок — у каждого проекта своё.
+GLOBAL_KEYS = {
+    "dadata_token", "gis_key", "yandex_key", "vk_token", "sj_key",
+    "hh_token", "hh_ua", "ai_key", "ai_url", "ai_model", "ai_kind",
+    "ai_threads", "proxy_url", "update_repo", "update_token", "update_url",
+    "active_project", "trash_files",
+}
+GLOBAL_PREFIXES = ("tg_",)
+
+_state = {"active": ""}      # путь базы активного проекта; пусто — главная
+_prepared = set()            # базы проектов, у которых схема уже на месте
+_prep_lock = threading.Lock()
+
+
+def main_path():
+    return settings.db_path()
+
+
+def current_path():
+    """База, с которой работает этот поток.
+
+    Сначала — проект, закреплённый за потоком: фоновая задача пишет туда,
+    где её запустили, как бы ни переключали окно. Потом — активный
+    проект. Потом — главная база.
+    """
+    return getattr(_local, "pinned", None) or _state["active"] or main_path()
+
+
+def _open(path):
+    conns = getattr(_local, "conns", None)
+    if conns is None:
+        conns = _local.conns = {}
+    c = conns.get(path)
     if c is None:
-        c = sqlite3.connect(settings.db_path(), timeout=30)
+        c = sqlite3.connect(path, timeout=30)
         c.row_factory = sqlite3.Row
         # WAL нужен именно здесь: воркер пишет, интерфейс читает, и без него
         # каждый опрос таблицы блокировал бы запись.
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA synchronous=NORMAL")
         c.execute("PRAGMA foreign_keys=ON")
-        _local.conn = c
+        conns[path] = c
+        if path != main_path() and path not in _prepared:
+            with _prep_lock:
+                if path not in _prepared:
+                    _migrate(c)
+                    _prepared.add(path)
     return c
+
+
+def conn():
+    return _open(current_path())
+
+
+def main_conn():
+    return _open(main_path())
+
+
+def _close_here(path):
+    c = (getattr(_local, "conns", None) or {}).pop(path, None)
+    if c is not None:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+@contextlib.contextmanager
+def pinned(path):
+    """Закрепить базу проекта за текущим потоком на время блока."""
+    old = getattr(_local, "pinned", None)
+    _local.pinned = path or None
+    try:
+        yield
+    finally:
+        _local.pinned = old
+
+
+def carry(fn):
+    """Обернуть функцию для пула потоков так, чтобы она писала в тот же
+    проект, что и поток, который её отдал. Иначе обход сайтов из пула
+    записывал бы в активный проект, а не в тот, где идёт задача."""
+    path = current_path()
+
+    def run(*a, **kw):
+        with pinned(path):
+            return fn(*a, **kw)
+    return run
+
+
+def _is_global(key):
+    return key in GLOBAL_KEYS or key.startswith(GLOBAL_PREFIXES)
+
+
+def project_file_path(row):
+    f = (row["file"] if row is not None else "") or ""
+    return os.path.join(settings.data_dir(), f) if f else main_path()
+
+
+def projects():
+    """Все проекты по порядку создания, с путями к базам."""
+    rows = main_conn().execute("SELECT * FROM projects ORDER BY id").fetchall()
+    return [dict(r, path=project_file_path(r)) for r in rows]
+
+
+def get_project(project_id):
+    row = main_conn().execute("SELECT * FROM projects WHERE id=?",
+                              (int(project_id),)).fetchone()
+    return dict(row, path=project_file_path(row)) if row is not None else None
+
+
+def project_for_path(path):
+    for p in projects():
+        if p["path"] == path:
+            return p
+    return None
+
+
+def current_project():
+    """Проект, с которым работает этот поток."""
+    return project_for_path(current_path()) or (projects() or [None])[0]
+
+
+def active_project():
+    return project_for_path(_state["active"] or main_path()) or (projects() or [None])[0]
+
+
+def score_mode():
+    p = current_project()
+    return (p or {}).get("score_mode") or "phone_sales"
+
+
+def set_active(project_id):
+    p = get_project(project_id)
+    if p is None:
+        return False
+    _state["active"] = "" if p["path"] == main_path() else p["path"]
+    set_setting("active_project", p["id"])
+    return True
+
+
+def create_project(name, about="", buyer="", score_mode="phone_sales"):
+    """Новый проект с пустой базой. Возвращает его словарь."""
+    c = main_conn()
+    cur = c.execute("INSERT INTO projects (name, file, about, buyer, score_mode, "
+                    "created_at) VALUES (?,?,?,?,?,?)",
+                    (name.strip()[:80] or "Проект", "", about, buyer,
+                     score_mode if score_mode in ("phone_sales", "generic")
+                     else "generic", now()))
+    pid = cur.lastrowid
+    folder = os.path.join(settings.data_dir(), "projects")
+    os.makedirs(folder, exist_ok=True)
+    c.execute("UPDATE projects SET file=? WHERE id=?",
+              ("projects/p%d.sqlite3" % pid, pid))
+    c.commit()
+    p = get_project(pid)
+    _open(p["path"])
+    return p
+
+
+def update_project(project_id, **fields):
+    allowed = {k: v for k, v in fields.items()
+               if k in ("name", "about", "buyer", "score_mode") and v is not None}
+    if "score_mode" in allowed and allowed["score_mode"] not in ("phone_sales", "generic"):
+        allowed.pop("score_mode")
+    if "name" in allowed:
+        allowed["name"] = str(allowed["name"]).strip()[:80] or "Проект"
+    if not allowed:
+        return False
+    c = main_conn()
+    sets = ", ".join("%s=?" % k for k in allowed)
+    cur = c.execute("UPDATE projects SET %s WHERE id=?" % sets,
+                    tuple(allowed.values()) + (int(project_id),))
+    c.commit()
+    return cur.rowcount > 0
+
+
+def delete_project(project_id):
+    """Удалить проект с его базой. Первый проект (главную базу) — нельзя."""
+    p = get_project(project_id)
+    if p is None or p["path"] == main_path():
+        return False
+    if (_state["active"] or main_path()) == p["path"]:
+        _state["active"] = ""
+        set_setting("active_project", "")
+    c = main_conn()
+    c.execute("DELETE FROM projects WHERE id=?", (p["id"],))
+    c.commit()
+    _close_here(p["path"])
+    _prepared.discard(p["path"])
+    # Файл может держать фоновый поток — тогда удалим при следующем
+    # запуске, а не упадём сейчас.
+    left = []
+    for suffix in ("", "-wal", "-shm"):
+        f = p["path"] + suffix
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except OSError:
+                left.append(f)
+    if left:
+        have = [x for x in (get_setting("trash_files") or "").split("|") if x]
+        set_setting("trash_files", "|".join(have + left))
+    return True
+
+
+def _empty_trash():
+    files = [x for x in (get_setting("trash_files") or "").split("|") if x]
+    if not files:
+        return
+    left = []
+    for f in files:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except OSError:
+            left.append(f)
+    set_setting("trash_files", "|".join(left))
 
 
 # Колонки, добавленные после первого выпуска. CREATE TABLE IF NOT EXISTS
@@ -262,8 +492,7 @@ _LATER_SEARCHES = {
 }
 
 
-def init():
-    c = conn()
+def _migrate(c):
     c.executescript(SCHEMA)
     for table, cols in (("companies", _LATER), ("searches", _LATER_SEARCHES)):
         have = {r["name"] for r in c.execute("PRAGMA table_info(%s)" % table)}
@@ -272,11 +501,41 @@ def init():
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s"
                           % (table, col, kind))
     c.commit()
+
+
+def init():
+    c = main_conn()
+    _migrate(c)
+    c.executescript(PROJECTS_SCHEMA)
+    c.commit()
     # Починка разовая: она проходит по всей таблице, а после первого
     # раза чинить нечего — новые записи приходят уже разобранными.
-    if get_setting(_REPAIR_MARK) != "1":
+    mark = c.execute("SELECT value FROM settings WHERE key=?",
+                     (_REPAIR_MARK,)).fetchone()
+    if mark is None or mark["value"] != "1":
         _repair(c)
-        set_setting(_REPAIR_MARK, "1")
+        c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')",
+                  (_REPAIR_MARK,))
+        c.commit()
+    # Первый проект — на главную базу. У тех, кто обновился, это их
+    # нынешняя база целиком, со всеми компаниями и настройками.
+    if c.execute("SELECT COUNT(*) n FROM projects").fetchone()["n"] == 0:
+        offer = c.execute("SELECT value FROM settings WHERE key='ai_offer'").fetchone()
+        name = "Аналитика звонков"
+        if offer and (offer["value"] or "").strip():
+            name = offer["value"].strip().split("\n")[0][:60]
+        c.execute("INSERT INTO projects (name, file, about, score_mode, created_at) "
+                  "VALUES (?, '', ?, 'phone_sales', ?)",
+                  (name, offer["value"] if offer else "", now()))
+        c.commit()
+    _empty_trash()
+    # Активный проект — тот, что был открыт в прошлый раз.
+    want = get_setting("active_project")
+    p = get_project(want) if str(want).isdigit() else None
+    _state["active"] = "" if (p is None or p["path"] == main_path()) else p["path"]
+    for q in projects():
+        if q["path"] != main_path():
+            _open(q["path"])
 
 
 # Две ошибки успели попасть в уже собранные базы: в «чем занимается»
@@ -1062,13 +1321,13 @@ def log(task_id, text, level="info"):
 
 
 def get_setting(key, default=""):
-    c = conn()
+    c = main_conn() if _is_global(key) else conn()
     row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default
 
 
 def set_setting(key, value):
-    c = conn()
+    c = main_conn() if _is_global(key) else conn()
     c.execute("""INSERT INTO settings (key, value) VALUES (?,?)
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
               (key, str(value)))

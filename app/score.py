@@ -33,7 +33,17 @@ WEIGHTS = {
     "mail_verified": 15,     # почта руководителя отвечает на проверку
     "has_social": 8,         # есть куда написать помимо почты
     "fresh_vacancy": 10,     # вакансия висит прямо сейчас
+    "ai_fit": 35,            # ИИ счёл компанию похожей на нашего покупателя
 }
+
+# Что считается в каждом способе оценки.
+#
+# «Телефонные продажи» — для продуктов вокруг звонков: там решает,
+# платит ли компания за звонки уже сейчас (коллтрекинг, телефония, CRM).
+# «Общий» — для всего остального: продавцу ПВХ коллтрекинг у тентовой
+# мастерской ни о чём не говорит. Там вместо технографики — оценка ИИ,
+# насколько компания похожа на описанного покупателя.
+PHONE_ONLY = ("calltracking", "telephony", "crm", "chat")
 
 # Размер, при котором сделка вообще возможна. Микробизнес не платит, у
 # крупного закупки идут через тендер и службу безопасности — и то и другое
@@ -69,6 +79,9 @@ WHY = {
     "has_social": "Есть сообщество или канал: туда пишут, когда на почту "
                   "не отвечают, а в группе ВК вдобавок видны контактные "
                   "лица, которых компания указала сама.",
+    "ai_fit": "ИИ сравнил карточку с описанием нужного покупателя. Это "
+              "оценка, а не факт, зато она учитывает всё, что есть в "
+              "карточке, а не один признак.",
     "fresh_vacancy": "Вакансия опубликована на этой неделе. «Вчера искали "
                      "третьего продавца» — повод для звонка; «полгода "
                      "назад» — уже нет, и звонить с этим неловко.",
@@ -81,7 +94,14 @@ def part(key, got, text, points=None):
             "why": WHY.get(key, "")}
 
 
-def compute(company, signals, contacts):
+def _get(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def compute(company, signals, contacts, mode="phone_sales"):
     """company — строка БД, signals — {key: value}, contacts — список строк.
 
     Возвращает (балл, слагаемые). Слагаемые — и засчитанные, и нет:
@@ -90,6 +110,7 @@ def compute(company, signals, contacts):
     """
     score = 0
     parts = []
+    generic = mode == "generic"
 
     def take(p):
         parts.append(p)
@@ -119,12 +140,15 @@ def compute(company, signals, contacts):
         full = vac >= 3
         pts = WEIGHTS["vacancies_sales"] if full else WEIGHTS["vacancies_sales"] // 2
         score += take(part("vacancies_sales", True,
-                           "открытых вакансий в продажи: %d%s"
-                           % (vac, "" if full else " — меньше трёх, половина веса"),
+                           "%s: %d%s"
+                           % ("вакансий по запросам проекта" if generic
+                              else "открытых вакансий в продажи", vac,
+                              "" if full else " — меньше трёх, половина веса"),
                            pts))
     else:
         score += take(part("vacancies_sales", False,
-                           "вакансий в продажи не нашлось"))
+                           "вакансий по запросам проекта не нашлось" if generic
+                           else "вакансий в продажи не нашлось"))
 
     score += take(part("fresh_vacancy", fresh is not None and fresh <= 7,
                        "вакансия опубликована %s"
@@ -134,11 +158,28 @@ def compute(company, signals, contacts):
                              if fresh is not None
                              else "свежих вакансий не видно")))
 
+    if generic:
+        try:
+            fit = int(_get(company, "ai_fit"))
+        except (TypeError, ValueError):
+            fit = None
+        if fit is None:
+            score += take(part("ai_fit", False,
+                               "ИИ ещё не оценивал — «Разобрать через ИИ»"))
+        elif fit >= 60:
+            score += take(part("ai_fit", True, "ИИ: похожа на покупателя (%d)" % fit))
+        elif fit >= 40:
+            score += take(part("ai_fit", True, "ИИ: скорее похожа (%d) — треть веса"
+                               % fit, WEIGHTS["ai_fit"] // 3))
+        else:
+            score += take(part("ai_fit", False, "ИИ: не похожа (%d)" % fit))
     for key, label, nope in (
             ("calltracking", "коллтрекинг", "коллтрекинга на сайте нет"),
             ("telephony", "телефония", "своей телефонии не видно"),
             ("crm", "CRM", "следов CRM на сайте нет"),
             ("chat", "чат на сайте", "чата на сайте нет")):
+        if generic:
+            break
         val = signals.get("tech_" + key)
         score += take(part(key, bool(val),
                            "%s: %s" % (label, val) if val else nope))
@@ -199,11 +240,13 @@ def compute(company, signals, contacts):
     return min(100, score), parts
 
 
-def legend():
+def legend(mode="phone_sales"):
     """Все слагаемые с весами — для справки, вне привязки к компании."""
     order = ("vacancies_sales", "calltracking", "lpr_found", "size_fit",
              "has_director", "zakupki_contact", "mail_verified", "telephony",
              "crm", "fresh_vacancy", "lpr_guessed", "has_social",
              "has_site", "has_email", "has_phone", "chat")
+    if mode == "generic":
+        order = ("ai_fit",) + tuple(k for k in order if k not in PHONE_ONLY)
     return [{"key": k, "points": WEIGHTS[k], "why": WHY.get(k, "")}
             for k in order]

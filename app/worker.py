@@ -27,7 +27,7 @@ _thread = None
 _plans = None
 _mailer = None
 _stop = threading.Event()
-_current = {"task_id": None}
+_current = {"task_id": None, "path": None}
 
 
 # ── Запуск и остановка ───────────────────────────────────
@@ -87,23 +87,46 @@ def run_due_plans():
     одинаковых задач человек читает как сбой. Остальные дождутся
     следующего круга — он через полминуты.
     """
-    due = db.due_searches()
-    if not due:
+    # Очередь не пуста ни в одном проекте — подождём. Повтор по
+    # расписанию не настолько срочен, чтобы лезть вперёд того, что
+    # человек запустил руками.
+    if _busy_anywhere():
         return None
-    busy = db.conn().execute(
-        "SELECT COUNT(*) n FROM tasks "
-        "WHERE status IN ('queued','running')").fetchone()["n"]
-    # Очередь не пуста — подождём. Повтор по расписанию не настолько
-    # срочен, чтобы лезть вперёд того, что человек запустил руками.
-    if busy:
-        return None
-    row = due[0]
-    tid = db.create_task(row["kind"] or "find", row["params"] or {})
-    db.mark_search_run(row["id"])
-    db.log(tid, "Это повтор по расписанию: набор «%s», %s. Выключить можно "
-                "там же, где сохраняли."
-           % (row["name"], "раз в %d дн." % (row["every_days"] or 0)))
-    return tid
+    for path in _project_paths():
+        with db.pinned(path):
+            due = db.due_searches()
+            if not due:
+                continue
+            row = due[0]
+            tid = db.create_task(row["kind"] or "find", row["params"] or {})
+            db.mark_search_run(row["id"])
+            db.log(tid, "Это повтор по расписанию: набор «%s», %s. Выключить "
+                        "можно там же, где сохраняли."
+                   % (row["name"], "раз в %d дн." % (row["every_days"] or 0)))
+            return tid
+    return None
+
+
+def _project_paths():
+    """Базы всех проектов. Главная — всегда, даже если список не читается."""
+    try:
+        paths = [p["path"] for p in db.projects()]
+    except Exception:
+        paths = []
+    return paths or [db.main_path()]
+
+
+def _busy_anywhere():
+    for path in _project_paths():
+        with db.pinned(path):
+            try:
+                if db.conn().execute(
+                        "SELECT COUNT(*) n FROM tasks WHERE status IN "
+                        "('queued','running')").fetchone()["n"]:
+                    return True
+            except Exception:
+                pass
+    return False
 
 
 _watch = None
@@ -136,9 +159,10 @@ def _watchdog():
         tid = _current.get("task_id")
         if tid:
             try:
-                db.log(tid, "Программа не отвечала %.0f с — потоки стояли. "
-                            "Если окно в этот момент побелело, причина здесь."
-                       % late, "warn")
+                with db.pinned(_current.get("path")):
+                    db.log(tid, "Программа не отвечала %.0f с — потоки стояли. "
+                                "Если окно в этот момент побелело, причина здесь."
+                           % late, "warn")
             except Exception:
                 pass
 
@@ -161,6 +185,14 @@ def recover():
     # Заодно подметаем хвосты от удалённых компаний: до недавнего
     # времени удаление не трогало заметки, и в базе у тех, кто чистил
     # список, лежат записи, привязанные к несуществующим номерам.
+    total = 0
+    for path in _project_paths():
+        with db.pinned(path):
+            total += _recover_one()
+    return total
+
+
+def _recover_one():
     try:
         db.clean_orphans()
     except Exception:
@@ -198,20 +230,42 @@ def alive():
     return bool(_thread and _thread.is_alive())
 
 
+def _next_task():
+    """Следующая задача из всех проектов: (путь базы, строка) или (None, None).
+
+    Берётся самая давняя из всех очередей: кто раньше нажал, тот раньше
+    и получил. Задача выполняется там, где её поставили: переключение
+    окна на другой проект её не касается.
+    """
+    best = None
+    for path in _project_paths():
+        with db.pinned(path):
+            try:
+                row = db.conn().execute(
+                    "SELECT * FROM tasks WHERE status='queued' ORDER BY id LIMIT 1"
+                ).fetchone()
+            except Exception:
+                row = None
+        if row is not None and (best is None or (row["created_at"] or 0)
+                                < (best[1]["created_at"] or 0)):
+            best = (path, row)
+    return best or (None, None)
+
+
 def _loop():
     while True:
-        try:
-            row = db.conn().execute(
-                "SELECT * FROM tasks WHERE status='queued' ORDER BY id LIMIT 1"
-            ).fetchone()
-        except Exception:
-            row = None
+        path, row = _next_task()
         if row is None:
             time.sleep(1.0)
             continue
+        with db.pinned(path):
+            _run_task(path, row)
 
+
+def _run_task(path, row):
         _stop.clear()
         _current["task_id"] = row["id"]
+        _current["path"] = path
         try:
             # Отметка «взял в работу» вынесена внутрь try намеренно: база
             # на секунду занята соседним потоком — и раньше поток обхода
@@ -229,6 +283,7 @@ def _loop():
             db.update_task(row["id"], status="error", message=str(e)[:500])
         finally:
             _current["task_id"] = None
+            _current["path"] = None
 
 
 def _chain_stopped(task_id, what):
@@ -1084,7 +1139,7 @@ class _Prefetch(object):
         for row in self.rows[start:start + self.WINDOW]:
             cid, url = row["id"], (row["site"] or "").strip()
             if url and cid not in self.jobs:
-                self.jobs[cid] = self.pool.submit(self._one, url)
+                self.jobs[cid] = self.pool.submit(db.carry(self._one), url)
 
     def _one(self, url):
         # Сайт, обойдённый на этой неделе, не обходим заново: всё, что с
@@ -1110,7 +1165,7 @@ class _Prefetch(object):
         """Результат обхода. Если он ещё не готов — подождать его."""
         fut = self.jobs.pop(cid, None)
         if fut is None:
-            fut = self.pool.submit(self._one, url)
+            fut = self.pool.submit(db.carry(self._one), url)
         try:
             return fut.result(timeout=180)
         except Exception as e:
@@ -1338,7 +1393,7 @@ def task_ai(task_id, params):
     i = 0
     pool = futures.ThreadPoolExecutor(max_workers=threads)
     try:
-        pending = {pool.submit(one, item): item for item in todo}
+        pending = {pool.submit(db.carry(one), item): item for item in todo}
         for fut in futures.as_completed(pending):
             row = pending[fut]
             i += 1
@@ -1382,6 +1437,10 @@ def task_ai(task_id, params):
             if patch:
                 db.update_company_fields(cid, patch)
                 done += 1
+                # В общем способе оценки ИИ-соответствие — главное
+                # слагаемое, и балл без пересчёта отставал бы от него.
+                if "ai_fit" in patch:
+                    _rescore(cid)
             log("[%d/%d] %s%s" % (i, len(rows), row["name"],
                                   (" — %s" % patch.get("ai_fit", "")) if icp else ""))
             db.update_task(task_id, done=i)
@@ -1523,7 +1582,7 @@ def _rescore(company_id):
            c.execute("SELECT key, value FROM signals WHERE company_id=?", (company_id,))}
     cts = c.execute("SELECT kind, owner, verified FROM contacts WHERE company_id=?",
                     (company_id,)).fetchall()
-    value, _ = score.compute(row, sig, cts)
+    value, _ = score.compute(row, sig, cts, mode=db.score_mode())
     db.set_score(company_id, value)
 
 
@@ -1555,8 +1614,16 @@ def task_find(task_id, params):
     # нескольким словам за прогон даёт вдвое-втрое больший улов без
     # единого нового источника, а дубли сводятся тем же механизмом,
     # что и всегда.
-    words = (trades.words_for(query) if params.get("synonyms", True)
-             else [query])
+    # Видов деятельности может быть несколько через запятую: мастер
+    # проекта подбирает сразу «производство тентов, пошив палаток,
+    # надувные лодки ПВХ». Каждый — со своими близкими словами, но без
+    # повторов и не больше пятнадцати слов на прогон.
+    words = []
+    for q in [x.strip() for x in re.split(r"[,;\n]+", query) if x.strip()]:
+        for w in (trades.words_for(q) if params.get("synonyms", True) else [q]):
+            if w.lower() not in {x.lower() for x in words}:
+                words.append(w)
+    words = words[:15] or [query]
 
     def log(msg, level="info"):
         db.log(task_id, msg, level)

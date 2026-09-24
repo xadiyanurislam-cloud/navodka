@@ -126,6 +126,14 @@ LIST_SIGNALS = ("hh_vacancies", "hh_fresh_days", "tech_calltracking",
                 "revenue", "zakupki_person", "found_by", "cc_why")
 
 
+# Города, которые мастер проекта предлагает сразу. Полный список — на
+# экране «Поиск»; здесь — крупнейшие, чтобы первый поиск начался без
+# листания полутора сотен строк.
+WIZARD_CITIES = ("Россия целиком", "Москва", "Санкт-Петербург", "Новосибирск",
+                 "Екатеринбург", "Казань", "Нижний Новгород", "Краснодар",
+                 "Ростов-на-Дону", "Самара", "Уфа", "Челябинск", "Воронеж",
+                 "Пермь", "Красноярск")
+
 # Настройки ящика для рассылок. В базе лежат с приставкой mail_.
 MAIL_KEYS = ("address", "password", "name", "sign", "smtp_host", "smtp_port",
              "imap_host", "imap_port", "day_limit", "hour_from", "hour_to",
@@ -213,6 +221,10 @@ def create_app():
             sj_key=db.get_setting("sj_key", ""),
             has_sj=bool(db.get_setting("sj_key", "")),
             mail={k: db.get_setting("mail_" + k, "") for k in MAIL_KEYS},
+            project=db.active_project() or {},
+            projects=db.projects(),
+            score_mode=db.score_mode(),
+            wizard_cities=WIZARD_CITIES,
             mail_presets=mail.presets_for_ui(),
             mail_optout_line=mail.OPT_OUT_LINE,
         )
@@ -777,7 +789,8 @@ def create_app():
         queued = c.execute("SELECT COUNT(*) n FROM tasks "
                            "WHERE status='queued'").fetchone()["n"]
         if row is None:
-            return jsonify(ok=True, task=None, logs=[], queued=0)
+            return jsonify(ok=True, task=None, logs=[], queued=0,
+                           elsewhere=_elsewhere())
         logs = c.execute("""SELECT level, text, created_at FROM logs
                             WHERE task_id=? ORDER BY id DESC LIMIT 80""",
                          (row["id"],)).fetchall()
@@ -786,8 +799,158 @@ def create_app():
         # мог только ждать, пока программа доделает то, что он уже не
         # хочет.
         return jsonify(ok=True, task=dict(row), queued=queued,
-                       queue=db.queued_tasks(),
+                       queue=db.queued_tasks(), elsewhere=_elsewhere(),
                        logs=[dict(x) for x in reversed(logs)])
+
+    # ── Проекты ──────────────────────────────────────────
+    def _elsewhere():
+        """Задача, идущая сейчас в другом проекте, — чтобы её было видно."""
+        path = worker._current.get("path")
+        tid = worker._current.get("task_id")
+        if not path or not tid or path == db.current_path():
+            return None
+        p = db.project_for_path(path)
+        with db.pinned(path):
+            row = db.conn().execute("SELECT kind, done, total FROM tasks WHERE id=?",
+                                    (tid,)).fetchone()
+        if row is None or p is None:
+            return None
+        return {"project": p["name"], "project_id": p["id"], "kind": row["kind"],
+                "done": row["done"], "total": row["total"]}
+
+    def _project_row(p, active_path):
+        with db.pinned(p["path"]):
+            try:
+                n = db.conn().execute("SELECT COUNT(*) n FROM companies").fetchone()["n"]
+            except Exception:
+                n = 0
+        return {"id": p["id"], "name": p["name"], "about": p["about"] or "",
+                "buyer": p["buyer"] or "", "score_mode": p["score_mode"],
+                "companies": n, "active": p["path"] == active_path,
+                "main": p["path"] == db.main_path()}
+
+    @app.get("/api/projects")
+    def api_projects():
+        cur = db.current_path()
+        return jsonify(ok=True, projects=[_project_row(p, cur) for p in db.projects()])
+
+    @app.post("/api/projects/setup")
+    def api_projects_setup():
+        """Подобрать настройки под бизнес. Ничего не сохраняет."""
+        d = request.get_json(silent=True) or {}
+        if not db.get_setting("ai_key", ""):
+            return jsonify(ok=False, error="подбор делает ИИ, а ключ не задан — "
+                                           "«Настройки» → «Ключ ИИ». Или впишите "
+                                           "запросы вручную ниже")
+        data, err = ai.project_setup(_text(d.get("about"), 800),
+                                     _text(d.get("buyer"), 800))
+        if err:
+            return jsonify(ok=False, error=err)
+        return jsonify(ok=True, **data)
+
+    def _project_searches(find, vacancies, cities):
+        """Два сохранённых набора проекта: по видам деятельности и по вакансиям."""
+        made = []
+        if find:
+            params = _find_params({"query": ", ".join(find), "cities": cities,
+                                   "pages": 3, "limit": 500,
+                                   "then_enrich": True, "then_ai": True})
+            made.append(db.save_search("Виды деятельности", params, kind="find"))
+            db.set_setting("last_find", json.dumps(params, ensure_ascii=False))
+        if vacancies:
+            hh_areas = {name: code for code, name in hh.AREAS}
+            areas = [hh_areas[c] for c in cities if c in hh_areas] or ["113"]
+            params = _search_params({"queries": vacancies, "areas": areas,
+                                     "period": 30, "pages": 5,
+                                     "then_enrich": True, "then_ai": True})
+            made.append(db.save_search("Вакансии покупателей", params,
+                                       kind="hh_search"))
+            db.set_setting("last_search", json.dumps(params, ensure_ascii=False))
+        return made
+
+    def _run_project_searches():
+        """Поставить в очередь все наборы текущего проекта."""
+        tids = []
+        for r in db.list_searches():
+            params = r["params"]
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params or "{}")
+                except ValueError:
+                    params = {}
+            if r.get("kind") in ("find", "hh_search"):
+                tids.append(db.create_task(r["kind"], params))
+                db.mark_search_run(r["id"])
+        return tids
+
+    @app.post("/api/projects")
+    def api_projects_create():
+        d = request.get_json(silent=True) or {}
+        name = _text(d.get("name"), 80)
+        about = _text(d.get("about"), 800)
+        buyer = _text(d.get("buyer"), 800)
+        if not name:
+            return jsonify(ok=False, error="назовите проект")
+        find = _texts(d.get("find"), 60)[:10]
+        vacancies = _texts(d.get("vacancies"), 60)[:6]
+        if not find and not vacancies:
+            return jsonify(ok=False, error="нужен хотя бы один запрос — вид "
+                                           "деятельности или вакансия")
+        mode = "phone_sales" if d.get("score_mode") == "phone_sales" else "generic"
+        cities = [c for c in _texts(d.get("cities"), 80)
+                  if c in {x["name"] for x in geo.cities()}][:14] or [geo.WHOLE]
+        p = db.create_project(name, about=about, buyer=buyer, score_mode=mode)
+        with db.pinned(p["path"]):
+            db.set_setting("ai_offer", _text(d.get("offer"), 1000) or about)
+            db.set_setting("ai_icp", _text(d.get("icp"), 1000) or buyer)
+            db.set_setting("ai_terms", _text(d.get("terms"), 1000))
+            _project_searches(find, vacancies, cities)
+            tids = _run_project_searches() if d.get("run") else []
+        db.set_active(p["id"])
+        return jsonify(ok=True, id=p["id"], tasks=len(tids))
+
+    @app.post("/api/projects/<int:pid>/activate")
+    def api_projects_activate(pid):
+        return jsonify(ok=db.set_active(pid))
+
+    @app.post("/api/projects/<int:pid>")
+    def api_projects_update(pid):
+        d = request.get_json(silent=True) or {}
+        fields = {k: _text(d[k], 800) for k in ("name", "about", "buyer", "score_mode")
+                  if k in d}
+        ok = db.update_project(pid, **fields)
+        if ok and "score_mode" in fields:
+            # Способ оценки сменился — баллы пересчитываем сразу, иначе
+            # список ещё неделю сортирован по старым правилам.
+            p = db.get_project(pid)
+            with db.pinned(p["path"]):
+                for r in db.conn().execute("SELECT id FROM companies").fetchall():
+                    worker._rescore(r["id"])
+        return jsonify(ok=ok)
+
+    @app.post("/api/projects/<int:pid>/delete")
+    def api_projects_delete(pid):
+        p = db.get_project(pid)
+        if p is None:
+            return jsonify(ok=False, error="проект не найден")
+        if p["path"] == db.main_path():
+            return jsonify(ok=False, error="первый проект удалить нельзя — "
+                                           "в нём лежат общие ключи")
+        if worker._current.get("path") == p["path"]:
+            return jsonify(ok=False, error="в проекте идёт задача — остановите "
+                                           "её и повторите")
+        return jsonify(ok=db.delete_project(pid))
+
+    @app.post("/api/projects/<int:pid>/run")
+    def api_projects_run(pid):
+        p = db.get_project(pid)
+        if p is None:
+            return jsonify(ok=False, error="проект не найден")
+        with db.pinned(p["path"]):
+            tids = _run_project_searches()
+        if not tids:
+            return jsonify(ok=False, error="у проекта нет сохранённых наборов поиска")
+        return jsonify(ok=True, tasks=len(tids))
 
     @app.get("/api/tasks")
     def api_tasks():
@@ -951,7 +1114,7 @@ def create_app():
     @app.get("/api/score/legend")
     def api_score_legend():
         """Из чего вообще складывается балл — вне привязки к компании."""
-        return jsonify(ok=True, legend=score.legend(), max=100)
+        return jsonify(ok=True, legend=score.legend(db.score_mode()), max=100)
 
     @app.get("/api/company/<int:cid>")
     def api_company(cid):
@@ -969,7 +1132,8 @@ def create_app():
         # меняются от версии к версии, и сохранённое объяснение начнёт
         # расходиться с числом, которое лежит рядом в той же строке.
         score_now, score_parts = score.compute(dict(row), sig,
-                                               [dict(x) for x in cts])
+                                               [dict(x) for x in cts],
+                                               mode=db.score_mode())
         # Ссылки на поиск по ФИО отдаются, но не сохраняются: программа по
         # ним не ходит. Автоматически собранная база личных страниц — это
         # профилирование частного лица, а по имени ещё и ненадёжно.

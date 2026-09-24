@@ -68,9 +68,39 @@ POLL_EVERY = 300
 # Состояние отправщика в памяти. В базу не пишется: после перезапуска
 # программы начинать с чистого листа правильно — ошибку «нет сети» час
 # назад незачем помнить.
-STATE = {"next_send_at": 0.0, "pause_until": 0.0, "last_error": "",
-         "error_at": 0.0, "last_sent": 0.0, "last_poll": 0.0,
-         "poll_error": "", "poll_found": 0}
+#
+# У каждого проекта своё: свой ящик, своя пауза после ошибки. Ошибка
+# входа в ящик одного проекта не должна останавливать письма другого.
+def _fresh_state():
+    return {"next_send_at": 0.0, "pause_until": 0.0, "last_error": "",
+            "error_at": 0.0, "last_sent": 0.0, "last_poll": 0.0,
+            "poll_error": "", "poll_found": 0}
+
+
+_STATES = {}
+
+
+def _st():
+    return _STATES.setdefault(db.current_path(), _fresh_state())
+
+
+class _ProjectState(object):
+    """Состояние отправщика того проекта, с которым работает поток."""
+
+    def __getitem__(self, key):
+        return _st()[key]
+
+    def __setitem__(self, key, value):
+        _st()[key] = value
+
+    def get(self, key, default=None):
+        return _st().get(key, default)
+
+    def update(self, *a, **kw):
+        _st().update(*a, **kw)
+
+
+STATE = _ProjectState()
 _lock = threading.Lock()
 
 
@@ -785,14 +815,27 @@ def loop():
     while True:
         time.sleep(20)
         try:
-            tick()
-        except Exception as e:
-            _fail("сбой отправщика: %s" % str(e)[:200])
-        try:
-            if time.time() - STATE["last_poll"] >= POLL_EVERY:
-                poll()
-        except Exception as e:
-            STATE["poll_error"] = "сбой чтения ответов: %s" % str(e)[:200]
+            paths = [p["path"] for p in db.projects()] or [db.main_path()]
+        except Exception:
+            paths = [db.main_path()]
+        # Рассылки всех проектов идут параллельно: переключение окна на
+        # другой проект не останавливает письма первого.
+        for path in paths:
+            with db.pinned(path):
+                run_once()
+
+
+def run_once(ts=None):
+    """Один проход отправщика по текущему проекту: письмо и, если пора, ответы."""
+    try:
+        tick(ts)
+    except Exception as e:
+        _fail("сбой отправщика: %s" % str(e)[:200])
+    try:
+        if (ts if ts is not None else time.time()) - STATE["last_poll"] >= POLL_EVERY:
+            poll(ts)
+    except Exception as e:
+        STATE["poll_error"] = "сбой чтения ответов: %s" % str(e)[:200]
 
 
 def reset_pause():

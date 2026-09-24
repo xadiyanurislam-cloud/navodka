@@ -1812,7 +1812,24 @@ async function poll() {
   if (!d) return;
   const t = d.task;
   const box = $("run");
-  if (!t) { box.hidden = true; return; }
+  const other = d.elsewhere;
+  const otherText = other
+    ? `в проекте «${other.project}»: ${KINDS[other.kind] || other.kind}` +
+      (other.total ? ` · ${other.done} из ${other.total}` : "")
+    : "";
+  if (!t) {
+    // Здесь ничего не идёт, но идёт в другом проекте — это надо видеть,
+    // иначе новая задача будто бы «не стартует»: она ждёт своей очереди.
+    box.hidden = !other;
+    if (other) {
+      box.classList.add("is-live");
+      box.classList.remove("is-bad");
+      $("fill").style.width = (other.total ? Math.round(100 * other.done / other.total) : 6) + "%";
+      $("run-status").textContent = "Идёт " + otherText;
+      $("btn-stop").hidden = false;
+    }
+    return;
+  }
 
   box.hidden = false;
   const live = t.status === "running" || t.status === "queued";
@@ -1826,7 +1843,8 @@ async function poll() {
     (t.total ? ` · ${t.done} из ${t.total}` : "") +
     (live ? eta(t) : "") +
     (d.queued > 1 ? ` · в очереди ещё ${d.queued - 1}` : "") +
-    (t.message ? ` · ${t.message}` : "");
+    (t.message ? ` · ${t.message}` : "") +
+    (otherText ? ` · сейчас работает ${otherText}` : "");
   $("btn-stop").hidden = !live;
 
   drawQueue(d.queue || []);
@@ -1968,7 +1986,7 @@ async function loadStats() {
     ["lpr_found", s.lpr_found, "контакт ГД найден"],
     ["callcenter", s.callcenter, "продают по телефону"],
     ["ai_fit", s.ai_fit, "ИИ: подходят"],
-  ].map(([key, n, t]) => {
+  ].filter(([key]) => !(window.SCORE_MODE === "generic" && key === "callcenter")).map(([key, n, t]) => {
     const f = STAT_FILTER[key];
     return `<button class="stat${f ? " is-link" : ""}"${f ? ` data-only="${f}"` : ""}>
       <b>${n}</b><span>${t}</span></button>`;
@@ -3472,6 +3490,127 @@ setInterval(() => { if (view === "mail") { loadMailState(); } }, 20000);
 loadCampaigns();
 loadMailState();
 setInterval(() => { if (view !== "mail") loadMailState(); }, 60000);
+
+// ── Проекты ──────────────────────────────────────────────
+// Проект — один свой бизнес со своими лидами. Переключение меняет базу
+// целиком, поэтому страница перезагружается: так ни один экран не
+// останется показывать компании чужого проекта.
+$("proj-cur").onclick = (e) => {
+  e.stopPropagation();
+  $("proj-menu").hidden = !$("proj-menu").hidden;
+};
+document.addEventListener("click", (e) => {
+  if (!$("proj-menu").hidden && !e.target.closest("#proj")) $("proj-menu").hidden = true;
+});
+document.querySelectorAll("[data-proj]").forEach((b) => {
+  b.onclick = async () => {
+    if (Number(b.dataset.proj) === window.PROJECT_ID) { $("proj-menu").hidden = true; return; }
+    const d = await post(`/api/projects/${b.dataset.proj}/activate`, {});
+    if (d && d.ok) location.reload();
+    else toast("Не переключилось");
+  };
+});
+
+function wizOpen() {
+  $("proj-menu").hidden = true;
+  $("wiz").hidden = false;
+  $("wiz-state").textContent = "";
+  $("wiz-about").focus();
+}
+function wizClose() { $("wiz").hidden = true; }
+$("proj-add").onclick = wizOpen;
+$("wiz-close").onclick = wizClose;
+$("wiz").addEventListener("click", (e) => { if (e.target === $("wiz")) wizClose(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("wiz").hidden) wizClose();
+});
+$("wiz-cities").querySelectorAll(".area").forEach((b) => {
+  b.onclick = () => {
+    const whole = b.dataset.city === window.WHOLE_RU;
+    if (whole) $("wiz-cities").querySelectorAll(".area").forEach((x) => x.classList.remove("is-on"));
+    else $("wiz-cities").querySelector(`[data-city="${window.WHOLE_RU}"]`)?.classList.remove("is-on");
+    b.classList.toggle("is-on");
+  };
+});
+const lines = (id) => $(id).value.split("\n").map((x) => x.trim()).filter(Boolean);
+
+function wizShowStep2() {
+  $("wiz-step2").hidden = false;
+  if (!$("wiz-offer").value.trim()) $("wiz-offer").value = $("wiz-about").value.trim();
+  if (!$("wiz-icp").value.trim()) $("wiz-icp").value = $("wiz-buyer").value.trim();
+  $("wiz-step2").scrollIntoView({block: "start", behavior: "smooth"});
+}
+
+$("wiz-setup").onclick = async () => {
+  const about = $("wiz-about").value.trim(), buyer = $("wiz-buyer").value.trim();
+  if (!about || !buyer) { toast("Опишите свою компанию и покупателя"); return; }
+  const btn = $("wiz-setup");
+  btn.disabled = true; btn.textContent = "подбираю…";
+  $("wiz-state").textContent = "ИИ думает — обычно до полуминуты";
+  const d = await post("/api/projects/setup", {about, buyer});
+  btn.disabled = false; btn.textContent = "Подобрать заново";
+  if (!d || !d.ok) {
+    $("wiz-state").innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+    wizShowStep2();
+    return;
+  }
+  $("wiz-state").innerHTML = `<span class="good">готово — проверьте и поправьте ниже</span>`;
+  $("wiz-name").value = d.name || $("wiz-name").value;
+  $("wiz-find").value = (d.find || []).join("\n");
+  $("wiz-vac").value = (d.vacancies || []).join("\n");
+  $("wiz-icp").value = d.icp || "";
+  $("wiz-offer").value = d.offer || "";
+  $("wiz-mode").value = d.score_mode || "generic";
+  $("wiz-note").innerHTML = [
+    d.note ? `<p><b>Кого отсеивать:</b> ${esc(d.note)}</p>` : "",
+    (d.okved || []).length ? `<p><b>ОКВЭД покупателей:</b> ${esc(d.okved.join("; "))}</p>` : "",
+  ].join("");
+  wizShowStep2();
+};
+$("wiz-manual").onclick = wizShowStep2;
+
+$("wiz-create").onclick = async () => {
+  const cities = [...$("wiz-cities").querySelectorAll(".area.is-on")].map((b) => b.dataset.city);
+  const body = {
+    name: $("wiz-name").value.trim(),
+    about: $("wiz-about").value.trim(), buyer: $("wiz-buyer").value.trim(),
+    terms: $("wiz-terms").value.trim(),
+    find: lines("wiz-find"), vacancies: lines("wiz-vac"),
+    icp: $("wiz-icp").value.trim(), offer: $("wiz-offer").value.trim(),
+    score_mode: $("wiz-mode").value, cities, run: $("wiz-run").checked,
+  };
+  if (!body.name) { $("wiz-name").focus(); toast("Назовите проект"); return; }
+  const btn = $("wiz-create");
+  btn.disabled = true;
+  const d = await post("/api/projects", body);
+  btn.disabled = false;
+  if (!d || !d.ok) {
+    $("wiz-create-state").innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+    return;
+  }
+  location.reload();
+};
+
+// Карточка проекта в настройках.
+$("pj-save").onclick = async () => {
+  const d = await post(`/api/projects/${window.PROJECT_ID}`, {
+    name: $("pj-name").value, about: $("pj-about").value,
+    buyer: $("pj-buyer").value, score_mode: $("pj-mode").value});
+  if (d && d.ok) location.reload();
+  else $("pj-state").innerHTML = `<span class="bad">не сохранилось</span>`;
+};
+$("pj-run").onclick = async () => {
+  const d = await post(`/api/projects/${window.PROJECT_ID}/run`, {});
+  if (d && d.ok) { toast(`Поставлено в очередь: ${d.tasks}`); poll(); }
+  else $("pj-state").innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+};
+if ($("pj-del")) $("pj-del").onclick = async () => {
+  if (!confirm(`Удалить проект «${$("pj-name").value}» вместе со всеми его компаниями, ` +
+               "заметками и рассылками? Вернуть будет нельзя.")) return;
+  const d = await post(`/api/projects/${window.PROJECT_ID}/delete`, {});
+  if (d && d.ok) location.reload();
+  else $("pj-state").innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+};
 
 loadStats();
 // Через showView, а не напрямую: он же прячет то, что на этом экране
