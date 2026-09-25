@@ -2198,16 +2198,19 @@ def task_tg(task_id, params):
             "или добавьте её в окружение.", "error")
         return
     conf = tg.conf_from_db()
-    api_id, api_hash = conf["api_id"], conf["api_hash"]
-    data_dir = conf["data_dir"]
-    if not api_id or not api_hash:
-        log("Не заданы api_id и api_hash. Возьмите их на my.telegram.org и "
-            "впишите в «Настройки».", "error")
+    if not conf.get("account_id"):
+        log("Аккаунтов Telegram нет. Добавьте его в разделе «Аккаунты» — "
+            "проверка идёт от имени аккаунта.", "error")
         return
-    if not tg.logged_in(data_dir):
-        log("Вход в Telegram не выполнен. Откройте «Настройки» и войдите — "
-            "проверка идёт от имени вашего аккаунта.", "error")
+    if not conf["api_id"] or not conf["api_hash"]:
+        log("У аккаунта «%s» нет api_id и api_hash — добавьте его заново "
+            "вместе с файлом .json." % conf.get("label"), "error")
         return
+    if not tg.has_session(conf):
+        log("У аккаунта «%s» нет файла сеанса — импортируйте .session в "
+            "разделе «Аккаунты»." % conf.get("label"), "error")
+        return
+    log("Аккаунт: %s" % (conf.get("label") or "основной"))
 
     limit = max(1, min(tg.DAY_LIMIT, int(params.get("limit") or 50)))
     landlines = bool(params.get("landlines"))
@@ -2261,6 +2264,7 @@ def task_tg(task_id, params):
     res = tg.check(conf, pairs, on_log=log, should_stop=_should_stop)
     if not res.get("ok"):
         log("Telegram: %s" % res.get("error", "не вышло"), "error")
+        _mark_tg_account(conf, res, log)
         return
 
     found = res.get("found") or {}
@@ -2290,9 +2294,54 @@ def task_tg(task_id, params):
             "находится вовсе.", "warn")
 
 
+def _mark_tg_account(conf, res, log=None):
+    """Записать в аккаунт, что с ним случилось. Сам аккаунт не подменяем:
+    какой аккаунт рисковать следующим, решает человек."""
+    status = tg.status_of(res)
+    if not conf.get("account_id") or status == "ok":
+        return status
+    db.tg_account_update(conf["account_id"], status=status,
+                         note=str(res.get("error") or "")[:300],
+                         checked_at=db.now())
+    if log and status in ("unauthorized", "banned", "proxy_error"):
+        log("Аккаунт «%s» %s. Выберите другой в разделе «Аккаунты»."
+            % (conf.get("label") or "основной", tg.STATUS_RU[status]), "warn")
+    return status
+
+
+def task_tg_accounts(task_id, params):
+    """Проверить аккаунты: жив ли сеанс и работает ли прокси.
+
+    По одному и с паузой: десяток подключений разом с одного адреса —
+    ровно то, что Telegram замечает первым.
+    """
+    ids = [int(x) for x in (params.get("ids") or []) if str(x).isdigit()]
+    rows = [a for a in db.tg_accounts() if not ids or a["id"] in ids]
+    db.update_task(task_id, total=len(rows))
+    for i, acc in enumerate(rows, 1):
+        if _should_stop():
+            break
+        conf = tg.conf_for(acc)
+        res = tg.whoami(conf)
+        status = tg.status_of(res)
+        db.tg_account_update(acc["id"], status=status, checked_at=db.now(),
+                             who=res.get("who") or acc.get("who") or "",
+                             note="" if res.get("ok") else str(res.get("error") or "")[:300])
+        db.log(task_id, "%s — %s%s" % (acc.get("label") or acc.get("phone") or acc["id"],
+                                        tg.STATUS_RU[status],
+                                        (": " + res["who"]) if res.get("who") else
+                                        (": " + str(res.get("error"))[:160]
+                                         if not res.get("ok") else "")),
+               "info" if status == "ok" else "warn")
+        db.update_task(task_id, done=i)
+        if i < len(rows):
+            time.sleep(float(params.get("pause", 3)))
+
+
 HANDLERS = {
     "ai": task_ai,
     "tg": task_tg,
+    "tg_accounts": task_tg_accounts,
     "socials": task_socials,
     "find": task_find,
     "hh_search": task_hh_search,

@@ -196,7 +196,7 @@ def session_fault(path):
     return ""
 
 
-def save_session_bytes(data_dir, raw):
+def save_session_bytes(data_dir, raw, path=None):
     """Положить готовый файл .session на место нашего.
 
     Файл сессии Telethon — это база SQLite особого вида. Чужой файл
@@ -210,7 +210,10 @@ def save_session_bytes(data_dir, raw):
                 "error": "Это не файл сессии Telethon. Он выглядит как база "
                          "SQLite; файлы tdata от настольного Telegram не "
                          "подходят"}
-    path = session_path(data_dir)
+    path = path or session_path(data_dir)
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     tmp = path + ".part"
     try:
         with open(tmp, "wb") as fh:
@@ -261,7 +264,7 @@ def import_session(conf, session_string):
             # Переносим уже проверенную сессию в файл — ровно тот, с
             # которым потом работает проверка номеров.
             await client.disconnect()
-            client2 = TelegramClient(session_path(conf.get("data_dir", "")),
+            client2 = TelegramClient(session_file(conf),
                                      *_keys(conf), **_opts(conf))
             try:
                 client2.session.set_dc(*_dc(client.session))
@@ -467,6 +470,29 @@ def make_proxy(url):
                       password or None)}
 
 
+def normalize_proxy(line, kind="socks5"):
+    """Строка прокси от продавца → адрес со схемой.
+
+    Продавцы отдают прокси по-разному: «адрес:порт:логин:пароль»,
+    «логин:пароль@адрес:порт», просто «адрес:порт». Схему в таких
+    строках не пишут — её выбирает человек одним полем для всего списка.
+    """
+    line = (line or "").strip()
+    if not line or "://" in line:
+        return line
+    kind = kind if kind in PROXY_KINDS else "socks5"
+    if "@" in line:
+        return "%s://%s" % (kind, line)
+    parts = line.split(":")
+    if len(parts) == 4 and parts[1].isdigit():
+        host, port, user, password = parts
+        return "%s://%s:%s@%s:%s" % (kind, user, password, host, port)
+    if len(parts) == 4 and parts[3].isdigit():
+        user, password, host, port = parts
+        return "%s://%s:%s@%s:%s" % (kind, user, password, host, port)
+    return "%s://%s" % (kind, line)
+
+
 def label_proxy(url):
     """Адрес прокси без логина и пароля — для журнала и экрана.
 
@@ -480,24 +506,69 @@ def label_proxy(url):
 
 
 # ── Подключение ──────────────────────────────────────────
-def conf(api_id="", api_hash="", data_dir="", proxy="", device=None):
-    """Всё, что нужно для подключения, одной связкой."""
+def conf(api_id="", api_hash="", data_dir="", proxy="", device=None,
+         session="", account_id=None, label=""):
+    """Всё, что нужно для подключения, одной связкой.
+
+    session — путь к файлу сеанса этого аккаунта. Пусто — старое место
+    рядом с базой (так было, пока аккаунт был один).
+    """
     return {"api_id": api_id, "api_hash": api_hash, "data_dir": data_dir,
-            "proxy": proxy, "device": device or {}}
+            "proxy": proxy, "device": device or {}, "session": session,
+            "account_id": account_id, "label": label}
+
+
+def conf_for(acc):
+    """Связка для аккаунта из таблицы tg_accounts."""
+    from .. import db, settings
+    acc = acc or {}
+    try:
+        device = json.loads(acc.get("device") or "{}")
+    except ValueError:
+        device = {}
+    return conf(api_id=acc.get("api_id") or "", api_hash=acc.get("api_hash") or "",
+                data_dir=settings.data_dir(), proxy=acc.get("proxy") or "",
+                device=device if isinstance(device, dict) else {},
+                session=db.tg_session_path(acc) if acc.get("file") else "",
+                account_id=acc.get("id"),
+                label=acc.get("label") or acc.get("phone") or "")
 
 
 def conf_from_db():
-    """Та же связка, собранная из настроек программы."""
-    from .. import db, settings
-    try:
-        device = json.loads(db.get_setting("tg_device", "") or "{}")
-    except ValueError:
-        device = {}
-    return conf(api_id=db.get_setting("tg_api_id", ""),
-                api_hash=db.get_setting("tg_api_hash", ""),
-                data_dir=settings.data_dir(),
-                proxy=db.get_setting("tg_proxy", ""),
-                device=device if isinstance(device, dict) else {})
+    """Связка основного аккаунта — того, которым проверяются номера."""
+    from .. import db
+    return conf_for(db.tg_active())
+
+
+def session_file(c):
+    return (c or {}).get("session") or session_path((c or {}).get("data_dir", ""))
+
+
+def has_session(c):
+    """Есть ли у аккаунта файл сеанса. Без сети — см. logged_in."""
+    return bool((c or {}).get("api_id")) and os.path.exists(session_file(c))
+
+
+# Что значит ответ Telegram для аккаунта — одним словом, для списка.
+STATUS_RU = {"unknown": "не проверен", "ok": "работает",
+             "unauthorized": "разлогинен", "banned": "заблокирован",
+             "proxy_error": "прокси не работает", "error": "ошибка"}
+
+
+def status_of(res):
+    """Ответ whoami → статус аккаунта."""
+    if (res or {}).get("ok"):
+        return "ok"
+    err = str((res or {}).get("error") or "").lower()
+    if "прокси" in err or "proxy" in err:
+        return "proxy_error"
+    if ("заблокирован" in err or "deactivated" in err or "banned" in err
+            or "удалён" in err):
+        return "banned"
+    if ("не действует" in err or "не выполнен" in err or "разлогин" in err
+            or "unauthorized" in err or "auth key" in err):
+        return "unauthorized"
+    return "error"
 
 
 def _keys(c):
@@ -538,7 +609,7 @@ def _opts(c):
 
 async def _client(c, path=None):
     from telethon import TelegramClient
-    client = TelegramClient(path or session_path(c.get("data_dir", "")),
+    client = TelegramClient(path or session_file(c),
                             *_keys(c), **_opts(c))
     await client.connect()
     return client
@@ -602,7 +673,7 @@ def whoami(c):
     """Под кем мы вошли. Нужен, чтобы человек видел, чей аккаунт рискует."""
     if not available():
         return {"ok": False, "error": "Библиотека Telethon не установлена"}
-    if not logged_in(c.get("data_dir", "")):
+    if not os.path.exists(session_file(c)):
         return {"ok": False, "error": "Вход не выполнен"}
 
     async def go():
@@ -709,7 +780,7 @@ def check(c, pairs, on_log=None, should_stop=None,
     result = {"ok": True, "found": {}, "checked": [], "stopped": ""}
     if not available():
         return {"ok": False, "error": "Библиотека Telethon не установлена"}
-    if not logged_in(c.get("data_dir", "")):
+    if not os.path.exists(session_file(c)):
         return {"ok": False, "error": "Вход в Telegram не выполнен"}
     if not pairs:
         return result

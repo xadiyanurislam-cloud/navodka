@@ -237,6 +237,24 @@ CREATE TABLE IF NOT EXISTS projects (
     score_mode  TEXT DEFAULT 'phone_sales',   -- phone_sales | generic
     created_at  INTEGER
 );
+
+-- Аккаунты Telegram. Общие для всех проектов, как и ключи: номер
+-- компании проверяется одинаково, для какого бы проекта её ни нашли.
+CREATE TABLE IF NOT EXISTS tg_accounts (
+    id          INTEGER PRIMARY KEY,
+    label       TEXT,
+    phone       TEXT,
+    api_id      TEXT,
+    api_hash    TEXT,
+    device      TEXT,               -- JSON: признаки устройства из файла продавца
+    proxy       TEXT,
+    file        TEXT,               -- путь к .session относительно data_dir
+    status      TEXT DEFAULT 'unknown',   -- unknown | ok | unauthorized | banned | proxy_error | error
+    who         TEXT,
+    note        TEXT,
+    checked_at  INTEGER,
+    created_at  INTEGER
+);
 """
 
 # Ключи, общие для всех проектов: источники, модель, прокси, Telegram,
@@ -447,6 +465,121 @@ def delete_project(project_id):
     return True
 
 
+# ── Аккаунты Telegram ────────────────────────────────────
+TG_FIELDS = ("label", "phone", "api_id", "api_hash", "device", "proxy",
+             "file", "status", "who", "note", "checked_at")
+
+
+def tg_accounts():
+    return [dict(r) for r in main_conn().execute(
+        "SELECT * FROM tg_accounts ORDER BY id")]
+
+
+def tg_account(account_id):
+    try:
+        account_id = int(account_id)
+    except (TypeError, ValueError):
+        return None
+    row = main_conn().execute("SELECT * FROM tg_accounts WHERE id=?",
+                              (account_id,)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def tg_active():
+    """Аккаунт, которым идёт проверка номеров. Нет выбранного — первый."""
+    got = tg_account(get_setting("tg_active", ""))
+    if got is None:
+        rows = tg_accounts()
+        got = rows[0] if rows else None
+    return got
+
+
+def tg_account_add(**fields):
+    """Новый аккаунт. Файл сеанса ему назначается сразу: a<id>.session."""
+    c = main_conn()
+    data = {k: fields.get(k) for k in TG_FIELDS if k in fields}
+    data.setdefault("status", "unknown")
+    data["created_at"] = now()
+    keys = ", ".join(data)
+    cur = c.execute("INSERT INTO tg_accounts (%s) VALUES (%s)"
+                    % (keys, ", ".join("?" * len(data))), tuple(data.values()))
+    aid = cur.lastrowid
+    if not data.get("file"):
+        c.execute("UPDATE tg_accounts SET file=? WHERE id=?",
+                  (os.path.join("tg_accounts", "a%d.session" % aid), aid))
+    c.commit()
+    os.makedirs(os.path.join(settings.data_dir(), "tg_accounts"), exist_ok=True)
+    return tg_account(aid)
+
+
+def tg_account_update(account_id, **fields):
+    data = {k: v for k, v in fields.items() if k in TG_FIELDS}
+    if not data:
+        return False
+    c = main_conn()
+    cur = c.execute("UPDATE tg_accounts SET %s WHERE id=?"
+                    % ", ".join("%s=?" % k for k in data),
+                    tuple(data.values()) + (int(account_id),))
+    c.commit()
+    return cur.rowcount > 0
+
+
+def tg_session_path(acc):
+    return os.path.join(settings.data_dir(), (acc or {}).get("file") or "")
+
+
+def tg_account_delete(account_id):
+    acc = tg_account(account_id)
+    if acc is None:
+        return False
+    c = main_conn()
+    c.execute("DELETE FROM tg_accounts WHERE id=?", (acc["id"],))
+    c.commit()
+    if str(get_setting("tg_active", "")) == str(acc["id"]):
+        set_setting("tg_active", "")
+    left = []
+    path = tg_session_path(acc)
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        f = path + suffix
+        if acc.get("file") and os.path.exists(f):
+            try:
+                os.remove(f)
+            except OSError:
+                left.append(f)
+    if left:
+        have = [x for x in (get_setting("trash_files") or "").split("|") if x]
+        set_setting("trash_files", "|".join(have + left))
+    return True
+
+
+def _migrate_tg_account():
+    """Аккаунт из прошлых версий — первым в списке.
+
+    Раньше аккаунт был один: файл telegram.session рядом с базой и ключи
+    в настройках. Теперь это аккаунт №1 со своим файлом, и работает он
+    так же, как работал.
+    """
+    c = main_conn()
+    if c.execute("SELECT COUNT(*) n FROM tg_accounts").fetchone()["n"]:
+        return
+    old = os.path.join(settings.data_dir(), "telegram.session")
+    api_id = get_setting("tg_api_id", "")
+    if not os.path.exists(old) and not api_id:
+        return
+    acc = tg_account_add(phone=get_setting("tg_phone", ""), api_id=api_id,
+                         api_hash=get_setting("tg_api_hash", ""),
+                         device=get_setting("tg_device", ""),
+                         proxy=get_setting("tg_proxy", ""),
+                         label="Основной")
+    if os.path.exists(old):
+        try:
+            os.replace(old, tg_session_path(acc))
+        except OSError:
+            # Файл занят — остаёмся на старом месте, путь запишем его.
+            tg_account_update(acc["id"], file="telegram.session")
+    set_setting("tg_active", acc["id"])
+
+
 def _empty_trash():
     files = [x for x in (get_setting("trash_files") or "").split("|") if x]
     if not files:
@@ -529,6 +662,7 @@ def init():
                   (name, offer["value"] if offer else "", now()))
         c.commit()
     _empty_trash()
+    _migrate_tg_account()
     # Активный проект — тот, что был открыт в прошлый раз.
     want = get_setting("active_project")
     p = get_project(want) if str(want).isdigit() else None

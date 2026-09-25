@@ -38,6 +38,19 @@ from app.sources import egrul, superjob, trudvsem                  # noqa: E402
 _REAL_SEARCH = {"trud": trudvsem.search, "sj": superjob.search,
                 "fns": egrul.search}
 trudvsem.search = lambda *a, **kw: []
+
+
+def _tg_reset(with_account=False):
+    """Список аккаунтов Telegram с чистого листа; по желанию — один рабочий."""
+    for a in db.tg_accounts():
+        db.tg_account_delete(a["id"])
+    db.set_setting("tg_active", "")
+    if with_account:
+        acc = db.tg_account_add(label="Тестовый", phone="79990000000",
+                                api_id="1", api_hash="x")
+        db.set_setting("tg_active", acc["id"])
+        return acc
+    return None
 superjob.search = lambda *a, **kw: []
 egrul.search = lambda *a, **kw: []
 
@@ -2831,12 +2844,11 @@ class TelegramFromTheCard(unittest.TestCase):
         for t in ("contacts", "signals", "companies", "logs", "tasks"):
             c.execute("DELETE FROM %s" % t)
         c.commit()
-        db.set_setting("tg_api_id", "1")
-        db.set_setting("tg_api_hash", "x")
+        _tg_reset(with_account=True)
         self.cl = web.create_app().test_client()
         self.asked = []
-        self._logged_in, self._check = tg.logged_in, tg.check
-        tg.logged_in = lambda d: True
+        self._has, self._check = tg.has_session, tg.check
+        tg.has_session = lambda c: True
 
         def fake(conf, pairs, on_log=None, should_stop=None, **kw):
             self.asked.append([e for _, e in pairs])
@@ -2849,7 +2861,8 @@ class TelegramFromTheCard(unittest.TestCase):
         self.cid, _ = db.upsert_company({"name": "А", "inn": "7700000001"})
 
     def tearDown(self):
-        tg.logged_in, tg.check = self._logged_in, self._check
+        tg.has_session, tg.check = self._has, self._check
+        _tg_reset()
 
     def post(self):
         return self.cl.post("/api/company/%d/tg" % self.cid,
@@ -2882,11 +2895,11 @@ class TelegramFromTheCard(unittest.TestCase):
         self.assertEqual(self.asked, [])
 
     def test_without_a_login_it_says_so_and_asks_nothing(self):
-        tg.logged_in = lambda d: False
+        tg.has_session = lambda c: False
         db.add_contact(self.cid, "phone", "+7 999 111-22-33", "general", 90)
         got = self.post()
         self.assertFalse(got["ok"])
-        self.assertIn("Настройки", got["error"])
+        self.assertIn("Аккаунты", got["error"])
         self.assertEqual(self.asked, [])
 
     def test_an_unknown_company_is_not_a_crash(self):
@@ -3009,8 +3022,7 @@ class TelegramImportsTwoFiles(unittest.TestCase):
 
     def setUp(self):
         db.init()
-        for key in ("tg_api_id", "tg_api_hash", "tg_phone", "tg_device"):
-            db.set_setting(key, "")
+        _tg_reset()
         self.cl = web.create_app().test_client()
         self._whoami, self._import = tg.whoami, tg.import_session
         tg.whoami = lambda c: {"ok": True, "who": "Босс · @boss"}
@@ -3018,6 +3030,7 @@ class TelegramImportsTwoFiles(unittest.TestCase):
 
     def tearDown(self):
         tg.whoami, tg.import_session = self._whoami, self._import
+        _tg_reset()
 
     def send(self, *files):
         return self.cl.post("/api/tg/import", data={"files": [
@@ -3032,15 +3045,18 @@ class TelegramImportsTwoFiles(unittest.TestCase):
         got = self.send(("acc.json", self.SELLER.encode("utf-8")),
                         ("acc.session", self.real_session()))
         self.assertTrue(got["ok"], got)
-        self.assertEqual(db.get_setting("tg_api_id"), "2040")
-        self.assertEqual(db.get_setting("tg_api_hash"), "b18441a1ff607e10")
-        self.assertEqual(db.get_setting("tg_phone"), "79991234567")
+        acc = db.tg_active()
+        self.assertEqual(acc["api_id"], "2040")
+        self.assertEqual(acc["api_hash"], "b18441a1ff607e10")
+        self.assertEqual(acc["phone"], "79991234567")
+        self.assertEqual(acc["status"], "ok")
+        self.assertTrue(os.path.exists(db.tg_session_path(acc)))
 
     def test_order_of_files_does_not_matter(self):
         got = self.send(("acc.session", self.real_session()),
                         ("acc.json", self.SELLER.encode("utf-8")))
         self.assertTrue(got["ok"], got)
-        self.assertEqual(db.get_setting("tg_api_id"), "2040")
+        self.assertEqual(db.tg_active()["api_id"], "2040")
 
     def test_an_extra_file_is_skipped_not_fatal(self):
         got = self.send(("acc.json", self.SELLER.encode("utf-8")),
@@ -3331,11 +3347,10 @@ class TelegramRun(unittest.TestCase):
         for t in ("contacts", "signals", "companies", "logs", "tasks"):
             c.execute("DELETE FROM %s" % t)
         c.commit()
-        db.set_setting("tg_api_id", "1")
-        db.set_setting("tg_api_hash", "x")
+        _tg_reset(with_account=True)
         self.asked = []
-        self._logged_in, self._check = tg.logged_in, tg.check
-        tg.logged_in = lambda d: True
+        self._has, self._check = tg.has_session, tg.check
+        tg.has_session = lambda c: True
 
         def fake(conf, pairs, on_log=None, should_stop=None, **kw):
             self.asked.append([e for _, e in pairs])
@@ -3350,7 +3365,8 @@ class TelegramRun(unittest.TestCase):
         self.b, _ = db.upsert_company({"name": "Б", "inn": "7700000002"})
 
     def tearDown(self):
-        tg.logged_in, tg.check = self._logged_in, self._check
+        tg.has_session, tg.check = self._has, self._check
+        _tg_reset()
 
     def run_task(self, **params):
         tid = db.create_task("tg", params)
@@ -3416,13 +3432,13 @@ class TelegramRun(unittest.TestCase):
         self.assertEqual(self.verified("доб. 214"), "skip")
 
     def test_no_login_means_no_requests(self):
-        tg.logged_in = lambda d: False
+        tg.has_session = lambda c: False
         db.add_contact(self.a, "phone", "+7 999 111-22-33", "general", 90)
         tid = self.run_task(limit=50)
         self.assertEqual(self.asked, [])
         texts = " ".join(r["text"] for r in db.conn().execute(
             "SELECT text FROM logs WHERE task_id=?", (tid,)))
-        self.assertIn("Вход в Telegram не выполнен", texts)
+        self.assertIn("нет файла сеанса", texts)
         self.assertEqual(self.verified("+7 999 111-22-33"), "unchecked")
 
 
@@ -7514,6 +7530,167 @@ class EnrichSurvivesMerges(unittest.TestCase):
         self.assertEqual(db.conn().execute(
             "SELECT director FROM companies WHERE id=?", (b,)).fetchone()["director"],
             "Иванов Иван")
+
+
+# ── Аккаунты Telegram ────────────────────────────────────
+class TgAccounts(unittest.TestCase):
+    SELLER = ('{"app_id": 2040, "app_hash": "b18441a1ff607e10", '
+              '"sdk": "Windows 10", "device": "Desktop", "phone": "%s"}')
+
+    def setUp(self):
+        db.init()
+        _tg_reset()
+        self.cl = web.create_app().test_client()
+        self._whoami = tg.whoami
+        tg.whoami = lambda c: {"ok": True, "who": "Босс · @boss"}
+
+    def tearDown(self):
+        tg.whoami = self._whoami
+        _tg_reset()
+
+    def send(self, *files, **form):
+        data = {"files": [(io.BytesIO(body), name) for name, body in files]}
+        data.update(form)
+        return self.cl.post("/api/tg/import", data=data,
+                            content_type="multipart/form-data").get_json()
+
+    def session(self):
+        import tempfile
+        return TelegramAccount._real_session(tempfile.mkdtemp())
+
+    def test_old_single_account_becomes_account_one(self):
+        old = os.path.join(settings.data_dir(), "telegram.session")
+        with open(old, "wb") as fh:
+            fh.write(self.session())
+        for k, v in (("tg_api_id", "111"), ("tg_api_hash", "hhh"),
+                     ("tg_phone", "79990001122"), ("tg_proxy", "socks5://1.2.3.4:1080")):
+            db.set_setting(k, v)
+        try:
+            db.init()
+            acc = db.tg_active()
+            self.assertEqual((acc["api_id"], acc["phone"], acc["proxy"]),
+                             ("111", "79990001122", "socks5://1.2.3.4:1080"))
+            self.assertFalse(os.path.exists(old), "файл переехал к аккаунту")
+            self.assertTrue(os.path.exists(db.tg_session_path(acc)))
+            c = tg.conf_from_db()
+            self.assertEqual(c["session"], db.tg_session_path(acc))
+            self.assertTrue(tg.has_session(c))
+            db.init()
+            self.assertEqual(len(db.tg_accounts()), 1, "миграция разовая")
+        finally:
+            for k in ("tg_api_id", "tg_api_hash", "tg_phone", "tg_proxy"):
+                db.set_setting(k, "")
+
+    def test_many_pairs_at_once(self):
+        got = self.send(("79990000001.session", self.session()),
+                        ("79990000001.json", (self.SELLER % "79990000001").encode()),
+                        ("79990000002.json", (self.SELLER % "79990000002").encode()),
+                        ("79990000002.session", self.session()),
+                        ("79990000003.json", (self.SELLER % "79990000003").encode()),
+                        ("79990000003.session", self.session()),
+                        ("lonely.session", self.session()))
+        self.assertTrue(got["ok"], got)
+        self.assertEqual(got["added"], 3)
+        self.assertTrue(any("lonely" in p for p in got["problems"]))
+        accs = db.tg_accounts()
+        self.assertEqual(sorted(a["phone"] for a in accs),
+                         ["79990000001", "79990000002", "79990000003"])
+        self.assertEqual(len({a["file"] for a in accs}), 3, "у каждого свой файл")
+        self.assertEqual(db.tg_active()["phone"], "79990000001")
+        self.assertEqual(db.conn().execute(
+            "SELECT kind FROM tasks ORDER BY id DESC LIMIT 1").fetchone()["kind"],
+                         "tg_accounts")
+        again = self.send(("x.json", (self.SELLER % "79990000001").encode()),
+                          ("x.session", self.session()))
+        self.assertFalse(again["ok"])
+        self.assertIn("уже есть", again["error"])
+
+    def test_proxy_list_is_handed_out_in_order(self):
+        for n in (1, 2, 3):
+            db.tg_account_add(label="a%d" % n, api_id="1", api_hash="x")
+        got = self.cl.post("/api/tg/accounts/proxies", json={
+            "text": "10.0.0.1:1080:user:SeCrEt\nмусор\n10.0.0.2:1080",
+            "kind": "socks5"}).get_json()
+        self.assertTrue(got["ok"], got)
+        self.assertEqual(got["assigned"], 2)
+        self.assertEqual(got["left_accounts"], 1)
+        self.assertTrue(got["bad"])
+        accs = db.tg_accounts()
+        self.assertEqual(accs[0]["proxy"], "socks5://user:SeCrEt@10.0.0.1:1080")
+        self.assertEqual(accs[1]["proxy"], "socks5://10.0.0.2:1080")
+        listed = self.cl.get("/api/tg/accounts").get_data(as_text=True)
+        self.assertNotIn("SeCrEt", listed, "пароль прокси не уходит на экран")
+        self.assertNotIn("api_hash", listed)
+
+    def test_normalize_proxy_formats(self):
+        n = tg.normalize_proxy
+        self.assertEqual(n("1.2.3.4:8000:u:p", "http"), "http://u:p@1.2.3.4:8000")
+        self.assertEqual(n("u:p:1.2.3.4:8000"), "socks5://u:p@1.2.3.4:8000")
+        self.assertEqual(n("u:p@1.2.3.4:8000"), "socks5://u:p@1.2.3.4:8000")
+        self.assertEqual(n("socks5://1.2.3.4:1"), "socks5://1.2.3.4:1")
+
+    def test_statuses(self):
+        s = tg.status_of
+        self.assertEqual(s({"ok": True}), "ok")
+        self.assertEqual(s({"ok": False, "error": "Сеанс больше не действует"}), "unauthorized")
+        self.assertEqual(s({"ok": False, "error": "Аккаунт удалён или заблокирован"}), "banned")
+        self.assertEqual(s({"ok": False, "error": "Прокси не отвечает"}), "proxy_error")
+        self.assertEqual(s({"ok": False, "error": "что-то ещё"}), "error")
+
+    def test_check_saves_status_and_active_switch(self):
+        a = db.tg_account_add(label="A", api_id="1", api_hash="x")
+        b = db.tg_account_add(label="B", api_id="1", api_hash="x")
+        db.set_setting("tg_active", a["id"])
+        tg.whoami = lambda c: {"ok": False, "error": "Сеанс больше не действует"}
+        got = self.cl.post("/api/tg/accounts/%d/check" % a["id"]).get_json()
+        self.assertEqual(got["status"], "unauthorized")
+        self.assertEqual(db.tg_account(a["id"])["status"], "unauthorized")
+        self.cl.post("/api/tg/accounts/%d/activate" % b["id"])
+        self.assertEqual(tg.conf_from_db()["account_id"], b["id"])
+        self.cl.post("/api/tg/accounts/%d/delete" % b["id"])
+        self.assertEqual(tg.conf_from_db()["account_id"], a["id"],
+                         "удалили основной — основным стал оставшийся")
+
+    def test_phone_run_marks_dead_account_and_does_not_switch(self):
+        a = db.tg_account_add(label="A", api_id="1", api_hash="x")
+        b = db.tg_account_add(label="B", api_id="1", api_hash="x")
+        db.set_setting("tg_active", a["id"])
+        was_has, was_check = tg.has_session, tg.check
+        tg.has_session = lambda c: True
+        tg.check = lambda c, pairs, **kw: {"ok": False, "error": "Аккаунт заблокирован"}
+        try:
+            cid, _ = db.upsert_company({"name": "Т"})
+            db.add_contact(cid, "phone", "+7 999 111-22-33", "general", 90)
+            tid = db.create_task("tg", {})
+            worker.task_tg(tid, {"limit": 5})
+        finally:
+            tg.has_session, tg.check = was_has, was_check
+            db.delete_company(cid)
+        self.assertEqual(db.tg_account(a["id"])["status"], "banned")
+        self.assertEqual(db.tg_active()["id"], a["id"], "аккаунт сам не подменяется")
+        logs = " ".join(r["text"] for r in db.conn().execute(
+            "SELECT text FROM logs WHERE task_id=?", (tid,)))
+        self.assertIn("Аккаунты", logs)
+
+    def test_junk_is_not_500(self):
+        for url, body in (("/api/tg/accounts/proxies", None),
+                          ("/api/tg/accounts/proxies", {"text": ["x"]}),
+                          ("/api/tg/accounts/999", {"proxy": "x"}),
+                          ("/api/tg/accounts/999/check", None),
+                          ("/api/tg/accounts/999/activate", None),
+                          ("/api/tg/accounts/999/delete", None),
+                          ("/api/tg/account", {"text": {"a": 1}})):
+            r = self.cl.post(url, json=body)
+            self.assertEqual(r.status_code, 200, url)
+        a = db.tg_account_add(label="A", api_id="1", api_hash="x")
+        r = self.cl.post("/api/tg/accounts/%d" % a["id"], json={"proxy": "ftp://x"}).get_json()
+        self.assertFalse(r["ok"])
+
+    def test_page_has_accounts_view(self):
+        html = self.cl.get("/").get_data(as_text=True)
+        for mark in ('id="view-accounts"', 'data-view="accounts"', 'id="acc-files"',
+                     'id="acc-proxy-text"'):
+            self.assertIn(mark, html)
 
 
 if __name__ == "__main__":

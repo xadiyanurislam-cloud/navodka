@@ -64,6 +64,10 @@
       <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.7"/><path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
       <span>Поиск</span>
     </button>
+    <button class="nav-btn" data-view="accounts">
+      <svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3.2" stroke="currentColor" stroke-width="1.7"/><path d="M3.5 19c.6-3 2.8-4.8 5.5-4.8s4.9 1.8 5.5 4.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M16 5.5a3 3 0 0 1 0 5.6M18 14.6c1.4.6 2.3 2 2.6 4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <span>Аккаунты</span>
+    </button>
     <button class="nav-btn" data-view="settings" id="btn-settings">
       <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
       <span>Настройки</span>
@@ -765,6 +769,54 @@
     </section>
   </main>
 
+  <!-- ── Аккаунты Telegram ─────────────────────────── -->
+  <main class="view" id="view-accounts" hidden>
+    <section class="panel">
+      <header class="panel-head">
+        <h2>Аккаунты Telegram</h2>
+        <span class="panel-note">основной аккаунт проверяет, есть ли Telegram на номерах компаний</span>
+      </header>
+      <div class="acc-tools">
+        <label class="btn primary file-btn">Импорт .session + .json
+          <input id="acc-files" type="file" multiple hidden accept=".session,.json,.sqlite,.db">
+        </label>
+        <button class="btn" id="acc-check-all">Проверить все</button>
+        <button class="btn quiet" id="acc-proxy-open">Раздать прокси списком</button>
+        <span class="upd-state" id="acc-state"></span>
+      </div>
+      <p class="hint-sm acc-hint">Файлы можно выбрать сразу для многих аккаунтов: пары
+         сводятся по имени — <code>79991234567.session</code> и <code>79991234567.json</code>.
+         Ключи app_id и app_hash программа берёт из JSON.</p>
+      <div class="acc-proxy" id="acc-proxy" hidden>
+        <textarea id="acc-proxy-text" rows="5" spellcheck="false"
+          placeholder="адрес:порт:логин:пароль — по одному на строку&#10;или socks5://логин:пароль@адрес:порт"></textarea>
+        <div class="upd-line">
+          <label class="inline">Тип для строк без схемы
+            <select id="acc-proxy-kind">
+              <option value="socks5">socks5</option>
+              <option value="http">http</option>
+              <option value="socks4">socks4</option>
+            </select>
+          </label>
+          <label class="opt"><input type="checkbox" id="acc-proxy-all">
+            <span>Заменить и у тех, у кого прокси уже есть</span></label>
+          <button class="btn" id="acc-proxy-go">Раздать по порядку</button>
+          <span class="upd-state" id="acc-proxy-state"></span>
+        </div>
+      </div>
+      <div id="acc-list"></div>
+    </section>
+    <section class="panel">
+      <div class="warn-box acc-warn">
+        <b>Про риск.</b> Проверка номеров идёт от имени аккаунта, и массовый
+        импорт контактов Telegram ограничивает вплоть до блокировки. Программа
+        держит паузы и суточный предел на каждый прогон. Когда аккаунт
+        перестаёт работать, программа отмечает это здесь, а какой аккаунт
+        взять следующим, решаете вы.
+      </div>
+    </section>
+  </main>
+
   <main class="view" id="view-settings" hidden>
     <div class="cards">
 
@@ -910,6 +962,10 @@
           <h2>Telegram</h2>
           <span class="tag key" id="tag-tg">вход не выполнен</span>
         </header>
+        <p class="hint-sm"><b>Аккаунтов может быть несколько</b> — список, прокси
+           для каждого и проверка состояния в разделе
+           <button type="button" class="linkish" data-go="accounts">«Аккаунты»</button>.
+           Здесь — основной аккаунт.</p>
         <p>Программа умеет спрашивать у Telegram, заведён ли аккаунт на
            собранный номер. Номер из справочника — это приёмная, тот же
            номер в Telegram — переписка, которую читают сами.</p>

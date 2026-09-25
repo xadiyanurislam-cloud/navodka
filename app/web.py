@@ -421,165 +421,319 @@ def create_app():
     # приложение, потом код вводят здесь. Между приёмами ничего не
     # хранится в базе — код действителен минуты.
     def _tg_keys():
-        return (db.get_setting("tg_api_id", ""),
-                db.get_setting("tg_api_hash", ""))
+        acc = db.tg_active() or {}
+        return acc.get("api_id") or "", acc.get("api_hash") or ""
+
+    def _acc_public(a, active_id=None):
+        """Аккаунт для экрана: без api_hash и без пароля прокси."""
+        try:
+            dev = json.loads(a.get("device") or "{}")
+        except ValueError:
+            dev = {}
+        return {"id": a["id"], "label": a.get("label") or "",
+                "phone": a.get("phone") or "", "who": a.get("who") or "",
+                "status": a.get("status") or "unknown",
+                "status_ru": tg.STATUS_RU.get(a.get("status") or "unknown", "—"),
+                "proxy": tg.label_proxy(a.get("proxy") or ""),
+                "note": a.get("note") or "", "checked_at": a.get("checked_at"),
+                "session": tg.has_session(tg.conf_for(a)),
+                "device": " · ".join(str(v) for v in (dev or {}).values())[:120]
+                if isinstance(dev, dict) else "",
+                "active": a["id"] == active_id}
+
+    def _accounts_payload():
+        act = db.tg_active()
+        aid = act["id"] if act else None
+        return [_acc_public(a, aid) for a in db.tg_accounts()]
+
+    def _save_check(acc, res):
+        """Итог проверки аккаунта — в его строку."""
+        status = tg.status_of(res)
+        db.tg_account_update(acc["id"], status=status, checked_at=db.now(),
+                             who=res.get("who") or acc.get("who") or "",
+                             note="" if res.get("ok") else str(res.get("error") or "")[:300])
+        return status
 
     @app.get("/api/tg/state")
     def api_tg_state():
-        api_id, api_hash = _tg_keys()
+        acc = db.tg_active() or {}
+        conf = tg.conf_for(acc) if acc else {}
         return jsonify(ok=True, lib=tg.available(),
-                       keys=bool(api_id and api_hash),
-                       logged=tg.logged_in(settings.data_dir()),
-                       proxy=tg.label_proxy(db.get_setting("tg_proxy", "")),
-                       device=db.get_setting("tg_device", ""),
-                       phone=db.get_setting("tg_phone", ""))
+                       keys=bool(acc.get("api_id") and acc.get("api_hash")),
+                       logged=bool(acc) and tg.has_session(conf),
+                       proxy=tg.label_proxy(acc.get("proxy") or ""),
+                       device=acc.get("device") or "",
+                       phone=acc.get("phone") or "",
+                       account=acc.get("label") or acc.get("phone") or "",
+                       who=acc.get("who") or "",
+                       accounts=len(db.tg_accounts()))
+
+    @app.get("/api/tg/accounts")
+    def api_tg_accounts():
+        return jsonify(ok=True, accounts=_accounts_payload(), lib=tg.available())
 
     @app.post("/api/tg/code")
     def api_tg_code():
+        """Вход по коду — это новый аккаунт со своим файлом сеанса."""
         d = request.get_json(silent=True) or {}
         phone = _text(d.get("phone"), 32)
+        api_id = _text(d.get("api_id"), 32) or db.get_setting("tg_api_id", "")
+        api_hash = _text(d.get("api_hash"), 80) or db.get_setting("tg_api_hash", "")
         if not phone:
             return jsonify(ok=False, error="Впишите номер телефона")
-        api_id, api_hash = _tg_keys()
         if not api_id or not api_hash:
             return jsonify(ok=False, error="Сначала впишите api_id и api_hash")
-        db.set_setting("tg_phone", phone)
-        return jsonify(tg.send_code(tg.conf_from_db(), phone))
+        acc = next((a for a in db.tg_accounts()
+                    if (a.get("phone") or "") == phone
+                    and not tg.has_session(tg.conf_for(a))), None)
+        if acc is None:
+            acc = db.tg_account_add(phone=phone, api_id=api_id, api_hash=api_hash,
+                                    label=phone, proxy=db.get_setting("tg_proxy", ""))
+        else:
+            db.tg_account_update(acc["id"], api_id=api_id, api_hash=api_hash)
+            acc = db.tg_account(acc["id"])
+        db.set_setting("tg_active", acc["id"])
+        return jsonify(tg.send_code(tg.conf_for(acc), phone))
 
     @app.post("/api/tg/signin")
     def api_tg_signin():
         d = request.get_json(silent=True) or {}
-        api_id, api_hash = _tg_keys()
-        if not api_id or not api_hash:
-            return jsonify(ok=False, error="Сначала впишите api_id и api_hash")
-        return jsonify(tg.sign_in(
-            tg.conf_from_db(), _text(d.get("phone"), 32),
-            _text(d.get("code"), 16), _text(d.get("password"), 256)))
+        acc = db.tg_active()
+        if not acc or not acc.get("api_id") or not acc.get("api_hash"):
+            return jsonify(ok=False, error="Сначала запросите код")
+        res = tg.sign_in(tg.conf_for(acc), _text(d.get("phone"), 32),
+                         _text(d.get("code"), 16), _text(d.get("password"), 256))
+        if res.get("ok"):
+            _save_check(acc, res)
+        return jsonify(res)
+
+    def _new_account(got, label="", proxy=""):
+        """Аккаунт из разобранного JSON: ключи, номер, устройство."""
+        return db.tg_account_add(
+            label=(label or got.get("phone") or "аккаунт")[:60],
+            phone=got.get("phone") or "", api_id=got.get("api_id") or "",
+            api_hash=got.get("api_hash") or "",
+            device=json.dumps(got.get("device") or {}, ensure_ascii=False),
+            proxy=proxy)
+
+    def _has_phone(phone):
+        return bool(phone) and any((a.get("phone") or "") == phone
+                                   for a in db.tg_accounts())
 
     @app.post("/api/tg/account")
     def api_tg_account():
-        """Готовый аккаунт: JSON от продавца или строка сессии.
+        """Готовый аккаунт текстом: JSON со строкой сессии или строка сессии.
 
         Ключи и признаки устройства из JSON сохраняются вместе с
         сессией: аккаунт, заведённый «телефоном» и продолженный
         «компьютером», Telegram разлогинивает как угнанный.
         """
         d = request.get_json(silent=True) or {}
-        got = tg.parse_account(d.get("text") or "")
+        got = tg.parse_account(_text(d.get("text")))
         if not got.get("ok"):
             return jsonify(got)
-        _keep_account(got)
         if not got.get("session"):
-            # JSON без строки сессии идёт в паре с файлом .session:
-            # сам по себе он только настраивает подключение.
-            api_id, api_hash = _tg_keys()
-            return jsonify(ok=True, keys_only=True,
-                           need_file=not tg.logged_in(settings.data_dir()),
-                           # Поля выше должны показать принятое, иначе
-                           # «ключи приняты» стоит над пустой строкой.
-                           api_id=api_id, api_hash=api_hash,
-                           phone=db.get_setting("tg_phone", ""),
-                           error="" if (api_id and api_hash) else
-                                 "В JSON не нашлось ни api_id, ни api_hash")
-        res = tg.import_session(tg.conf_from_db(), got["session"])
-        if res.get("ok"):
-            api_id, api_hash = _tg_keys()
-            res.update(api_id=api_id, api_hash=api_hash,
-                       phone=db.get_setting("tg_phone", ""))
-        return jsonify(res)
+            return jsonify(ok=False, error="В тексте нет строки сессии. Если "
+                                           "сессия — файлом, выберите вместе "
+                                           "файлы .session и .json")
+        if not got.get("api_id") or not got.get("api_hash"):
+            return jsonify(ok=False, error="Нужен JSON с app_id и app_hash — одной "
+                                           "строки сессии для подключения мало")
+        acc = _new_account(got, proxy=_text(d.get("proxy"), 500))
+        res = tg.import_session(tg.conf_for(acc), got["session"])
+        if not res.get("ok"):
+            db.tg_account_delete(acc["id"])
+            return jsonify(res)
+        _save_check(acc, res)
+        if not db.tg_account(db.get_setting("tg_active", "")):
+            db.set_setting("tg_active", acc["id"])
+        return jsonify(ok=True, who=res.get("who"), accounts=_accounts_payload())
 
-    def _keep_account(got):
-        """Сохранить разобранное: ключи, номер и признаки устройства."""
-        for key, name in (("api_id", "tg_api_id"), ("api_hash", "tg_api_hash"),
-                          ("phone", "tg_phone")):
-            if got.get(key):
-                db.set_setting(name, got[key])
-        if got.get("device"):
-            db.set_setting("tg_device", json.dumps(got["device"]))
+    def _group_files(files):
+        """Файлы → пары по имени: 79991234567.session + 79991234567.json.
+
+        Два файла с разными именами — тоже пара: так чаще всего и
+        присылают один аккаунт.
+        """
+        groups, skipped = {}, []
+        for f in files:
+            raw = f.read() or b""
+            name = os.path.basename(f.filename or "файл")
+            stem = os.path.splitext(name)[0].strip().lower() or name
+            if len(raw) > 8 * 1024 * 1024:
+                skipped.append("%s — слишком большой" % name)
+                continue
+            g = groups.setdefault(stem, {"json": [], "session": [], "name": stem})
+            if raw.startswith(b"SQLite format 3"):
+                g["session"].append((name, raw))
+            elif raw.lstrip()[:1] in (b"{", b"[") or name.lower().endswith(".json"):
+                g["json"].append(raw.decode("utf-8", "replace"))
+            else:
+                skipped.append("%s — не JSON и не файл сессии" % name)
+        json_only = [k for k, g in groups.items() if g["json"] and not g["session"]]
+        sess_only = [k for k, g in groups.items() if g["session"] and not g["json"]]
+        if len(json_only) == 1 and len(sess_only) == 1:
+            groups[json_only[0]]["session"] = groups.pop(sess_only[0])["session"]
+        return [g for g in groups.values() if g["json"] or g["session"]], skipped
 
     @app.post("/api/tg/import")
     def api_tg_import():
-        """Аккаунт двумя файлами: .session и .json от продавца.
+        """Аккаунты файлами: пары .session + .json, сколько угодно за раз.
 
         Вписывать api_id и api_hash руками не нужно — они лежат в том
-        же JSON, который к сессии и прилагается. Файлы принимаются в
-        любом порядке и по одному: JSON разбирается первым, потому что
-        именно он говорит, как подключаться.
+        же JSON, который к сессии прилагается. Каждая пара становится
+        отдельным аккаунтом со своим файлом сеанса.
         """
         files = request.files.getlist("files")
         if not files:
             return jsonify(ok=False, error="Файлы не выбраны")
-        if len(files) > 4:
-            return jsonify(ok=False, error="Больше четырёх файлов за раз не "
-                                           "нужно: хватит .session и .json")
-        texts, blobs, skipped = [], [], []
-        for f in files:
-            raw = f.read() or b""
-            name = (f.filename or "").lower()
-            if len(raw) > 8 * 1024 * 1024:
-                skipped.append("%s — слишком большой" % (f.filename or "файл"))
+        if len(files) > 400:
+            return jsonify(ok=False, error="Больше 400 файлов за раз не принимаю")
+        proxy = _text(request.form.get("proxy"), 500)
+        if proxy:
+            try:
+                tg.make_proxy(proxy)
+            except tg.BadProxy as e:
+                return jsonify(ok=False, error="Прокси: %s" % e)
+        groups, skipped = _group_files(files)
+        added, problems = [], []
+        for g in groups:
+            got = {}
+            for text in g["json"]:
+                got = tg.parse_account(text)
+                if got.get("ok"):
+                    break
+            if g["json"] and not got.get("ok"):
+                problems.append("%s: %s" % (g["name"], got.get("error")))
                 continue
-            if raw.startswith(b"SQLite format 3"):
-                blobs.append((f.filename or "сессия", raw))
-            elif raw.lstrip()[:1] in (b"{", b"["):
-                texts.append(raw.decode("utf-8", "replace"))
-            elif name.endswith(".json"):
-                texts.append(raw.decode("utf-8", "replace"))
+            if not got.get("api_id") or not got.get("api_hash"):
+                problems.append("%s: нет .json с app_id и app_hash" % g["name"])
+                continue
+            if not g["session"] and not got.get("session"):
+                problems.append("%s: нет файла .session к этому .json" % g["name"])
+                continue
+            if _has_phone(got.get("phone")):
+                problems.append("%s: аккаунт с номером %s уже есть"
+                                % (g["name"], got.get("phone")))
+                continue
+            acc = _new_account(got, label=got.get("phone") or g["name"], proxy=proxy)
+            if g["session"]:
+                res = tg.save_session_bytes(settings.data_dir(), g["session"][0][1],
+                                            path=db.tg_session_path(acc))
             else:
-                skipped.append("%s — не JSON и не файл сессии"
-                               % (f.filename or "файл"))
-        if not texts and not blobs:
-            return jsonify(ok=False,
-                           error="Ни JSON, ни файла сессии не нашлось. "
-                                 + ("Пропущено: " + "; ".join(skipped)
-                                    if skipped else ""))
-
-        session_line = ""
-        for text in texts:
-            got = tg.parse_account(text)
-            if not got.get("ok"):
-                return jsonify(got)
-            _keep_account(got)
-            session_line = session_line or got.get("session") or ""
-
-        for name, raw in blobs:
-            got = tg.save_session_bytes(settings.data_dir(), raw)
-            if not got.get("ok"):
-                return jsonify(ok=False,
-                               error="%s: %s" % (name, got["error"]))
-
-        api_id, api_hash = _tg_keys()
-        if not api_id or not api_hash:
-            return jsonify(ok=False,
-                           error="В JSON не нашлось app_id и app_hash — без "
-                                 "них подключиться нельзя. Попросите их у "
-                                 "того, кто дал аккаунт, или войдите по коду "
-                                 "ниже")
-        if session_line and not blobs:
-            res = tg.import_session(tg.conf_from_db(), session_line)
-        elif blobs:
-            res = tg.whoami(tg.conf_from_db())
-        else:
-            return jsonify(ok=False,
-                           error="Ключи приняты, но самой сессии нет: нужен "
-                                 "файл .session или строка сессии в JSON")
-        if res.get("ok"):
-            res.update(phone=db.get_setting("tg_phone", ""),
-                       skipped="; ".join(skipped))
-        return jsonify(res)
+                res = tg.import_session(tg.conf_for(acc), got["session"])
+            if not res.get("ok"):
+                db.tg_account_delete(acc["id"])
+                problems.append("%s: %s" % (g["name"], res.get("error")))
+                continue
+            added.append(acc)
+        if added and not db.tg_account(db.get_setting("tg_active", "")):
+            db.set_setting("tg_active", added[0]["id"])
+        who = ""
+        # Один аккаунт — сразу спрашиваем, чей он: человек ждёт ответа
+        # на экране. Много — проверка уходит в очередь и идёт по одному.
+        if len(added) == 1:
+            res = tg.whoami(tg.conf_for(added[0]))
+            _save_check(added[0], res)
+            who = res.get("who") or ""
+        elif len(added) > 1:
+            db.create_task("tg_accounts", {"ids": [a["id"] for a in added]})
+        return jsonify(ok=bool(added), added=len(added), who=who,
+                       problems=problems, skipped="; ".join(skipped),
+                       error="" if added else ("; ".join(problems + skipped)
+                                               or "ничего не добавлено"),
+                       accounts=_accounts_payload())
 
     @app.post("/api/tg/proxy")
     def api_tg_proxy():
-        """Проверяем адрес прокси до сохранения: опечатка должна быть
-        видна сразу, а не таймаутом на первой проверке номеров."""
+        """Прокси основного аккаунта. Адрес проверяется до сохранения:
+        опечатка должна быть видна сразу, а не таймаутом на проверке."""
         d = request.get_json(silent=True) or {}
         url = _text(d.get("proxy"), 500)
         try:
             tg.make_proxy(url)
         except tg.BadProxy as e:
             return jsonify(ok=False, error="Прокси: %s" % e)
+        acc = db.tg_active()
+        if acc:
+            db.tg_account_update(acc["id"], proxy=url)
         db.set_setting("tg_proxy", url)
         return jsonify(ok=True, proxy=tg.label_proxy(url))
+
+    @app.post("/api/tg/accounts/proxies")
+    def api_tg_accounts_proxies():
+        """Раздать прокси списком: по одному на аккаунт, по порядку."""
+        d = request.get_json(silent=True) or {}
+        kind = _text(d.get("kind"), 10) or "socks5"
+        lines = [tg.normalize_proxy(x, kind) for x in _text(d.get("text"), 40000).splitlines()
+                 if x.strip()]
+        good, bad = [], []
+        for n, url in enumerate(lines, 1):
+            try:
+                tg.make_proxy(url)
+                good.append(url)
+            except tg.BadProxy as e:
+                bad.append("строка %d: %s" % (n, e))
+        if not good:
+            return jsonify(ok=False, error="; ".join(bad[:5]) or "список пуст")
+        targets = [a for a in db.tg_accounts()
+                   if d.get("all") or not (a.get("proxy") or "").strip()]
+        done = 0
+        for acc, url in zip(targets, good):
+            db.tg_account_update(acc["id"], proxy=url, status="unknown")
+            done += 1
+        return jsonify(ok=True, assigned=done, left_accounts=max(0, len(targets) - done),
+                       left_proxies=max(0, len(good) - done), bad=bad[:10],
+                       accounts=_accounts_payload())
+
+    @app.post("/api/tg/accounts/check")
+    def api_tg_accounts_check():
+        if not db.tg_accounts():
+            return jsonify(ok=False, error="аккаунтов нет")
+        tid = db.create_task("tg_accounts", {})
+        return jsonify(ok=True, task_id=tid)
+
+    @app.post("/api/tg/accounts/<int:aid>/check")
+    def api_tg_account_check(aid):
+        acc = db.tg_account(aid)
+        if acc is None:
+            return jsonify(ok=False, error="аккаунт не найден")
+        res = tg.whoami(tg.conf_for(acc))
+        status = _save_check(acc, res)
+        return jsonify(ok=True, status=status, status_ru=tg.STATUS_RU[status],
+                       who=res.get("who") or "", error=res.get("error") or "",
+                       accounts=_accounts_payload())
+
+    @app.post("/api/tg/accounts/<int:aid>/activate")
+    def api_tg_account_activate(aid):
+        if db.tg_account(aid) is None:
+            return jsonify(ok=False, error="аккаунт не найден")
+        db.set_setting("tg_active", aid)
+        return jsonify(ok=True, accounts=_accounts_payload())
+
+    @app.post("/api/tg/accounts/<int:aid>/delete")
+    def api_tg_account_delete(aid):
+        return jsonify(ok=db.tg_account_delete(aid), accounts=_accounts_payload())
+
+    @app.post("/api/tg/accounts/<int:aid>")
+    def api_tg_account_update(aid):
+        d = request.get_json(silent=True) or {}
+        if db.tg_account(aid) is None:
+            return jsonify(ok=False, error="аккаунт не найден")
+        patch = {}
+        if "label" in d:
+            patch["label"] = _text(d.get("label"), 60)
+        if "proxy" in d:
+            url = tg.normalize_proxy(_text(d.get("proxy"), 500),
+                                     _text(d.get("kind"), 10) or "socks5")
+            try:
+                tg.make_proxy(url)
+            except tg.BadProxy as e:
+                return jsonify(ok=False, error="Прокси: %s" % e)
+            patch["proxy"] = url
+            patch["status"] = "unknown"
+        db.tg_account_update(aid, **patch)
+        return jsonify(ok=True, accounts=_accounts_payload())
 
     @app.post("/api/hh/token")
     def api_hh_token():
@@ -603,9 +757,9 @@ def create_app():
 
     @app.post("/api/tg/forget")
     def api_tg_forget():
-        for key in ("tg_device",):
-            db.set_setting(key, "")
-        return jsonify(ok=tg.forget(settings.data_dir()))
+        """Забыть основной аккаунт — удалить его вместе с файлом сеанса."""
+        acc = db.tg_active()
+        return jsonify(ok=bool(acc) and db.tg_account_delete(acc["id"]))
 
     @app.post("/api/tg/check")
     def api_tg_check():
@@ -1344,10 +1498,9 @@ def create_app():
             return jsonify(ok=False, error="компания не найдена")
         if not tg.available():
             return jsonify(ok=False, error="библиотека Telethon не установлена")
-        api_id, api_hash = _tg_keys()
-        if not api_id or not api_hash or not tg.logged_in(settings.data_dir()):
+        if not tg.has_session(tg.conf_from_db()):
             return jsonify(ok=False,
-                           error="вход в Telegram не выполнен — «Настройки»")
+                           error="нет рабочего аккаунта Telegram — раздел «Аккаунты»")
         d = request.get_json(silent=True) or {}
         # Из карточки проверяем всё, что есть, включая городские: их
         # тут два, а не две тысячи, и человек спросил про эту компанию.
@@ -1364,9 +1517,14 @@ def create_app():
             return jsonify(ok=False,
                            error="у компании нет номеров, которые можно "
                                  "спросить: 8-800 и обрывки не в счёт")
-        res = tg.check(tg.conf_from_db(), pairs, batch=len(pairs))
+        conf = tg.conf_from_db()
+        res = tg.check(conf, pairs, batch=len(pairs))
         if not res.get("ok"):
-            return jsonify(ok=False, error=res.get("error", "не вышло"))
+            status = worker._mark_tg_account(conf, res)
+            hint = (" — аккаунт «%s» %s, выберите другой в «Аккаунтах»"
+                    % (conf.get("label") or "основной", tg.STATUS_RU[status])
+                    if status in ("unauthorized", "banned", "proxy_error") else "")
+            return jsonify(ok=False, error=res.get("error", "не вышло") + hint)
         found = res.get("found") or {}
         for raw in res.get("checked") or []:
             hit = found.get(raw)

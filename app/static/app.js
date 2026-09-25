@@ -101,6 +101,7 @@ const VIEWS = {
   base: ["База", "Найденное и обогащённое"],
   board: ["Воронка", "Компании по стадиям работы"],
   mail: ["Рассылки", "Письма компаниям и ответы на них"],
+  accounts: ["Аккаунты", "Telegram-аккаунты и прокси"],
   sources: ["Поиск", "Откуда брать компании"],
   settings: ["Настройки", "Ключи, обновления и папка с данными"],
 };
@@ -133,6 +134,7 @@ function showView(name) {
   if (name === "today") loadToday();
   if (name === "board") loadBoard();
   if (name === "mail") loadMail();
+  if (name === "accounts") loadAccounts();
 }
 
 // ── Сегодня ──────────────────────────────────────────────
@@ -823,8 +825,8 @@ if ($("btn-tg-check")) {
     const d = await tgState();
     if (!d || !d.lib) { toast("Библиотека Telethon не установлена"); return; }
     if (!d.keys || !d.logged) {
-      toast("Сначала войдите в Telegram — «Настройки»");
-      showView("settings");
+      toast("Сначала добавьте аккаунт Telegram — раздел «Аккаунты»");
+      showView("accounts");
       return;
     }
     run("/api/tg/check", {limit: $("t-limit").value,
@@ -1785,7 +1787,8 @@ const KINDS = {find: "Поиск компаний", hh_search: "Поиск по 
                socials: "Поиск соцсетей",
                gis_search: "Поиск по 2ГИС", import: "Импорт списка",
                enrich: "Обогащение", ai: "ИИ-анализ",
-               tg: "Проверка номеров в Telegram"};
+               tg: "Проверка номеров в Telegram",
+               tg_accounts: "Проверка аккаунтов Telegram"};
 let lastTask = null;
 
 // Сколько ещё ждать.
@@ -3610,6 +3613,127 @@ if ($("pj-del")) $("pj-del").onclick = async () => {
   const d = await post(`/api/projects/${window.PROJECT_ID}/delete`, {});
   if (d && d.ok) location.reload();
   else $("pj-state").innerHTML = `<span class="bad">${esc((d && d.error) || "не вышло")}</span>`;
+};
+
+// ── Аккаунты Telegram ────────────────────────────────────
+const ACC_TONE = {ok: "good", unauthorized: "bad", banned: "bad",
+                  proxy_error: "warn", error: "warn", unknown: ""};
+let accEditing = null;
+
+function accDate(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString("ru-RU",
+    {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "—";
+}
+
+async function loadAccounts() {
+  const d = await get("/api/tg/accounts");
+  if (!d || !d.ok) return;
+  const list = d.accounts || [];
+  if (!d.lib) {
+    $("acc-state").innerHTML = `<span class="bad">библиотека Telethon не установлена</span>`;
+  }
+  if (!list.length) {
+    $("acc-list").innerHTML = `<div class="blank"><p><b>Аккаунтов пока нет.</b></p>
+      <p>Импортируйте пары файлов .session и .json — сразу сколько угодно.</p></div>`;
+    return;
+  }
+  $("acc-list").innerHTML = `
+    <table class="mini acc-table">
+      <thead><tr><th></th><th>Аккаунт</th><th>Прокси</th><th>Состояние</th>
+        <th>Проверен</th><th></th></tr></thead>
+      <tbody>${list.map((a) => `
+        <tr class="${a.active ? "is-main" : ""}">
+          <td><button class="acc-main ${a.active ? "is-on" : ""}" data-acc-main="${a.id}"
+                title="${a.active ? "Основной — им идёт проверка номеров" : "Сделать основным"}">${
+                a.active ? "основной" : "сделать основным"}</button></td>
+          <td><b>${esc(a.label || a.phone || "аккаунт " + a.id)}</b>
+            ${a.phone && a.phone !== a.label ? `<em>${esc(a.phone)}</em>` : ""}
+            ${a.who ? `<em>${esc(a.who)}</em>` : ""}
+            ${a.session ? "" : `<em class="bad">нет файла сеанса</em>`}</td>
+          <td>${a.proxy ? esc(a.proxy) : `<span class="muted">напрямую</span>`}
+            ${accEditing === a.id ? `
+              <div class="acc-edit">
+                <input type="text" id="acc-edit-proxy" placeholder="адрес:порт:логин:пароль или socks5://…">
+                <input type="text" id="acc-edit-label" value="${esc(a.label || "")}" placeholder="название">
+                <div><button class="btn sm" data-acc-save="${a.id}">Сохранить</button>
+                  <button class="btn quiet sm" data-acc-cancel>Отмена</button></div>
+              </div>` : ""}</td>
+          <td class="acc-st ${ACC_TONE[a.status] || ""}">${esc(a.status_ru)}
+            ${a.note ? `<em>${esc(a.note)}</em>` : ""}</td>
+          <td>${accDate(a.checked_at)}</td>
+          <td><div class="acc-do">
+            <button class="btn sm" data-acc-check="${a.id}">Проверить</button>
+            <button class="btn quiet sm" data-acc-edit="${a.id}">Прокси и имя</button>
+            <button class="btn quiet sm danger" data-acc-del="${a.id}">Удалить</button>
+          </div></td>
+        </tr>`).join("")}</tbody>
+    </table>`;
+  const on = (sel, fn) => $("acc-list").querySelectorAll(sel).forEach((b) => { b.onclick = () => fn(b); });
+  on("[data-acc-main]", async (b) => {
+    await post(`/api/tg/accounts/${b.dataset.accMain}/activate`, {});
+    loadAccounts();
+  });
+  on("[data-acc-check]", async (b) => {
+    b.disabled = true; b.textContent = "проверяю…";
+    const r = await post(`/api/tg/accounts/${b.dataset.accCheck}/check`, {});
+    toast(r && r.ok ? `${r.status_ru}${r.who ? ": " + r.who : ""}` : "не вышло");
+    loadAccounts();
+  });
+  on("[data-acc-edit]", (b) => { accEditing = Number(b.dataset.accEdit); loadAccounts(); });
+  on("[data-acc-cancel]", () => { accEditing = null; loadAccounts(); });
+  on("[data-acc-save]", async (b) => {
+    const body = {label: $("acc-edit-label").value, kind: $("acc-proxy-kind").value};
+    const px = $("acc-edit-proxy").value.trim();
+    if (px) body.proxy = px;
+    const r = await post(`/api/tg/accounts/${b.dataset.accSave}`, body);
+    if (!r || !r.ok) { toast((r && r.error) || "не сохранилось"); return; }
+    accEditing = null;
+    loadAccounts();
+  });
+  on("[data-acc-del]", async (b) => {
+    if (!confirm("Удалить аккаунт вместе с его файлом сеанса?")) return;
+    await post(`/api/tg/accounts/${b.dataset.accDel}/delete`, {});
+    loadAccounts();
+  });
+}
+
+$("acc-files").onchange = async (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  if (!files.length) return;
+  const fd = new FormData();
+  files.forEach((f) => fd.append("files", f));
+  $("acc-state").textContent = `загружаю ${files.length} файл(ов)…`;
+  const r = await fetch("/api/tg/import", {method: "POST", body: fd}).then((x) => x.json()).catch(() => null);
+  if (!r) { $("acc-state").innerHTML = `<span class="bad">не вышло</span>`; return; }
+  const bits = [];
+  if (r.added) bits.push(`добавлено ${r.added}` + (r.who ? ` — ${esc(r.who)}` : ""));
+  if (r.added > 1) bits.push("проверка идёт в очереди");
+  if ((r.problems || []).length) bits.push(`<span class="bad">не принято: ${esc(r.problems.join("; "))}</span>`);
+  if (r.skipped) bits.push(`пропущено: ${esc(r.skipped)}`);
+  $("acc-state").innerHTML = bits.join(" · ") || esc(r.error || "");
+  loadAccounts();
+  if (r.added > 1) poll();
+};
+$("acc-check-all").onclick = async () => {
+  const r = await post("/api/tg/accounts/check", {});
+  if (r && r.ok) { toast("Проверка аккаунтов поставлена в очередь"); poll(); }
+  else toast((r && r.error) || "не вышло");
+};
+$("acc-proxy-open").onclick = () => { $("acc-proxy").hidden = !$("acc-proxy").hidden; };
+$("acc-proxy-go").onclick = async () => {
+  const r = await post("/api/tg/accounts/proxies", {
+    text: $("acc-proxy-text").value, kind: $("acc-proxy-kind").value,
+    all: $("acc-proxy-all").checked});
+  if (!r || !r.ok) {
+    $("acc-proxy-state").innerHTML = `<span class="bad">${esc((r && r.error) || "не вышло")}</span>`;
+    return;
+  }
+  $("acc-proxy-state").innerHTML = `назначено ${r.assigned}` +
+    (r.left_accounts ? ` · без прокси осталось аккаунтов: ${r.left_accounts}` : "") +
+    (r.left_proxies ? ` · лишних прокси: ${r.left_proxies}` : "") +
+    ((r.bad || []).length ? ` · <span class="bad">${esc(r.bad.join("; "))}</span>` : "");
+  loadAccounts();
 };
 
 loadStats();
